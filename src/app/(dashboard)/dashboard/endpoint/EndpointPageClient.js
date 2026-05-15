@@ -101,15 +101,24 @@ function getUsagePeriod(usage = {}, period) {
   return usage.periods?.[period] || { used: 0, requests: 0, resetAt: null };
 }
 
+function clampPercentage(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
 function usageProgress(key, usage = {}) {
   const limit = usage.limit ?? key.tokenLimit ?? null;
   const used = usage.used ?? 0;
-  const remainingPercentage = usage.remainingPercentage ?? (limit ? Math.max(0, Math.round(((limit - used) / limit) * 100)) : null);
+  const remaining = limit ? Math.max(0, limit - used) : null;
+  const remainingPercentage = limit
+    ? clampPercentage(usage.remainingPercentage ?? ((remaining / limit) * 100))
+    : null;
   return {
     limit,
     used,
+    remaining,
     remainingPercentage,
-    progress: limit ? Math.max(0, Math.min(100, 100 - remainingPercentage)) : 0,
   };
 }
 
@@ -123,18 +132,23 @@ function getLimitProgress(key, usage, period) {
   );
   const periodUsage = usage.limits?.[period] || getUsagePeriod(usage, period);
   const used = periodUsage.used ?? 0;
-  const remainingPercentage = periodUsage.remainingPercentage ?? (limit ? Math.max(0, Math.round(((limit - used) / limit) * 100)) : null);
+  const remaining = limit ? Math.max(0, limit - used) : null;
+  const remainingPercentage = limit
+    ? clampPercentage(periodUsage.remainingPercentage ?? ((remaining / limit) * 100))
+    : null;
   return {
     limit,
     used,
+    remaining,
     resetAt: periodUsage.resetAt,
-    progress: limit ? Math.max(0, Math.min(100, 100 - remainingPercentage)) : 0,
+    remainingPercentage,
   };
 }
 
-function barTone(progress, exhausted = false) {
-  if (exhausted || progress >= 80) return "bg-red-500";
-  if (progress > 40) return "bg-yellow-500";
+function barTone(remainingPercentage, exhausted = false) {
+  const remaining = clampPercentage(remainingPercentage);
+  if (exhausted || remaining <= 20) return "bg-red-500";
+  if (remaining < 60) return "bg-yellow-500";
   return "bg-green-500";
 }
 
@@ -160,29 +174,33 @@ function getLimitModeLabel(mode) {
 function ApiKeyUsageBar({ apiKey, className = "" }) {
   const usage = apiKey.usage || {};
   const active = usageProgress(apiKey, usage);
-  const progress = active.limit ? active.progress : 0;
-  const tone = barTone(progress, apiKey.status === "exhausted");
+  const remainingPercentage = active.limit ? active.remainingPercentage : 0;
+  const tone = active.limit ? barTone(remainingPercentage, apiKey.status === "exhausted") : "bg-primary";
   const resetText = apiKey.limitMode === "daily" || apiKey.limitMode === "weekly"
     ? formatKeyReset(usage.resetAt)
     : "no reset";
   const isDual = apiKey.limitMode === DUAL_LIMIT_MODE;
   const dailyLimit = getLimitProgress(apiKey, usage, "daily");
   const weeklyLimit = getLimitProgress(apiKey, usage, "weekly");
-  const renderLine = (label, item) => (
-    <div className="mt-2">
-      <div className="mb-1 flex items-center justify-between text-[11px] text-text-muted">
-        <span>{label}</span>
-        <span>{formatTokens(item.used)} / {formatTokens(item.limit)}</span>
+  const renderLine = (label, item) => {
+    const percentage = item.limit ? item.remainingPercentage : 0;
+    const lineTone = item.limit ? barTone(percentage, apiKey.status === "exhausted") : "bg-primary";
+    return (
+      <div className="mt-2">
+        <div className="mb-1 flex items-center justify-between text-[11px] text-text-muted">
+          <span>{label}</span>
+          <span>{item.limit ? `${formatTokens(item.remaining)} / ${formatTokens(item.limit)} left` : "unlimited"}</span>
+        </div>
+        <div className="h-2 overflow-hidden rounded-full bg-black/5 dark:bg-white/10">
+          <div className={`h-full ${lineTone}`} style={{ width: `${percentage}%` }} />
+        </div>
+        <div className="mt-1 flex justify-between text-[11px] text-text-muted">
+          <span>{item.limit ? `${percentage}% remaining` : "unlimited"}</span>
+          <span>{formatKeyReset(item.resetAt)}</span>
+        </div>
       </div>
-      <div className="h-2 overflow-hidden rounded-full bg-black/5 dark:bg-white/10">
-        <div className={`h-full ${barTone(item.progress, apiKey.status === "exhausted")}`} style={{ width: `${item.progress}%` }} />
-      </div>
-      <div className="mt-1 flex justify-between text-[11px] text-text-muted">
-        <span>{item.progress}% used</span>
-        <span>{formatKeyReset(item.resetAt)}</span>
-      </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className={`w-full min-w-0 rounded-[10px] border border-border-subtle bg-surface px-3 py-2 ${className}`}>
@@ -195,7 +213,7 @@ function ApiKeyUsageBar({ apiKey, className = "" }) {
         </div>
         {!isDual && (
           <span className="shrink-0 text-right">
-            {formatTokens(active.used)} / {active.limit ? formatTokens(active.limit) : "unlimited"}
+            {active.limit ? `${formatTokens(active.remaining)} / ${formatTokens(active.limit)} left` : "unlimited"}
           </span>
         )}
       </div>
@@ -207,10 +225,10 @@ function ApiKeyUsageBar({ apiKey, className = "" }) {
       ) : (
         <>
           <div className="h-2 overflow-hidden rounded-full bg-black/5 dark:bg-white/10">
-            <div className={`h-full ${tone}`} style={{ width: `${progress}%` }} />
+            <div className={`h-full ${tone}`} style={{ width: `${remainingPercentage}%` }} />
           </div>
           <div className="mt-1 flex items-center justify-between text-[11px] text-text-muted">
-            <span>{active.limit ? `${progress}% used` : "unlimited"}</span>
+            <span>{active.limit ? `${remainingPercentage}% remaining` : "unlimited"}</span>
             <span>{resetText}</span>
           </div>
         </>
