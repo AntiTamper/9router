@@ -1,5 +1,3 @@
-import initializeApp from "@/shared/services/initializeApp";
-
 // Survive Next.js HMR — module-level flag resets on reload, globalThis persists
 const g = globalThis.__cloudSyncInit ??= { initialized: false, inProgress: null };
 
@@ -8,6 +6,7 @@ export async function ensureAppInitialized() {
   if (g.inProgress) return g.inProgress;
   g.inProgress = (async () => {
     try {
+      const { default: initializeApp } = await import("@/shared/services/initializeApp");
       await initializeApp();
       g.initialized = true;
     } catch (error) {
