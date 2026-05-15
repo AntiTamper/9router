@@ -3,6 +3,8 @@
 import { useState } from "react";
 import PropTypes from "prop-types";
 
+const CUSTOM_PROVIDER_ICON_RE = /^\/providers\/.+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.png$/i;
+
 export default function ProviderIcon({
   src,
   alt,
@@ -12,8 +14,9 @@ export default function ProviderIcon({
   fallbackColor,
 }) {
   const [errored, setErrored] = useState(false);
+  const useFallback = !src || errored || CUSTOM_PROVIDER_ICON_RE.test(src);
 
-  if (!src || errored) {
+  if (useFallback) {
     return (
       <span
         className={`inline-flex items-center justify-center font-bold rounded-lg ${className}`.trim()}

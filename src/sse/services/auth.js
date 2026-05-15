@@ -1,8 +1,9 @@
-import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings } from "@/lib/localDb";
+import { getProviderConnections, validateApiKey, checkApiKeyAccess, updateProviderConnection, getSettings } from "@/lib/localDb";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
+import { restoreExpiredAutoDisabledConnections } from "@/lib/quota/autoDisable.js";
 import * as log from "../utils/logger.js";
 
 // Mutex to prevent race conditions during account selection
@@ -31,6 +32,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
 
     // Resolve alias to provider ID (e.g., "kc" -> "kilocode")
     const providerId = resolveProviderId(provider);
+    await restoreExpiredAutoDisabledConnections(providerId);
 
     // Inject a virtual connection for no-auth free providers (with optional proxy pool from settings)
     if (FREE_PROVIDERS[providerId]?.noAuth) {
@@ -214,9 +216,30 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
 
   const reason = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
   const lockUpdate = buildModelLockUpdate(model, cooldownMs);
+  const lowerReason = reason.toLowerCase();
+  const quotaExhausted =
+    status === 402 ||
+    lowerReason.includes("quota") ||
+    lowerReason.includes("usage limit") ||
+    lowerReason.includes("insufficient credit") ||
+    lowerReason.includes("billing hard limit");
+  const quotaUntil = resetsAtMs && resetsAtMs > Date.now()
+    ? new Date(resetsAtMs).toISOString()
+    : new Date(Date.now() + cooldownMs).toISOString();
+  const settings = await getSettings();
+  const quotaAutoToggleEnabled = settings.quotaAutoToggleEnabled !== false;
 
   await updateProviderConnection(connectionId, {
     ...lockUpdate,
+    ...(quotaExhausted && quotaAutoToggleEnabled
+      ? {
+          isActive: false,
+          quotaAutoDisabled: true,
+          quotaAutoDisabledAt: new Date().toISOString(),
+          quotaAutoDisabledUntil: quotaUntil,
+          quotaAutoDisabledReason: reason,
+        }
+      : {}),
     testStatus: "unavailable",
     lastError: reason,
     errorCode: status,
@@ -304,4 +327,8 @@ export function extractApiKey(request) {
 export async function isValidApiKey(apiKey) {
   if (!apiKey) return false;
   return await validateApiKey(apiKey);
+}
+
+export async function getApiKeyAccess(apiKey) {
+  return await checkApiKeyAccess(apiKey);
 }

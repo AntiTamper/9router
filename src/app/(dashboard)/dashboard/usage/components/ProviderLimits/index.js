@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import QuotaTable from "./QuotaTable";
 import Toggle from "@/shared/components/Toggle";
-import { parseQuotaData, calculatePercentage } from "./utils";
+import { parseQuotaData, calculatePercentage, buildProviderQuotaAverages } from "./utils";
 import Card from "@/shared/components/Card";
 import { EditConnectionModal } from "@/shared/components";
 import { USAGE_SUPPORTED_PROVIDERS, USAGE_APIKEY_PROVIDERS } from "@/shared/constants/providers";
@@ -28,6 +28,7 @@ export default function ProviderLimits() {
     const stored = window.localStorage.getItem(AUTO_REFRESH_STORAGE_KEY);
     return stored === null ? true : stored === "true";
   });
+  const [quotaAutoToggleEnabled, setQuotaAutoToggleEnabled] = useState(true);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [refreshingAll, setRefreshingAll] = useState(false);
   const [countdown, setCountdown] = useState(60);
@@ -138,9 +139,10 @@ export default function ProviderLimits() {
   const refreshProvider = useCallback(
     async (connectionId, provider) => {
       await fetchQuota(connectionId, provider);
+      await fetchConnections();
       setLastUpdated(new Date());
     },
-    [fetchQuota],
+    [fetchQuota, fetchConnections],
   );
 
   const handleDeleteConnection = useCallback(async (id) => {
@@ -234,6 +236,35 @@ export default function ProviderLimits() {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/settings", { cache: "no-store" })
+      .then((res) => res.json())
+      .then((data) => {
+        if (!cancelled) setQuotaAutoToggleEnabled(data.quotaAutoToggleEnabled !== false);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleQuotaAutoToggle = useCallback(async () => {
+    const next = !quotaAutoToggleEnabled;
+    setQuotaAutoToggleEnabled(next);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quotaAutoToggleEnabled: next }),
+      });
+      if (!res.ok) setQuotaAutoToggleEnabled(!next);
+    } catch (error) {
+      console.error("Error updating quota auto toggle:", error);
+      setQuotaAutoToggleEnabled(!next);
+    }
+  }, [quotaAutoToggleEnabled]);
+
   // Refresh all providers
   const refreshAll = useCallback(async () => {
     if (refreshingAll) return;
@@ -250,6 +281,7 @@ export default function ProviderLimits() {
       await Promise.all(
         eligibleConnections.map((conn) => fetchQuota(conn.id, conn.provider)),
       );
+      await fetchConnections();
 
       setLastUpdated(new Date());
     } catch (error) {
@@ -278,6 +310,7 @@ export default function ProviderLimits() {
       await Promise.all(
         eligibleConnections.map((conn) => fetchQuota(conn.id, conn.provider)),
       );
+      await fetchConnections();
       setLastUpdated(new Date());
     };
 
@@ -429,6 +462,7 @@ export default function ProviderLimits() {
 
   const providerOptions = Array.from(new Set(filteredConnections.map((conn) => conn.provider))).sort();
   const selectedProviderLabel = providerFilter === "all" ? "All providers" : providerFilter;
+  const providerAverages = buildProviderQuotaAverages(providerFilteredConnections, quotaData);
 
   // Calculate summary stats
   const totalProviders = sortedConnections.length;
@@ -582,6 +616,22 @@ export default function ProviderLimits() {
             <span className="hidden sm:inline">Turn on Available</span>
           </button>
 
+          <button
+            type="button"
+            onClick={handleQuotaAutoToggle}
+            className={`flex h-8 shrink-0 items-center gap-1 rounded-lg border px-2 text-xs transition-colors ${
+              quotaAutoToggleEnabled
+                ? "border-primary/30 text-primary hover:bg-primary/10"
+                : "border-black/10 text-text-muted hover:bg-black/5 dark:border-white/10 dark:hover:bg-white/5"
+            }`}
+            title="Automatically disable exhausted quota accounts and re-enable them when quota restores"
+          >
+            <span className="material-symbols-outlined text-[14px]">
+              {quotaAutoToggleEnabled ? "toggle_on" : "toggle_off"}
+            </span>
+            <span>Auto toggle</span>
+          </button>
+
           {/* Auto-refresh toggle */}
           <button
             onClick={() => setAutoRefresh((prev) => !prev)}
@@ -613,6 +663,65 @@ export default function ProviderLimits() {
           </button>
         </div>
       </div>
+
+      {providerAverages.length > 0 && (
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {providerAverages.map((avg) => {
+            const value = avg.averageRemaining;
+            const color =
+              value === null ? "bg-black/10 dark:bg-white/10" :
+              value > 70 ? "bg-green-500" :
+              value >= 30 ? "bg-yellow-500" :
+              "bg-red-500";
+            const textColor =
+              value === null ? "text-text-muted" :
+              value > 70 ? "text-green-600 dark:text-green-400" :
+              value >= 30 ? "text-yellow-600 dark:text-yellow-400" :
+              "text-red-600 dark:text-red-400";
+
+            return (
+              <div
+                key={avg.provider}
+                className="rounded-xl border border-black/10 bg-black/[0.02] p-3 dark:border-white/10 dark:bg-white/[0.03]"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <ProviderIcon
+                      src={`/providers/${avg.provider}.png`}
+                      alt={avg.provider}
+                      size={26}
+                      className="size-[26px] shrink-0 rounded object-contain"
+                      fallbackText={avg.provider.slice(0, 2).toUpperCase()}
+                    />
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium capitalize text-text-primary">
+                        {avg.provider}
+                      </p>
+                      <p className="text-[11px] text-text-muted">
+                        {avg.activeCount}/{avg.accountCount} active
+                        {avg.lowCount > 0 ? ` / ${avg.lowCount} low` : ""}
+                        {avg.exhaustedCount > 0 ? ` / ${avg.exhaustedCount} empty` : ""}
+                      </p>
+                    </div>
+                  </div>
+                  <div className={`text-sm font-semibold ${textColor}`}>
+                    {value === null ? "N/A" : `${value}%`}
+                  </div>
+                </div>
+                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-black/5 dark:bg-white/10">
+                  <div
+                    className={`h-full ${color}`}
+                    style={{ width: `${value === null ? 0 : Math.min(value, 100)}%` }}
+                  />
+                </div>
+                <p className="mt-1 text-[11px] text-text-muted">
+                  Average service quota
+                </p>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Provider cards: 2 columns, compact */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -656,6 +765,11 @@ export default function ProviderLimits() {
                           <p className="text-xs text-text-muted truncate">{label}</p>
                         ) : null;
                       })()}
+                      {conn.quotaAutoDisabled && (
+                        <p className="text-[11px] text-red-500 truncate">
+                          Auto-disabled until {conn.quotaAutoDisabledUntil ? new Date(conn.quotaAutoDisabledUntil).toLocaleString() : "quota restores"}
+                        </p>
+                      )}
                     </div>
                   </div>
 

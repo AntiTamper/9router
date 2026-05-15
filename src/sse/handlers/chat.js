@@ -5,7 +5,7 @@ import {
   markAccountUnavailable,
   clearAccountError,
   extractApiKey,
-  isValidApiKey,
+  getApiKeyAccess,
 } from "../services/auth.js";
 import { cacheClaudeHeaders } from "open-sse/utils/claudeHeaderCache.js";
 import { getSettings } from "@/lib/localDb";
@@ -65,16 +65,27 @@ export async function handleChat(request, clientRawRequest = null) {
     log.debug("AUTH", "No API key provided (local mode)");
   }
 
-  // Enforce API key if enabled in settings
+  // Enforce required keys, and always enforce limits for provided keys.
   const settings = await getSettings();
-  if (settings.requireApiKey) {
-    if (!apiKey) {
-      log.warn("AUTH", "Missing API key (requireApiKey=true)");
-      return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
-    }
-    const valid = await isValidApiKey(apiKey);
-    if (!valid) {
-      log.warn("AUTH", "Invalid API key (requireApiKey=true)");
+  if (settings.requireApiKey && !apiKey) {
+    log.warn("AUTH", "Missing API key (requireApiKey=true)");
+    return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
+  }
+  if (apiKey) {
+    const access = await getApiKeyAccess(apiKey);
+    if (!access.valid) {
+      const reason = access.reason || "invalid";
+      log.warn("AUTH", `Rejected API key (${reason})`);
+      if (reason === "token_limit_exceeded") {
+        const reset = access.resetAt ? ` Resets at ${access.resetAt}.` : "";
+        return errorResponse(HTTP_STATUS.RATE_LIMITED, `API key token limit exhausted.${reset}`);
+      }
+      if (reason === "expired") {
+        return errorResponse(HTTP_STATUS.UNAUTHORIZED, "API key expired");
+      }
+      if (reason === "paused") {
+        return errorResponse(HTTP_STATUS.UNAUTHORIZED, "API key paused");
+      }
       return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
     }
   }

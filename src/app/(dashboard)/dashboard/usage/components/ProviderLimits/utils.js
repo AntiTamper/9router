@@ -75,6 +75,74 @@ export function calculatePercentage(used, total) {
   return Math.round(((total - used) / total) * 100);
 }
 
+function clampPercentage(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+function quotaRemainingPercentage(quota) {
+  if (!quota || !quota.total || quota.total <= 0) return null;
+  if (quota.remainingPercentage !== undefined) {
+    return clampPercentage(quota.remainingPercentage);
+  }
+  return clampPercentage(calculatePercentage(quota.used, quota.total));
+}
+
+export function buildProviderQuotaAverages(connections = [], quotaData = {}) {
+  const groups = new Map();
+
+  for (const conn of connections) {
+    if (!conn?.provider) continue;
+    const group = groups.get(conn.provider) || {
+      provider: conn.provider,
+      accountCount: 0,
+      activeCount: 0,
+      measuredAccounts: 0,
+      exhaustedCount: 0,
+      lowCount: 0,
+      totalRemaining: 0,
+      averageRemaining: null,
+    };
+
+    group.accountCount += 1;
+    if (conn.isActive !== false) group.activeCount += 1;
+
+    const quotas = quotaData[conn.id]?.quotas || [];
+    const percentages = quotas
+      .map(quotaRemainingPercentage)
+      .filter((percentage) => percentage !== null);
+
+    if (percentages.length > 0) {
+      const accountAverage = Math.round(
+        percentages.reduce((sum, percentage) => sum + percentage, 0) / percentages.length,
+      );
+      group.measuredAccounts += 1;
+      group.totalRemaining += accountAverage;
+      if (accountAverage <= 0) group.exhaustedCount += 1;
+      else if (accountAverage < 30) group.lowCount += 1;
+    } else if (conn.quotaAutoDisabled) {
+      group.exhaustedCount += 1;
+    }
+
+    groups.set(conn.provider, group);
+  }
+
+  return Array.from(groups.values())
+    .map((group) => ({
+      ...group,
+      averageRemaining: group.measuredAccounts > 0
+        ? Math.round(group.totalRemaining / group.measuredAccounts)
+        : null,
+    }))
+    .sort((a, b) => {
+      const aAvg = a.averageRemaining ?? Number.POSITIVE_INFINITY;
+      const bAvg = b.averageRemaining ?? Number.POSITIVE_INFINITY;
+      if (aAvg !== bAvg) return aAvg - bAvg;
+      return a.provider.localeCompare(b.provider);
+    });
+}
+
 /**
  * Parse provider-specific quota structures into normalized array
  * @param {string} provider - Provider name (github, antigravity, codex, kiro, claude)

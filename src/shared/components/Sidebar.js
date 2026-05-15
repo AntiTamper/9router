@@ -48,6 +48,7 @@ export default function Sidebar({ onClose }) {
   const [isUpdating, setIsUpdating] = useState(false);
   const [shutdownCountdown, setShutdownCountdown] = useState(0);
   const [enableTranslator, setEnableTranslator] = useState(false);
+  const [elevationStatus, setElevationStatus] = useState("user");
   const { copied, copy } = useCopyToClipboard(2000);
 
   const INSTALL_CMD = UPDATER_CONFIG.installCmdLatest;
@@ -57,6 +58,13 @@ export default function Sidebar({ onClose }) {
       .then(res => res.json())
       .then(data => { if (data.enableTranslator) setEnableTranslator(true); })
       .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    fetch("/api/system/elevation", { cache: "no-store" })
+      .then(res => res.json())
+      .then(data => setElevationStatus(data.status === "elevated" ? "elevated" : "user"))
+      .catch(() => setElevationStatus("user"));
   }, []);
 
   // Lazy check for new npm version on mount
@@ -134,11 +142,23 @@ export default function Sidebar({ onClose }) {
             <div className="flex items-center justify-center size-9 rounded-[10px] bg-gradient-to-br from-brand-500 to-brand-700 shadow-[var(--shadow-warm)]">
               <span className="material-symbols-outlined text-white text-[20px]">hub</span>
             </div>
-            <div className="flex flex-col">
+            <div className="flex flex-col min-w-0">
               <h1 className="text-lg font-semibold tracking-tight text-text-main">
                 {APP_CONFIG.name}
               </h1>
-              <span className="text-xs text-text-muted">v{APP_CONFIG.version}</span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-text-muted">v{APP_CONFIG.version}</span>
+                <span
+                  className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                    elevationStatus === "elevated"
+                      ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                      : "bg-surface-2 text-text-muted"
+                  }`}
+                  title={elevationStatus === "elevated" ? "Running elevated" : "Running as user"}
+                >
+                  {elevationStatus}
+                </span>
+              </div>
             </div>
           </Link>
           {updateInfo && (

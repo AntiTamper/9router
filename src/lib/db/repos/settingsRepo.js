@@ -36,6 +36,7 @@ const DEFAULT_SETTINGS = {
   rtkEnabled: true,
   cavemanEnabled: false,
   cavemanLevel: "full",
+  quotaAutoToggleEnabled: true,
 };
 
 async function readRaw() {

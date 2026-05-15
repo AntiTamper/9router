@@ -38,13 +38,203 @@ const CAVEMAN_LEVELS = [
   { id: "full", label: "Full", desc: "Drop articles, fragments OK" },
   { id: "ultra", label: "Ultra", desc: "Telegraphic, max compression" },
 ];
+
+const API_KEY_LIMIT_MODES = [
+  { id: "unlimited", label: "Unlimited" },
+  { id: "daily", label: "Daily" },
+  { id: "weekly", label: "Weekly" },
+  { id: "daily_weekly", label: "Daily + Weekly" },
+  { id: "hard", label: "Hard cap" },
+];
+
+const DUAL_LIMIT_MODE = "daily_weekly";
+
+function toDateTimeLocal(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
+}
+
+function fromDateTimeLocal(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+
+function formatCompactDateTime(value) {
+  if (!value) return "Permanent";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "Invalid";
+  return date.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function formatKeyReset(value) {
+  if (!value) return "No reset";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "No reset";
+  const diffMs = date.getTime() - Date.now();
+  if (diffMs <= 0) return "Reset due";
+  const minutes = Math.ceil(diffMs / 60000);
+  if (minutes < 60) return `resets in ${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const rem = minutes % 60;
+  if (hours < 24) return `resets in ${hours}h ${rem}m`;
+  const days = Math.floor(hours / 24);
+  return `resets in ${days}d ${hours % 24}h`;
+}
+
+function keyStatusMeta(status) {
+  if (status === "exhausted") return { label: "Exhausted", className: "text-red-600 dark:text-red-400 bg-red-500/10" };
+  if (status === "expired") return { label: "Expired", className: "text-red-600 dark:text-red-400 bg-red-500/10" };
+  if (status === "paused") return { label: "Paused", className: "text-orange-600 dark:text-orange-400 bg-orange-500/10" };
+  return { label: "Active", className: "text-emerald-600 dark:text-emerald-400 bg-emerald-500/10" };
+}
+
+function formatTokens(value) {
+  const n = Number(value || 0);
+  return Number.isFinite(n) ? n.toLocaleString() : "0";
+}
+
+function getUsagePeriod(usage = {}, period) {
+  return usage.periods?.[period] || { used: 0, requests: 0, resetAt: null };
+}
+
+function usageProgress(key, usage = {}) {
+  const limit = usage.limit ?? key.tokenLimit ?? null;
+  const used = usage.used ?? 0;
+  const remainingPercentage = usage.remainingPercentage ?? (limit ? Math.max(0, Math.round(((limit - used) / limit) * 100)) : null);
+  return {
+    limit,
+    used,
+    remainingPercentage,
+    progress: limit ? Math.max(0, Math.min(100, 100 - remainingPercentage)) : 0,
+  };
+}
+
+function getLimitProgress(key, usage, period) {
+  const limit = usage.limits?.[period]?.limit ?? (
+    key.limitMode === DUAL_LIMIT_MODE
+      ? (period === "daily" ? key.dailyTokenLimit : key.weeklyTokenLimit)
+      : key.limitMode === period
+        ? key.tokenLimit
+        : null
+  );
+  const periodUsage = usage.limits?.[period] || getUsagePeriod(usage, period);
+  const used = periodUsage.used ?? 0;
+  const remainingPercentage = periodUsage.remainingPercentage ?? (limit ? Math.max(0, Math.round(((limit - used) / limit) * 100)) : null);
+  return {
+    limit,
+    used,
+    resetAt: periodUsage.resetAt,
+    progress: limit ? Math.max(0, Math.min(100, 100 - remainingPercentage)) : 0,
+  };
+}
+
+function barTone(progress, exhausted = false) {
+  if (exhausted || progress >= 100) return "bg-red-500";
+  if (progress >= 80) return "bg-orange-500";
+  return "bg-primary";
+}
+
+function UsageStatBox({ label, value, hint, tone = "default" }) {
+  const toneClass = tone === "warning"
+    ? "border-orange-500/20 bg-orange-500/5"
+    : tone === "danger"
+      ? "border-red-500/20 bg-red-500/5"
+      : "border-border-subtle bg-bg";
+  return (
+    <div className={`rounded-[10px] border px-3 py-2 ${toneClass}`}>
+      <p className="text-[11px] font-medium uppercase text-text-muted">{label}</p>
+      <p className="mt-1 text-sm font-semibold text-text-main">{value}</p>
+      {hint && <p className="mt-0.5 text-[11px] text-text-muted truncate">{hint}</p>}
+    </div>
+  );
+}
+
+function getLimitModeLabel(mode) {
+  return API_KEY_LIMIT_MODES.find((item) => item.id === mode)?.label || "Unlimited";
+}
+
+function ApiKeyUsageBar({ apiKey, className = "" }) {
+  const usage = apiKey.usage || {};
+  const active = usageProgress(apiKey, usage);
+  const progress = active.limit ? active.progress : 0;
+  const tone = barTone(progress, apiKey.status === "exhausted");
+  const resetText = apiKey.limitMode === "daily" || apiKey.limitMode === "weekly"
+    ? formatKeyReset(usage.resetAt)
+    : "no reset";
+  const isDual = apiKey.limitMode === DUAL_LIMIT_MODE;
+  const dailyLimit = getLimitProgress(apiKey, usage, "daily");
+  const weeklyLimit = getLimitProgress(apiKey, usage, "weekly");
+  const renderLine = (label, item) => (
+    <div className="mt-2">
+      <div className="mb-1 flex items-center justify-between text-[11px] text-text-muted">
+        <span>{label}</span>
+        <span>{formatTokens(item.used)} / {formatTokens(item.limit)}</span>
+      </div>
+      <div className="h-2 overflow-hidden rounded-full bg-black/5 dark:bg-white/10">
+        <div className={`h-full ${barTone(item.progress, apiKey.status === "exhausted")}`} style={{ width: `${item.progress}%` }} />
+      </div>
+      <div className="mt-1 flex justify-between text-[11px] text-text-muted">
+        <span>{item.progress}% used</span>
+        <span>{formatKeyReset(item.resetAt)}</span>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className={`w-full min-w-0 rounded-[10px] border border-border-subtle bg-surface px-3 py-2 ${className}`}>
+      <div className="mb-1 flex min-w-0 items-start justify-between gap-3 text-[11px] text-text-muted sm:items-center">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate font-medium text-text-main">{apiKey.name}</span>
+          <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-primary">
+            {getLimitModeLabel(apiKey.limitMode)}
+          </span>
+        </div>
+        {!isDual && (
+          <span className="shrink-0 text-right">
+            {formatTokens(active.used)} / {active.limit ? formatTokens(active.limit) : "unlimited"}
+          </span>
+        )}
+      </div>
+      {isDual ? (
+        <>
+          {renderLine("Daily limit", dailyLimit)}
+          {renderLine("Weekly limit", weeklyLimit)}
+        </>
+      ) : (
+        <>
+          <div className="h-2 overflow-hidden rounded-full bg-black/5 dark:bg-white/10">
+            <div className={`h-full ${tone}`} style={{ width: `${progress}%` }} />
+          </div>
+          <div className="mt-1 flex items-center justify-between text-[11px] text-text-muted">
+            <span>{active.limit ? `${progress}% used` : "unlimited"}</span>
+            <span>{resetText}</span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function APIPageClient({ machineId }) {
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [showKeyManager, setShowKeyManager] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
+  const [newKeyLimitMode, setNewKeyLimitMode] = useState("unlimited");
+  const [newKeyTokenLimit, setNewKeyTokenLimit] = useState("");
+  const [newKeyDailyTokenLimit, setNewKeyDailyTokenLimit] = useState("");
+  const [newKeyWeeklyTokenLimit, setNewKeyWeeklyTokenLimit] = useState("");
+  const [newKeyExpiresInHours, setNewKeyExpiresInHours] = useState("");
   const [createdKey, setCreatedKey] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
+  const [settingsKeyId, setSettingsKeyId] = useState(null);
+  const [keyEdits, setKeyEdits] = useState({});
+  const [savingKeyId, setSavingKeyId] = useState(null);
 
   const [requireApiKey, setRequireApiKey] = useState(false);
   const [requireLogin, setRequireLogin] = useState(true);
@@ -642,7 +832,14 @@ export default function APIPageClient({ machineId }) {
       const res = await fetch("/api/keys", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newKeyName }),
+        body: JSON.stringify({
+          name: newKeyName,
+          limitMode: newKeyLimitMode,
+          tokenLimit: newKeyLimitMode === "unlimited" || newKeyLimitMode === DUAL_LIMIT_MODE ? null : Number(newKeyTokenLimit),
+          dailyTokenLimit: newKeyLimitMode === DUAL_LIMIT_MODE ? Number(newKeyDailyTokenLimit) : null,
+          weeklyTokenLimit: newKeyLimitMode === DUAL_LIMIT_MODE ? Number(newKeyWeeklyTokenLimit) : null,
+          expiresInMs: newKeyExpiresInHours ? Number(newKeyExpiresInHours) * 60 * 60 * 1000 : null,
+        }),
       });
       const data = await res.json();
 
@@ -650,6 +847,11 @@ export default function APIPageClient({ machineId }) {
         setCreatedKey(data.key);
         await fetchData();
         setNewKeyName("");
+        setNewKeyLimitMode("unlimited");
+        setNewKeyTokenLimit("");
+        setNewKeyDailyTokenLimit("");
+        setNewKeyWeeklyTokenLimit("");
+        setNewKeyExpiresInHours("");
         setShowAddModal(false);
       }
     } catch (error) {
@@ -688,11 +890,83 @@ export default function APIPageClient({ machineId }) {
         body: JSON.stringify({ isActive }),
       });
       if (res.ok) {
-        setKeys(prev => prev.map(k => k.id === id ? { ...k, isActive } : k));
+        const data = await res.json();
+        setKeys(prev => prev.map(k => k.id === id ? (data.key || { ...k, isActive }) : k));
       }
     } catch (error) {
       console.log("Error toggling key:", error);
     }
+  };
+
+  const getKeyEdit = (key) => ({
+    limitMode: key.limitMode || "unlimited",
+    tokenLimit: key.tokenLimit || "",
+    dailyTokenLimit: key.dailyTokenLimit || "",
+    weeklyTokenLimit: key.weeklyTokenLimit || "",
+    expiresAt: toDateTimeLocal(key.expiresAt),
+    autoDeleteExpired: key.autoDeleteExpired !== false,
+    ...(keyEdits[key.id] || {}),
+  });
+
+  const updateKeyEdit = (keyId, patch) => {
+    setKeyEdits((prev) => ({
+      ...prev,
+      [keyId]: { ...(prev[keyId] || {}), ...patch },
+    }));
+  };
+
+  const saveKeyConfig = async (key) => {
+    const edit = getKeyEdit(key);
+    setSavingKeyId(key.id);
+    try {
+      const body = {
+        limitMode: edit.limitMode || "unlimited",
+        tokenLimit: edit.limitMode === "unlimited" || edit.limitMode === DUAL_LIMIT_MODE ? null : Number(edit.tokenLimit),
+        dailyTokenLimit: edit.limitMode === DUAL_LIMIT_MODE ? Number(edit.dailyTokenLimit) : null,
+        weeklyTokenLimit: edit.limitMode === DUAL_LIMIT_MODE ? Number(edit.weeklyTokenLimit) : null,
+        expiresAt: fromDateTimeLocal(edit.expiresAt),
+        autoDeleteExpired: edit.autoDeleteExpired !== false,
+      };
+      const res = await fetch(`/api/keys/${key.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setKeys((prev) => prev.map((k) => k.id === key.id ? data.key : k));
+        setKeyEdits((prev) => {
+          const next = { ...prev };
+          delete next[key.id];
+          return next;
+        });
+        setSettingsKeyId(null);
+      }
+    } catch (error) {
+      console.log("Error saving key config:", error);
+    } finally {
+      setSavingKeyId(null);
+    }
+  };
+
+  const resetKeyUsage = async (key, period) => {
+    const label = period === "all" ? "all-time" : period;
+    setConfirmState({
+      title: "Reset Token Usage",
+      message: `Reset ${label} token usage for "${key.name}"?`,
+      onConfirm: async () => {
+        setConfirmState(null);
+        try {
+          const res = await fetch(`/api/keys/${key.id}/usage?period=${period}`, { method: "DELETE" });
+          if (res.ok) {
+            const data = await res.json();
+            setKeys((prev) => prev.map((k) => (k.id === key.id ? data.key : k)));
+          }
+        } catch (error) {
+          console.log("Error resetting key usage:", error);
+        }
+      },
+    });
   };
 
   const maskKey = (fullKey) => {
@@ -728,6 +1002,12 @@ export default function APIPageClient({ machineId }) {
   }
 
   const currentEndpoint = baseUrl;
+  const settingsKey = settingsKeyId ? keys.find((key) => key.id === settingsKeyId) : null;
+  const limitedKeys = keys.filter((key) => key.limitMode !== "unlimited");
+  const previewKeys = keys.slice(0, 5);
+  const hiddenPreviewKeyCount = Math.max(0, keys.length - previewKeys.length);
+  const needsCreateTokenLimit = newKeyLimitMode !== "unlimited" && newKeyLimitMode !== DUAL_LIMIT_MODE && !newKeyTokenLimit;
+  const needsCreateDualLimits = newKeyLimitMode === DUAL_LIMIT_MODE && (!newKeyDailyTokenLimit || !newKeyWeeklyTokenLimit);
 
   return (
     <div className="flex flex-col gap-8">
@@ -1032,110 +1312,278 @@ export default function APIPageClient({ machineId }) {
 
       {/* API Keys */}
       <Card id="require-api-key">
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between gap-3 mb-4">
           <h2 className="text-lg font-semibold flex items-center gap-2">
             <span className="material-symbols-outlined text-primary">vpn_key</span>
             API Keys
           </h2>
-          <Button icon="add" onClick={() => setShowAddModal(true)}>
-            Create Key
-          </Button>
+          <button
+            type="button"
+            onClick={() => setShowKeyManager(true)}
+            className="flex size-9 items-center justify-center rounded-[10px] border border-border text-text-muted hover:bg-surface-2 hover:text-primary transition-colors"
+            title="Open API key manager"
+          >
+            <span className="material-symbols-outlined text-[20px]">settings</span>
+          </button>
         </div>
 
-        <div className="flex items-center justify-between pb-4 mb-4 border-b border-border">
-          <div>
-            <p className="font-medium">Require API key</p>
-            <p className="text-sm text-text-muted">
-              Requests without a valid key will be rejected
-            </p>
-          </div>
-          <Toggle
-            checked={requireApiKey}
-            onChange={() => handleRequireApiKey(!requireApiKey)}
+        <div className="grid gap-3 sm:grid-cols-3 mb-4">
+          <UsageStatBox label="Keys" value={keys.length} hint={`${keys.filter((key) => key.isActive !== false).length} active`} />
+          <UsageStatBox label="Limited" value={limitedKeys.length} hint="daily / weekly / dual / hard" />
+          <UsageStatBox
+            label="Token usage"
+            value={formatTokens(keys.reduce((sum, key) => sum + (key.usage?.periods?.allTime?.used || key.usage?.totalUsed || 0), 0))}
+            hint="all API keys"
           />
         </div>
 
-        {keys.length === 0 ? (
-          <div className="text-center py-12">
-            <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-primary/10 text-primary mb-4">
-              <span className="material-symbols-outlined text-[32px]">vpn_key</span>
-            </div>
-            <p className="text-text-main font-medium mb-1">No API keys yet</p>
-            <p className="text-sm text-text-muted mb-4">Create your first API key to get started</p>
-            <Button icon="add" onClick={() => setShowAddModal(true)}>
-              Create Key
-            </Button>
-          </div>
-        ) : (
-          <div className="flex flex-col">
-            {keys.map((key) => (
-              <div
-                key={key.id}
-                className={`group flex items-center justify-between py-3 border-b border-black/[0.03] dark:border-white/[0.03] last:border-b-0 ${key.isActive === false ? "opacity-60" : ""}`}
-              >
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium">{key.name}</p>
-                  <div className="flex items-center gap-2 mt-1">
-                    <code className="text-xs text-text-muted font-mono">
-                      {visibleKeys.has(key.id) ? key.key : maskKey(key.key)}
-                    </code>
-                    <button
-                      onClick={() => toggleKeyVisibility(key.id)}
-                      className="p-1 hover:bg-black/5 dark:hover:bg-white/5 rounded text-text-muted hover:text-primary opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all"
-                      title={visibleKeys.has(key.id) ? "Hide key" : "Show key"}
-                    >
-                      <span className="material-symbols-outlined text-[14px]">
-                        {visibleKeys.has(key.id) ? "visibility_off" : "visibility"}
-                      </span>
-                    </button>
-                    <button
-                      onClick={() => copy(key.key, key.id)}
-                      className="p-1 hover:bg-black/5 dark:hover:bg-white/5 rounded text-text-muted hover:text-primary opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all"
-                    >
-                      <span className="material-symbols-outlined text-[14px]">
-                        {copied === key.id ? "check" : "content_copy"}
-                      </span>
-                    </button>
-                  </div>
-                  <p className="text-xs text-text-muted mt-1">
-                    Created {new Date(key.createdAt).toLocaleDateString()}
-                  </p>
-                  {key.isActive === false && (
-                    <p className="text-xs text-orange-500 mt-1">Paused</p>
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  <Toggle
-                    size="sm"
-                    checked={key.isActive ?? true}
-                    onChange={(checked) => {
-                      if (key.isActive && !checked) {
-                        setConfirmState({
-                          title: "Pause API Key",
-                          message: `Pause API key "${key.name}"?\n\nThis key will stop working immediately but can be resumed later.`,
-                          onConfirm: async () => {
-                            setConfirmState(null);
-                            handleToggleKey(key.id, checked);
-                          }
-                        });
-                      } else {
-                        handleToggleKey(key.id, checked);
-                      }
-                    }}
-                    title={key.isActive ? "Pause key" : "Resume key"}
-                  />
-                  <button
-                    onClick={() => handleDeleteKey(key.id)}
-                    className="p-2 hover:bg-red-500/10 rounded text-red-500 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all"
-                  >
-                    <span className="material-symbols-outlined text-[18px]">delete</span>
-                  </button>
-                </div>
+        {previewKeys.length > 0 && (
+          <div className="mb-4 rounded-[10px] border border-border-subtle bg-bg p-3">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-text-main">API key quota usage</p>
+                <p className="text-xs text-text-muted">
+                  {hiddenPreviewKeyCount > 0 ? `Showing 5 keys, 4 visible. ${hiddenPreviewKeyCount} more in manager.` : "API keys with quota bars"}
+                </p>
               </div>
-            ))}
+              {hiddenPreviewKeyCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowKeyManager(true)}
+                  className="text-xs font-medium text-primary hover:underline"
+                >
+                  Manage all
+                </button>
+              )}
+            </div>
+            <div className="grid max-h-[316px] gap-2 overflow-y-auto pr-1">
+              {previewKeys.map((key) => (
+                <ApiKeyUsageBar key={key.id} apiKey={key} />
+              ))}
+            </div>
           </div>
         )}
+
+        <div className="flex items-center justify-between rounded-[10px] border border-border-subtle bg-bg px-4 py-3">
+          <div>
+            <p className="font-medium">Require API key</p>
+            <p className="text-sm text-text-muted">Requests without a valid key will be rejected</p>
+          </div>
+          <Toggle checked={requireApiKey} onChange={() => handleRequireApiKey(!requireApiKey)} />
+        </div>
       </Card>
+
+      <Modal
+        isOpen={showKeyManager}
+        title="API Key Manager"
+        size="full"
+        onClose={() => {
+          setShowKeyManager(false);
+          setSettingsKeyId(null);
+        }}
+      >
+        <div className="flex flex-col gap-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-text-main">{keys.length} keys</p>
+              <p className="text-xs text-text-muted">Use the cog on each key to edit limits, expiry, or reset usage.</p>
+            </div>
+            <Button icon="add" onClick={() => setShowAddModal(true)}>Create Key</Button>
+          </div>
+
+          {keys.length === 0 ? (
+            <div className="text-center py-12 rounded-[10px] border border-border-subtle bg-bg">
+              <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-primary/10 text-primary mb-4">
+                <span className="material-symbols-outlined text-[30px]">vpn_key</span>
+              </div>
+              <p className="text-text-main font-medium mb-1">No API keys yet</p>
+              <p className="text-sm text-text-muted mb-4">Create your first API key to get started</p>
+              <Button icon="add" onClick={() => setShowAddModal(true)}>Create Key</Button>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3">
+              {keys.map((key) => {
+                const usage = key.usage || {};
+                const status = keyStatusMeta(key.status || (key.isActive === false ? "paused" : "active"));
+                const daily = getUsagePeriod(usage, "daily");
+                const weekly = getUsagePeriod(usage, "weekly");
+                const allTime = getUsagePeriod(usage, "allTime");
+
+                return (
+                  <div
+                    key={key.id}
+                    className={`group rounded-[10px] border border-border-subtle bg-bg p-3 ${key.isActive === false ? "opacity-60" : ""}`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-medium truncate">{key.name}</p>
+                          <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${status.className}`}>{status.label}</span>
+                          <span className="rounded px-1.5 py-0.5 text-[10px] font-medium bg-surface-2 text-text-muted">
+                            {key.limitMode || "unlimited"}
+                          </span>
+                        </div>
+                        <div className="mt-1 flex items-center gap-2 min-w-0">
+                          <code className="text-xs text-text-muted font-mono truncate">
+                            {visibleKeys.has(key.id) ? key.key : maskKey(key.key)}
+                          </code>
+                          <button
+                            onClick={() => toggleKeyVisibility(key.id)}
+                            className="p-1 hover:bg-black/5 dark:hover:bg-white/5 rounded text-text-muted hover:text-primary transition-colors"
+                            title={visibleKeys.has(key.id) ? "Hide key" : "Show key"}
+                          >
+                            <span className="material-symbols-outlined text-[14px]">
+                              {visibleKeys.has(key.id) ? "visibility_off" : "visibility"}
+                            </span>
+                          </button>
+                          <button
+                            onClick={() => copy(key.key, key.id)}
+                            className="p-1 hover:bg-black/5 dark:hover:bg-white/5 rounded text-text-muted hover:text-primary transition-colors"
+                            title="Copy key"
+                          >
+                            <span className="material-symbols-outlined text-[14px]">
+                              {copied === key.id ? "check" : "content_copy"}
+                            </span>
+                          </button>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <Toggle
+                          size="sm"
+                          checked={key.isActive ?? true}
+                          onChange={(checked) => {
+                            if (key.isActive && !checked) {
+                              setConfirmState({
+                                title: "Pause API Key",
+                                message: `Pause API key "${key.name}"?\n\nThis key will stop working immediately but can be resumed later.`,
+                                onConfirm: async () => {
+                                  setConfirmState(null);
+                                  handleToggleKey(key.id, checked);
+                                },
+                              });
+                            } else {
+                              handleToggleKey(key.id, checked);
+                            }
+                          }}
+                          title={key.isActive ? "Pause key" : "Resume key"}
+                        />
+                        <button
+                          onClick={() => setSettingsKeyId(key.id)}
+                          className="p-2 rounded-[10px] border border-border text-text-muted hover:bg-surface-2 hover:text-primary transition-colors"
+                          title="Key settings"
+                        >
+                          <span className="material-symbols-outlined text-[18px]">settings</span>
+                        </button>
+                        <button
+                          onClick={() => handleDeleteKey(key.id)}
+                          className="p-2 rounded-[10px] text-red-500 hover:bg-red-500/10 transition-colors"
+                          title="Delete key"
+                        >
+                          <span className="material-symbols-outlined text-[18px]">delete</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                      <UsageStatBox label="All time" value={formatTokens(allTime.used || usage.totalUsed)} hint={`${allTime.requests || usage.totalRequests || 0} req`} />
+                      <UsageStatBox label="Daily" value={formatTokens(daily.used)} hint={formatKeyReset(daily.resetAt)} tone={key.limitMode === "daily" || key.limitMode === DUAL_LIMIT_MODE ? "warning" : "default"} />
+                      <UsageStatBox label="Weekly" value={formatTokens(weekly.used)} hint={formatKeyReset(weekly.resetAt)} tone={key.limitMode === "weekly" || key.limitMode === DUAL_LIMIT_MODE ? "warning" : "default"} />
+                    </div>
+
+                    <div className="mt-3 space-y-2">
+                      <ApiKeyUsageBar apiKey={key} />
+                      <p className="text-[11px] text-text-muted">
+                        Expires {formatCompactDateTime(key.expiresAt)}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={!!settingsKey}
+        title={settingsKey ? `Key Settings: ${settingsKey.name}` : "Key Settings"}
+        onClose={() => setSettingsKeyId(null)}
+      >
+        {settingsKey && (() => {
+          const edit = getKeyEdit(settingsKey);
+          const isDual = edit.limitMode === DUAL_LIMIT_MODE;
+          const saveDisabled = savingKeyId === settingsKey.id
+            || (isDual && (!edit.dailyTokenLimit || !edit.weeklyTokenLimit))
+            || (!["unlimited", DUAL_LIMIT_MODE].includes(edit.limitMode) && !edit.tokenLimit);
+          return (
+            <div className="flex flex-col gap-4">
+              <label className="text-sm text-text-muted">
+                <span className="block mb-1 font-medium text-text-primary">Mode</span>
+                <select
+                  value={edit.limitMode}
+                  onChange={(e) => updateKeyEdit(settingsKey.id, { limitMode: e.target.value })}
+                  className="h-10 w-full rounded-[10px] border border-border bg-surface px-3 text-sm text-text-primary"
+                >
+                  {API_KEY_LIMIT_MODES.map((mode) => (
+                    <option key={mode.id} value={mode.id}>{mode.label}</option>
+                  ))}
+                </select>
+              </label>
+              <Input
+                label="Token limit"
+                type="number"
+                min="1"
+                value={edit.tokenLimit}
+                disabled={edit.limitMode === "unlimited" || isDual}
+                onChange={(e) => updateKeyEdit(settingsKey.id, { tokenLimit: e.target.value })}
+              />
+              {isDual && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <Input
+                    label="Daily token limit"
+                    type="number"
+                    min="1"
+                    value={edit.dailyTokenLimit}
+                    onChange={(e) => updateKeyEdit(settingsKey.id, { dailyTokenLimit: e.target.value })}
+                  />
+                  <Input
+                    label="Weekly token limit"
+                    type="number"
+                    min="1"
+                    value={edit.weeklyTokenLimit}
+                    onChange={(e) => updateKeyEdit(settingsKey.id, { weeklyTokenLimit: e.target.value })}
+                  />
+                </div>
+              )}
+              <Input
+                label="Expires"
+                type="datetime-local"
+                value={edit.expiresAt}
+                onChange={(e) => updateKeyEdit(settingsKey.id, { expiresAt: e.target.value })}
+              />
+              <div className="flex items-center justify-between rounded-[10px] border border-border-subtle bg-bg px-3 py-2">
+                <span className="text-sm font-medium text-text-main">Auto-delete expired</span>
+                <Toggle
+                  size="sm"
+                  checked={edit.autoDeleteExpired !== false}
+                  onChange={(checked) => updateKeyEdit(settingsKey.id, { autoDeleteExpired: checked })}
+                />
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <Button variant="outline" size="sm" onClick={() => resetKeyUsage(settingsKey, "daily")}>Reset Daily</Button>
+                <Button variant="outline" size="sm" onClick={() => resetKeyUsage(settingsKey, "weekly")}>Reset Weekly</Button>
+                <Button variant="danger" size="sm" onClick={() => resetKeyUsage(settingsKey, "all")}>Reset All</Button>
+              </div>
+              <Button
+                onClick={() => saveKeyConfig(settingsKey)}
+                disabled={saveDisabled}
+              >
+                {savingKeyId === settingsKey.id ? "Saving..." : "Save Settings"}
+              </Button>
+            </div>
+          );
+        })()}
+      </Modal>
 
       {/* Add Key Modal */}
       <Modal
@@ -1144,6 +1592,11 @@ export default function APIPageClient({ machineId }) {
         onClose={() => {
           setShowAddModal(false);
           setNewKeyName("");
+          setNewKeyLimitMode("unlimited");
+          setNewKeyTokenLimit("");
+          setNewKeyDailyTokenLimit("");
+          setNewKeyWeeklyTokenLimit("");
+          setNewKeyExpiresInHours("");
         }}
       >
         <div className="flex flex-col gap-4">
@@ -1153,14 +1606,86 @@ export default function APIPageClient({ machineId }) {
             onChange={(e) => setNewKeyName(e.target.value)}
             placeholder="Production Key"
           />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label className="text-sm text-text-muted">
+              <span className="block mb-1 font-medium text-text-primary">Token mode</span>
+              <select
+                value={newKeyLimitMode}
+                onChange={(e) => setNewKeyLimitMode(e.target.value)}
+                className="h-10 w-full rounded border border-border bg-surface px-3 text-sm text-text-primary"
+              >
+                {API_KEY_LIMIT_MODES.map((mode) => (
+                  <option key={mode.id} value={mode.id}>{mode.label}</option>
+                ))}
+              </select>
+            </label>
+            <label className="text-sm text-text-muted">
+              <span className="block mb-1 font-medium text-text-primary">Token limit</span>
+              <input
+                type="number"
+                min="1"
+                value={newKeyTokenLimit}
+                disabled={newKeyLimitMode === "unlimited" || newKeyLimitMode === DUAL_LIMIT_MODE}
+                onChange={(e) => setNewKeyTokenLimit(e.target.value)}
+                placeholder="100000"
+                className="h-10 w-full rounded border border-border bg-surface px-3 text-sm text-text-primary disabled:opacity-50"
+              />
+            </label>
+          </div>
+          {newKeyLimitMode === DUAL_LIMIT_MODE && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <label className="text-sm text-text-muted">
+                <span className="block mb-1 font-medium text-text-primary">Daily token limit</span>
+                <input
+                  type="number"
+                  min="1"
+                  value={newKeyDailyTokenLimit}
+                  onChange={(e) => setNewKeyDailyTokenLimit(e.target.value)}
+                  placeholder="5000000"
+                  className="h-10 w-full rounded border border-border bg-surface px-3 text-sm text-text-primary"
+                />
+              </label>
+              <label className="text-sm text-text-muted">
+                <span className="block mb-1 font-medium text-text-primary">Weekly token limit</span>
+                <input
+                  type="number"
+                  min="1"
+                  value={newKeyWeeklyTokenLimit}
+                  onChange={(e) => setNewKeyWeeklyTokenLimit(e.target.value)}
+                  placeholder="20000000"
+                  className="h-10 w-full rounded border border-border bg-surface px-3 text-sm text-text-primary"
+                />
+              </label>
+            </div>
+          )}
+          <label className="text-sm text-text-muted">
+            <span className="block mb-1 font-medium text-text-primary">Expire after hours</span>
+            <input
+              type="number"
+              min="1"
+              value={newKeyExpiresInHours}
+              onChange={(e) => setNewKeyExpiresInHours(e.target.value)}
+              placeholder="Blank = permanent"
+              className="h-10 w-full rounded border border-border bg-surface px-3 text-sm text-text-primary"
+            />
+          </label>
           <div className="flex gap-2">
-            <Button onClick={handleCreateKey} fullWidth disabled={!newKeyName.trim()}>
+            <Button
+              onClick={handleCreateKey}
+              fullWidth
+              disabled={!newKeyName.trim() || needsCreateTokenLimit || needsCreateDualLimits}
+            >
               Create
             </Button>
             <Button
               onClick={() => {
                 setShowAddModal(false);
                 setNewKeyName("");
+                setNewKeyLimitMode("unlimited");
+                setNewKeyTokenLimit("");
+                setNewKeyDailyTokenLimit("");
+                setNewKeyWeeklyTokenLimit("");
+                setNewKeyExpiresInHours("");
               }}
               variant="ghost"
               fullWidth

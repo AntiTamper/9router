@@ -4,6 +4,14 @@
 export const VALID_OPENAI_CONTENT_TYPES = ["text", "image_url", "image", "input_audio", "audio_url"];
 export const VALID_OPENAI_MESSAGE_TYPES = ["text", "image_url", "image", "tool_calls", "tool_result"];
 
+function normalizeOpenAIContent(content) {
+  if (!content.length) return [{ type: "text", text: "" }];
+  if (content.every((block) => block.type === "text")) {
+    return content.map((block) => block.text || "").join("\n");
+  }
+  return content;
+}
+
 // Filter messages to OpenAI standard format
 // Remove: thinking, redacted_thinking, signature, and other non-OpenAI blocks
 export function filterToOpenAIFormat(body) {
@@ -50,7 +58,7 @@ export function filterToOpenAIFormat(body) {
         filteredContent.push({ type: "text", text: "" });
       }
       
-      return { ...msg, content: filteredContent };
+      return { ...msg, content: normalizeOpenAIContent(filteredContent) };
     }
     
     return msg;
@@ -64,6 +72,7 @@ export function filterToOpenAIFormat(body) {
     if (msg.role === "assistant" && msg.tool_calls) return true;
     
     if (typeof msg.content === "string") return msg.content.trim() !== "";
+    if (typeof msg.content !== "object") return true;
     if (Array.isArray(msg.content)) {
       return msg.content.some(b => 
         (b.type === "text" && b.text?.trim()) ||
