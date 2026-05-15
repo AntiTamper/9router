@@ -45,9 +45,9 @@ export function formatResetTime(date) {
  * @returns {string} Color name: "green" | "yellow" | "red"
  */
 export function getStatusColor(percentage) {
-  if (percentage > 70) return "green";
-  if (percentage >= 30) return "yellow";
-  return "red"; // 0-29% including 0% (out of quota) - show red
+  if (percentage >= 60) return "green";
+  if (percentage > 20) return "yellow";
+  return "red";
 }
 
 /**
@@ -56,9 +56,9 @@ export function getStatusColor(percentage) {
  * @returns {string} Emoji: "🟢" | "🟡" | "🔴"
  */
 export function getStatusEmoji(percentage) {
-  if (percentage > 70) return "🟢";
-  if (percentage >= 30) return "🟡";
-  return "🔴"; // 0-29% including 0% (out of quota) - show red
+  if (percentage >= 60) return "🟢";
+  if (percentage > 20) return "🟡";
+  return "🔴";
 }
 
 /**
@@ -120,7 +120,7 @@ export function buildProviderQuotaAverages(connections = [], quotaData = {}) {
       group.measuredAccounts += 1;
       group.totalRemaining += accountAverage;
       if (accountAverage <= 0) group.exhaustedCount += 1;
-      else if (accountAverage < 30) group.lowCount += 1;
+      else if (accountAverage < 60) group.lowCount += 1;
     } else if (conn.quotaAutoDisabled) {
       group.exhaustedCount += 1;
     }

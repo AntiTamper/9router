@@ -470,13 +470,13 @@ export default function ProviderLimits() {
     (data) => data?.quotas?.length > 0,
   ).length;
 
-  // Count low quotas (remaining < 30%)
+  // Count yellow/red quotas (remaining < 60%)
   const lowQuotasCount = Object.values(quotaData).reduce((count, data) => {
     if (!data?.quotas) return count;
 
     const hasLowQuota = data.quotas.some((quota) => {
       const percentage = calculatePercentage(quota.used, quota.total);
-      return percentage < 30 && quota.total > 0;
+      return percentage < 60 && quota.total > 0;
     });
 
     return count + (hasLowQuota ? 1 : 0);
@@ -670,13 +670,13 @@ export default function ProviderLimits() {
             const value = avg.averageRemaining;
             const color =
               value === null ? "bg-black/10 dark:bg-white/10" :
-              value > 70 ? "bg-green-500" :
-              value >= 30 ? "bg-yellow-500" :
+              value >= 60 ? "bg-green-500" :
+              value > 20 ? "bg-yellow-500" :
               "bg-red-500";
             const textColor =
               value === null ? "text-text-muted" :
-              value > 70 ? "text-green-600 dark:text-green-400" :
-              value >= 30 ? "text-yellow-600 dark:text-yellow-400" :
+              value >= 60 ? "text-green-600 dark:text-green-400" :
+              value > 20 ? "text-yellow-600 dark:text-yellow-400" :
               "text-red-600 dark:text-red-400";
 
             return (

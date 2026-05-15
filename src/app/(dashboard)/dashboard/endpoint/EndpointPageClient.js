@@ -133,9 +133,9 @@ function getLimitProgress(key, usage, period) {
 }
 
 function barTone(progress, exhausted = false) {
-  if (exhausted || progress >= 100) return "bg-red-500";
-  if (progress >= 80) return "bg-orange-500";
-  return "bg-primary";
+  if (exhausted || progress >= 80) return "bg-red-500";
+  if (progress > 40) return "bg-yellow-500";
+  return "bg-green-500";
 }
 
 function UsageStatBox({ label, value, hint, tone = "default" }) {
