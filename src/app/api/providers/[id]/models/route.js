@@ -222,8 +222,6 @@ const PROVIDER_MODELS_CONFIG = {
   kimi: {
     customResolver: createFallbackOpenAIModelsResolver([
       "https://api.kimi.com/coding/v1/models",
-      "https://api.moonshot.ai/v1/models",
-      "https://api.moonshot.cn/v1/models",
     ])
   },
   "kimi-api": {

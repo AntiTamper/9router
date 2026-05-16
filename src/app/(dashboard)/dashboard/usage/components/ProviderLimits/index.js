@@ -124,7 +124,11 @@ export default function ProviderLimits() {
     const connectionId = connection?.id;
     const provider = connection?.provider;
     if (!connectionId || !provider) return;
-    if (!force && !isPageVisible()) return;
+    if (!isPageVisible()) {
+      setLoading((prev) => ({ ...prev, [connectionId]: false }));
+      setQuotaCompleted((prev) => ({ ...prev, [connectionId]: false }));
+      return;
+    }
 
     const cached = !force
       ? getCachedQuotaDataForConnections([connection])[connectionId]
@@ -982,7 +986,7 @@ export default function ProviderLimits() {
 
               {!isCollapsed && (
               <div className="max-h-[34rem] overflow-y-auto pr-1">
-                <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   {providerConnections.map((conn) => {
           const quota = quotaData[conn.id];
           const isLoading = loading[conn.id];

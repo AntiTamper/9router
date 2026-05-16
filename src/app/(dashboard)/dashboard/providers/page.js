@@ -257,6 +257,7 @@ export default function ProvidersPage() {
           }),
         );
         if (cancelled) return;
+        if (!isPageVisible()) return;
       }
 
       if (!cancelled) {

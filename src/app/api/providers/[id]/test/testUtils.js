@@ -448,8 +448,6 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
       case "kimi": {
         const endpoints = [
           PROVIDER_ENDPOINTS.kimi,
-          "https://api.moonshot.ai/v1/chat/completions",
-          "https://api.moonshot.cn/v1/chat/completions",
         ];
         for (const endpoint of endpoints) {
           const res = await fetchWithConnectionProxy(endpoint, {

@@ -325,10 +325,6 @@ export const PROVIDER_MODELS = {
   ],
   kimi: [
     { id: "kimi-for-coding", name: "Kimi for Coding" },
-    { id: "kimi-k2.6", name: "Kimi K2.6" },
-    { id: "kimi-k2.5", name: "Kimi K2.5" },
-    { id: "kimi-k2.5-thinking", name: "Kimi K2.5 Thinking" },
-    { id: "kimi-latest", name: "Kimi Latest" },
   ],
   "kimi-api": [
     { id: "kimi-k2.6", name: "Kimi K2.6" },

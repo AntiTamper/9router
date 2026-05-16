@@ -145,12 +145,12 @@ export const PROVIDERS = {
     headers: {}
   },
   kimi: {
-    baseUrls: [KIMI_CODING_OPENAI_BASE_URL, ...KIMI_API_BASE_URLS],
+    baseUrls: [KIMI_CODING_OPENAI_BASE_URL],
     baseUrl: KIMI_CODING_OPENAI_BASE_URL,
     openaiBaseUrl: KIMI_CODING_OPENAI_BASE_URL,
     anthropicBaseUrl: KIMI_CODING_BASE_URL,
     modelsUrl: KIMI_CODING_MODELS_URL,
-    modelsUrls: [KIMI_CODING_MODELS_URL, ...KIMI_API_MODELS_URLS],
+    modelsUrls: [KIMI_CODING_MODELS_URL],
     format: "openai",
     headers: {}
   },

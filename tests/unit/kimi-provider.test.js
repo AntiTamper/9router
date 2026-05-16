@@ -7,14 +7,12 @@ import {
 } from "../../open-sse/services/provider.js";
 
 describe("Kimi Code API key provider", () => {
-  it("uses the Kimi Code OpenAI-compatible endpoint with platform fallbacks", () => {
+  it("uses the Kimi Code OpenAI-compatible endpoint", () => {
     expect(PROVIDERS.kimi.baseUrl).toBe(
       "https://api.kimi.com/coding/v1/chat/completions",
     );
     expect(PROVIDERS.kimi.baseUrls).toEqual([
       "https://api.kimi.com/coding/v1/chat/completions",
-      "https://api.moonshot.ai/v1/chat/completions",
-      "https://api.moonshot.cn/v1/chat/completions",
     ]);
 
     const executor = new DefaultExecutor("kimi");
@@ -26,8 +24,8 @@ describe("Kimi Code API key provider", () => {
 
   it("does not append Claude beta query params to Kimi Code requests", () => {
     const executor = new DefaultExecutor("kimi");
-    expect(executor.getFallbackCount()).toBe(3);
-    expect(executor.shouldRetry(401, 0)).toBe(true);
+    expect(executor.getFallbackCount()).toBe(1);
+    expect(executor.shouldRetry(401, 0)).toBe(false);
     expect(executor.buildUrl("kimi-for-coding", true)).not.toContain("beta=true");
   });
 
