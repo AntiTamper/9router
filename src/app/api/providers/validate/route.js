@@ -81,6 +81,25 @@ async function probeMediaProvider(provider, apiKey) {
   return res.status !== 401 && res.status !== 403;
 }
 
+async function validateOpenAIChatEndpoints(apiKey, endpoints, model) {
+  for (const endpoint of endpoints.filter(Boolean)) {
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 1,
+        messages: [{ role: "user", content: "test" }],
+      }),
+    });
+    if (res.status !== 401 && res.status !== 403) return true;
+  }
+  return false;
+}
+
 // POST /api/providers/validate - Validate API key with provider
 export async function POST(request) {
   try {
@@ -283,6 +302,7 @@ export async function POST(request) {
         case "glm":
         case "glm-cn":
         case "kimi":
+        case "kimi-api":
         case "minimax":
         case "minimax-cn":
         case "alicode-intl":
@@ -290,55 +310,18 @@ export async function POST(request) {
         case "agentrouter": {
           // Use baseUrl from PROVIDERS (DRY); separate openai-format vs claude-format flow
           const cfg = PROVIDERS[provider];
-          const isOpenAiFormat = provider === "glm-cn" || provider === "alicode" || provider === "alicode-intl";
+          const isOpenAiFormat = provider === "glm-cn" || provider === "alicode" || provider === "alicode-intl" || provider === "kimi" || provider === "kimi-api";
 
           if (isOpenAiFormat) {
             const testModel = getDefaultModel(provider);
-            const res = await fetch(cfg.baseUrl, {
-              method: "POST",
-              headers: { "Authorization": `Bearer ${apiKey}`, "content-type": "application/json" },
-              body: JSON.stringify({ model: testModel, max_tokens: 1, messages: [{ role: "user", content: "test" }] }),
-            });
-            isValid = res.status !== 401 && res.status !== 403;
+            const endpoints = provider === "kimi" || provider === "kimi-api"
+              ? (cfg.baseUrls || [cfg.baseUrl])
+              : [cfg.baseUrl];
+            isValid = await validateOpenAIChatEndpoints(apiKey, endpoints, testModel);
           } else {
             const testModel = getDefaultModel(provider) || "claude-sonnet-4-20250514";
-            if (provider === "kimi") {
-              const anthropicRes = await fetch(cfg.baseUrl, {
-                method: "POST",
-                headers: {
-                  "Authorization": `Bearer ${apiKey}`,
-                  "x-api-key": apiKey,
-                  "anthropic-version": "2023-06-01",
-                  "content-type": "application/json",
-                  ...(cfg.headers || {}),
-                },
-                body: JSON.stringify({ model: testModel, max_tokens: 1, messages: [{ role: "user", content: "test" }] }),
-              });
-              if (anthropicRes.status !== 401 && anthropicRes.status !== 403) {
-                isValid = true;
-                break;
-              }
-
-              const openaiRes = await fetch(cfg.openaiBaseUrl, {
-                method: "POST",
-                headers: {
-                  "Authorization": `Bearer ${apiKey}`,
-                  "content-type": "application/json",
-                },
-                body: JSON.stringify({ model: testModel, max_tokens: 1, messages: [{ role: "user", content: "test" }] }),
-              });
-              isValid = openaiRes.status !== 401 && openaiRes.status !== 403;
-              break;
-            }
-            const authHeaders = provider === "kimi"
-              ? {
-                  "Authorization": `Bearer ${apiKey}`,
-                  "x-api-key": apiKey,
-                }
-              : { "x-api-key": apiKey };
-            const endpoints = provider === "kimi"
-              ? [cfg.baseUrl, "https://api.kimi.com/coding/v1/messages"]
-              : [cfg.baseUrl];
+            const authHeaders = { "x-api-key": apiKey };
+            const endpoints = [cfg.baseUrl];
             isValid = false;
             for (const endpoint of endpoints) {
               const res = await fetch(endpoint, {

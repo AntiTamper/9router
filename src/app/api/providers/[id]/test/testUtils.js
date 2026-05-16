@@ -448,31 +448,37 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
       case "kimi": {
         const endpoints = [
           PROVIDER_ENDPOINTS.kimi,
-          "https://api.kimi.com/coding/v1/chat/completions",
+          "https://api.moonshot.ai/v1/chat/completions",
+          "https://api.moonshot.cn/v1/chat/completions",
         ];
-        const requests = [
-          {
-            endpoint: endpoints[0],
-            headers: {
-              "Authorization": `Bearer ${connection.apiKey}`,
-              "x-api-key": connection.apiKey,
-              "anthropic-version": "2023-06-01",
-              "content-type": "application/json",
-            },
-          },
-          {
-            endpoint: endpoints[1],
-            headers: {
-              "Authorization": `Bearer ${connection.apiKey}`,
-              "content-type": "application/json",
-            },
-          },
-        ];
-        for (const request of requests) {
-          const res = await fetchWithConnectionProxy(request.endpoint, {
+        for (const endpoint of endpoints) {
+          const res = await fetchWithConnectionProxy(endpoint, {
             method: "POST",
-            headers: request.headers,
+            headers: {
+              "Authorization": `Bearer ${connection.apiKey}`,
+              "content-type": "application/json",
+            },
             body: JSON.stringify({ model: getDefaultModel("kimi"), max_tokens: 1, messages: [{ role: "user", content: "test" }] }),
+          }, effectiveProxy);
+          if (res.status !== 401 && res.status !== 403) {
+            return { valid: true, error: null };
+          }
+        }
+        return { valid: false, error: "Invalid API key" };
+      }
+      case "kimi-api": {
+        const endpoints = [
+          PROVIDER_ENDPOINTS["kimi-api"],
+          "https://api.moonshot.cn/v1/chat/completions",
+        ];
+        for (const endpoint of endpoints) {
+          const res = await fetchWithConnectionProxy(endpoint, {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${connection.apiKey}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ model: getDefaultModel("kimi-api"), max_tokens: 1, messages: [{ role: "user", content: "test" }] }),
           }, effectiveProxy);
           if (res.status !== 401 && res.status !== 403) {
             return { valid: true, error: null };

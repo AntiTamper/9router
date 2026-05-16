@@ -31,6 +31,10 @@ const REFRESH_INTERVAL_OPTIONS = [
   { label: "15m", value: 900000 },
 ];
 
+function isPageVisible() {
+  return typeof document === "undefined" || document.visibilityState === "visible";
+}
+
 function readQuotaUiSettings() {
   if (typeof window === "undefined") return {};
   try {
@@ -82,9 +86,21 @@ export default function ProviderLimits() {
   const [providerMenuOpen, setProviderMenuOpen] = useState(false);
   const [bulkToggling, setBulkToggling] = useState(false);
   const [settingsSyncReady, setSettingsSyncReady] = useState(false);
+  const [collapsedProviders, setCollapsedProviders] = useState({});
 
   const intervalRef = useRef(null);
   const countdownRef = useRef(null);
+
+  const clearRefreshTimers = useCallback(() => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    if (countdownRef.current) {
+      clearInterval(countdownRef.current);
+      countdownRef.current = null;
+    }
+  }, []);
 
   // Fetch all provider connections
   const fetchConnections = useCallback(async () => {
@@ -108,6 +124,7 @@ export default function ProviderLimits() {
     const connectionId = connection?.id;
     const provider = connection?.provider;
     if (!connectionId || !provider) return;
+    if (!force && !isPageVisible()) return;
 
     const cached = !force
       ? getCachedQuotaDataForConnections([connection])[connectionId]
@@ -276,6 +293,9 @@ export default function ProviderLimits() {
     const uiSettings = readQuotaUiSettings();
     if (uiSettings.providerFilter) setProviderFilter(uiSettings.providerFilter);
     if (uiSettings.expiringFirst === true) setExpiringFirst(true);
+    if (uiSettings.collapsedProviders && typeof uiSettings.collapsedProviders === "object") {
+      setCollapsedProviders(uiSettings.collapsedProviders);
+    }
 
     fetch("/api/settings", { cache: "no-store" })
       .then((res) => res.json())
@@ -314,6 +334,7 @@ export default function ProviderLimits() {
   // Refresh all providers
   const refreshAll = useCallback(async () => {
     if (refreshingAll) return;
+    if (!isPageVisible()) return;
 
     setRefreshingAll(true);
     setCountdown(Math.max(1, Math.round(refreshIntervalMs / 1000)));
@@ -362,18 +383,21 @@ export default function ProviderLimits() {
 
       const loadingState = {};
       const completedState = {};
+      const visible = isPageVisible();
       eligibleConnections.forEach((conn) => {
-        loadingState[conn.id] = !cachedIds.has(conn.id);
+        loadingState[conn.id] = visible && !cachedIds.has(conn.id);
         completedState[conn.id] = cachedIds.has(conn.id);
       });
       setQuotaData(cachedQuotaData);
       setLoading(loadingState);
       setQuotaCompleted(completedState);
 
-      await Promise.all(
-        pendingConnections.map((conn) => fetchQuota(conn)),
-      );
-      if (pendingConnections.length > 0) await fetchConnections();
+      if (visible) {
+        await Promise.all(
+          pendingConnections.map((conn) => fetchQuota(conn)),
+        );
+        if (pendingConnections.length > 0) await fetchConnections();
+      }
       setLastUpdated(new Date());
     };
 
@@ -397,21 +421,14 @@ export default function ProviderLimits() {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(
       UI_SETTINGS_STORAGE_KEY,
-      JSON.stringify({ providerFilter, expiringFirst }),
+      JSON.stringify({ providerFilter, expiringFirst, collapsedProviders }),
     );
-  }, [providerFilter, expiringFirst]);
+  }, [providerFilter, expiringFirst, collapsedProviders]);
 
   // Auto-refresh interval
   useEffect(() => {
-    if (!refreshIntervalMs) {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-      if (countdownRef.current) {
-        clearInterval(countdownRef.current);
-        countdownRef.current = null;
-      }
+    clearRefreshTimers();
+    if (!refreshIntervalMs || !isPageVisible()) {
       return;
     }
 
@@ -430,25 +447,18 @@ export default function ProviderLimits() {
     }, 1000);
 
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-      if (countdownRef.current) clearInterval(countdownRef.current);
+      clearRefreshTimers();
     };
-  }, [refreshIntervalMs, refreshAll]);
+  }, [refreshIntervalMs, refreshAll, clearRefreshTimers]);
 
   // Pause auto-refresh when tab is hidden (Page Visibility API)
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.hidden) {
-        if (intervalRef.current) {
-          clearInterval(intervalRef.current);
-          intervalRef.current = null;
-        }
-        if (countdownRef.current) {
-          clearInterval(countdownRef.current);
-          countdownRef.current = null;
-        }
+        clearRefreshTimers();
       } else if (refreshIntervalMs) {
         // Resume auto-refresh when tab becomes visible
+        clearRefreshTimers();
         intervalRef.current = setInterval(refreshAll, refreshIntervalMs);
         setCountdown(Math.max(1, Math.round(refreshIntervalMs / 1000)));
         countdownRef.current = setInterval(() => {
@@ -457,13 +467,19 @@ export default function ProviderLimits() {
           ));
         }, 1000);
       }
+      if (!document.hidden) {
+        const missing = connections
+          .filter(isUsageEligible)
+          .filter((conn) => !quotaData[conn.id] && !loading[conn.id]);
+        missing.forEach((conn) => fetchQuota(conn));
+      }
     };
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [refreshIntervalMs, refreshAll]);
+  }, [refreshIntervalMs, refreshAll, clearRefreshTimers, connections, quotaData, loading, fetchQuota]);
 
   // Filter eligible connections (OAuth + whitelisted apikey)
   const filteredConnections = useMemo(
@@ -893,6 +909,7 @@ export default function ProviderLimits() {
           const avg = providerAverageMap.get(provider);
           const avgValue = avg?.averageRemaining ?? null;
           const avgLoading = avg?.isLoading === true;
+          const isCollapsed = collapsedProviders[provider] === true;
           const barColor = avgLoading
             ? "bg-transparent"
             : avgValue === null
@@ -926,29 +943,46 @@ export default function ProviderLimits() {
                     </p>
                   </div>
                 </div>
-                <div className="w-28 shrink-0">
-                  <div className="mb-1 text-right text-xs font-semibold text-text-primary">
-                    {avgLoading ? (
-                      <span className="material-symbols-outlined text-[14px] animate-spin text-text-muted">
-                        progress_activity
-                      </span>
-                    ) : avgValue === null ? "N/A" : `${avgValue}%`}
+                <div className="flex shrink-0 items-center gap-2">
+                  <div className="w-28">
+                    <div className="mb-1 text-right text-xs font-semibold text-text-primary">
+                      {avgLoading ? (
+                        <span className="material-symbols-outlined text-[14px] animate-spin text-text-muted">
+                          progress_activity
+                        </span>
+                      ) : avgValue === null ? "N/A" : `${avgValue}%`}
+                    </div>
+                    <div className="h-1.5 overflow-hidden rounded-full bg-black/5 dark:bg-white/10">
+                      {avgLoading ? (
+                        <div className="h-full w-full animate-pulse bg-gradient-to-r from-black/5 via-black/20 to-black/5 dark:from-white/5 dark:via-white/25 dark:to-white/5" />
+                      ) : (
+                        <div
+                          className={`h-full ${barColor}`}
+                          style={{ width: `${avgValue === null ? 0 : Math.min(avgValue, 100)}%` }}
+                        />
+                      )}
+                    </div>
                   </div>
-                  <div className="h-1.5 overflow-hidden rounded-full bg-black/5 dark:bg-white/10">
-                    {avgLoading ? (
-                      <div className="h-full w-full animate-pulse bg-gradient-to-r from-black/5 via-black/20 to-black/5 dark:from-white/5 dark:via-white/25 dark:to-white/5" />
-                    ) : (
-                      <div
-                        className={`h-full ${barColor}`}
-                        style={{ width: `${avgValue === null ? 0 : Math.min(avgValue, 100)}%` }}
-                      />
-                    )}
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setCollapsedProviders((prev) => ({
+                      ...prev,
+                      [provider]: !prev[provider],
+                    }))}
+                    className="flex size-8 items-center justify-center rounded-lg border border-black/10 text-text-muted transition-colors hover:bg-black/5 hover:text-text-primary dark:border-white/10 dark:hover:bg-white/5"
+                    title={isCollapsed ? "Expand provider" : "Collapse provider"}
+                    aria-label={isCollapsed ? "Expand provider" : "Collapse provider"}
+                  >
+                    <span className="material-symbols-outlined text-[18px]">
+                      {isCollapsed ? "keyboard_arrow_down" : "keyboard_arrow_up"}
+                    </span>
+                  </button>
                 </div>
               </div>
 
-              <div className="max-h-[38rem] overflow-y-auto pr-1">
-                <div className="grid grid-cols-1 gap-3">
+              {!isCollapsed && (
+              <div className="max-h-[34rem] overflow-y-auto pr-1">
+                <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
                   {providerConnections.map((conn) => {
           const quota = quotaData[conn.id];
           const isLoading = loading[conn.id];
@@ -1086,6 +1120,7 @@ export default function ProviderLimits() {
                   })}
                 </div>
               </div>
+              )}
             </section>
           );
         })}

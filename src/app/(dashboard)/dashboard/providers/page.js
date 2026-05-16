@@ -143,6 +143,10 @@ function getConnectionErrorTag(connection) {
 
 const APIKEY_INITIAL_VISIBLE = 20;
 
+function isPageVisible() {
+  return typeof document === "undefined" || document.visibilityState === "visible";
+}
+
 export default function ProvidersPage() {
   const [connections, setConnections] = useState([]);
   const [providerNodes, setProviderNodes] = useState([]);
@@ -210,8 +214,9 @@ export default function ProvidersPage() {
       const pendingConnections = eligibleConnections.filter(
         (conn) => !cachedIds.has(conn.id),
       );
+      const visible = isPageVisible();
       const initialLoading = Object.fromEntries(
-        eligibleConnections.map((conn) => [conn.id, !cachedIds.has(conn.id)]),
+        eligibleConnections.map((conn) => [conn.id, visible && !cachedIds.has(conn.id)]),
       );
       const initialCompleted = Object.fromEntries(
         eligibleConnections.map((conn) => [conn.id, cachedIds.has(conn.id)]),
@@ -221,6 +226,8 @@ export default function ProvidersPage() {
         setQuotaLoading(initialLoading);
         setQuotaCompleted(initialCompleted);
       }
+
+      if (!visible) return;
 
       const nextQuotaData = { ...cachedQuotaData };
       for (let i = 0; i < pendingConnections.length; i += 6) {
@@ -283,8 +290,13 @@ export default function ProvidersPage() {
       }
     };
     fetchData();
+    const handleVisibilityChange = () => {
+      if (!document.hidden) fetchData();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       cancelled = true;
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);
 
@@ -415,19 +427,21 @@ export default function ProvidersPage() {
     }))
     .filter((p) => matchSearch(p.name));
 
-  const oauthEntries = Object.entries(OAUTH_PROVIDERS).filter(([, info]) =>
-    matchSearch(info.name),
+  const oauthEntries = Object.entries(OAUTH_PROVIDERS).filter(
+    ([, info]) => !info.hidden && matchSearch(info.name),
   );
-  const freeEntries = Object.entries(FREE_PROVIDERS).filter(([, info]) =>
-    matchSearch(info.name),
+  const freeEntries = Object.entries(FREE_PROVIDERS).filter(
+    ([, info]) => !info.hidden && matchSearch(info.name),
   );
   const freeTierEntries = Object.entries(FREE_TIER_PROVIDERS).filter(
-    ([, info]) => matchSearch(info.name),
+    ([, info]) => !info.hidden && matchSearch(info.name),
   );
   const apikeyEntries = sortByPriority(
     Object.entries(APIKEY_PROVIDERS).filter(
       ([, info]) =>
-        (info.serviceKinds ?? ["llm"]).includes("llm") && matchSearch(info.name),
+        !info.hidden &&
+        (info.serviceKinds ?? ["llm"]).includes("llm") &&
+        matchSearch(info.name),
     ),
     "apikey",
   );

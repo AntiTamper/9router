@@ -17,7 +17,7 @@ export class DefaultExecutor extends BaseExecutor {
 
   shouldRetry(status, urlIndex) {
     if (
-      this.provider === "kimi" &&
+      (this.provider === "kimi" || this.provider === "kimi-api") &&
       (status === 401 || status === 403) &&
       urlIndex + 1 < this.getFallbackCount()
     ) {
@@ -45,6 +45,7 @@ export class DefaultExecutor extends BaseExecutor {
       case "minimax-cn":
         return `${this.config.baseUrl}?beta=true`;
       case "kimi":
+      case "kimi-api":
         return this.getBaseUrls()[urlIndex] || this.config.baseUrl;
       case "kimi-coding":
         return `${this.config.baseUrl}?beta=true`;
@@ -114,7 +115,11 @@ export class DefaultExecutor extends BaseExecutor {
       case "kimi": {
         const token = credentials.apiKey || credentials.accessToken;
         headers["Authorization"] = `Bearer ${token}`;
-        headers["x-api-key"] = token;
+        break;
+      }
+      case "kimi-api": {
+        const token = credentials.apiKey || credentials.accessToken;
+        headers["Authorization"] = `Bearer ${token}`;
         break;
       }
       default:

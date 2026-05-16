@@ -23,6 +23,8 @@ const ALIAS_TO_PROVIDER_ID = {
   openrouter: "openrouter",
   glm: "glm",
   kimi: "kimi",
+  "kimi-api": "kimi-api",
+  moonshot: "kimi-api",
   minimax: "minimax",
   "minimax-cn": "minimax-cn",
   ds: "deepseek",

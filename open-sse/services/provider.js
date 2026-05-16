@@ -202,6 +202,7 @@ export function buildProviderUrl(provider, model, stream = true, options = {}) {
       // Claude-compatible providers
       return `${config.baseUrl}?beta=true`;
     case "kimi":
+    case "kimi-api":
       return config.baseUrl;
 
     default:
@@ -286,6 +287,8 @@ export function buildProviderHeaders(provider, credentials, stream = true, body 
       case "qwen":
       case "openai":
       case "openrouter":
+      case "kimi":
+      case "kimi-api":
         headers["Authorization"] = `Bearer ${credentials.apiKey || credentials.accessToken}`;
         break;
 
@@ -297,11 +300,6 @@ export function buildProviderHeaders(provider, credentials, stream = true, body 
       case "minimax":
         // Claude-compatible API providers use x-api-key
         headers["x-api-key"] = credentials.apiKey;
-        break;
-
-      case "kimi":
-        headers["Authorization"] = `Bearer ${credentials.apiKey || credentials.accessToken}`;
-        headers["x-api-key"] = credentials.apiKey || credentials.accessToken;
         break;
 
       case "vertex":

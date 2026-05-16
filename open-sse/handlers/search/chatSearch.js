@@ -194,6 +194,23 @@ const CHAT_SEARCH_CONFIG = {
     }
   },
 
+  "kimi-api": {
+    endpoint: () => "https://api.moonshot.ai/v1/chat/completions",
+    defaultModel: "kimi-k2.6",
+    buildBody: (query, model) => ({
+      model,
+      messages: [{ role: "user", content: query }],
+      tools: [
+        { type: "builtin_function", function: { name: "$web_search" } }
+      ]
+    }),
+    buildHeaders: (token) => ({
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`
+    }),
+    extractAnswer: (data) => CHAT_SEARCH_CONFIG.kimi.extractAnswer(data)
+  },
+
   minimax: {
     endpoint: () => "https://api.minimaxi.com/v1/text/chatcompletion_v2",
     defaultModel: "MiniMax-M2.7",

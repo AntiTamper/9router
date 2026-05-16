@@ -47,10 +47,15 @@ const CLAUDE_CLI_SPOOF_HEADERS = {
 // Shared baseUrls
 const KIMI_CODING_BASE_URL = "https://api.kimi.com/coding/v1/messages";
 const KIMI_CODING_OPENAI_BASE_URL = "https://api.kimi.com/coding/v1/chat/completions";
-const KIMI_PLATFORM_MODELS_URL = "https://api.moonshot.ai/v1/models";
-const KIMI_CODE_API_HEADERS = {
-  "Anthropic-Version": "2023-06-01"
-};
+const KIMI_CODING_MODELS_URL = "https://api.kimi.com/coding/v1/models";
+const KIMI_API_BASE_URLS = [
+  "https://api.moonshot.ai/v1/chat/completions",
+  "https://api.moonshot.cn/v1/chat/completions",
+];
+const KIMI_API_MODELS_URLS = [
+  "https://api.moonshot.ai/v1/models",
+  "https://api.moonshot.cn/v1/models",
+];
 
 export const PROVIDERS = {
   claude: {
@@ -140,12 +145,22 @@ export const PROVIDERS = {
     headers: {}
   },
   kimi: {
-    baseUrls: [KIMI_CODING_BASE_URL],
-    baseUrl: KIMI_CODING_BASE_URL,
+    baseUrls: [KIMI_CODING_OPENAI_BASE_URL, ...KIMI_API_BASE_URLS],
+    baseUrl: KIMI_CODING_OPENAI_BASE_URL,
     openaiBaseUrl: KIMI_CODING_OPENAI_BASE_URL,
-    modelsUrl: KIMI_PLATFORM_MODELS_URL,
-    format: "claude",
-    headers: { ...KIMI_CODE_API_HEADERS }
+    anthropicBaseUrl: KIMI_CODING_BASE_URL,
+    modelsUrl: KIMI_CODING_MODELS_URL,
+    modelsUrls: [KIMI_CODING_MODELS_URL, ...KIMI_API_MODELS_URLS],
+    format: "openai",
+    headers: {}
+  },
+  "kimi-api": {
+    baseUrls: KIMI_API_BASE_URLS,
+    baseUrl: KIMI_API_BASE_URLS[0],
+    modelsUrls: KIMI_API_MODELS_URLS,
+    modelsUrl: KIMI_API_MODELS_URLS[0],
+    format: "openai",
+    headers: {}
   },
   minimax: {
     baseUrl: "https://api.minimax.io/anthropic/v1/messages",
