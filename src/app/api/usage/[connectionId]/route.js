@@ -16,6 +16,24 @@ function isAuthExpiredMessage(usage) {
   return AUTH_EXPIRED_PATTERNS.some((p) => msg.includes(p));
 }
 
+function isTransientUsageFetchError(error) {
+  const message = String(error?.message || "").toLowerCase();
+  return [
+    "fetch failed",
+    "enotfound",
+    "eai_again",
+    "etimedout",
+    "econnreset",
+    "econnrefused",
+    "network",
+  ].some((pattern) => message.includes(pattern));
+}
+
+function safeUsageErrorMessage(error) {
+  const message = String(error?.message || "fetch failed");
+  return message.replace(/bearer\s+[^\s]+/gi, "Bearer [redacted]");
+}
+
 /**
  * Refresh credentials using executor and update database
  * @param {boolean} force - Skip needsRefresh check and always attempt refresh
@@ -169,6 +187,11 @@ export async function GET(request, { params }) {
   } catch (error) {
     const provider = connection?.provider ?? "unknown";
     console.warn(`[Usage] ${provider}: ${error.message}`);
+    if (connection && isTransientUsageFetchError(error)) {
+      return Response.json({
+        message: `${provider} connected. Usage temporarily unavailable: ${safeUsageErrorMessage(error)}`,
+      });
+    }
     return Response.json({ error: error.message }, { status: 500 });
   }
 }

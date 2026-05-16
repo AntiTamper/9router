@@ -145,8 +145,8 @@ const CHAT_SEARCH_CONFIG = {
   },
 
   kimi: {
-    endpoint: () => "https://api.moonshot.cn/v1/chat/completions",
-    defaultModel: "kimi-k2.5",
+    endpoint: () => "https://api.moonshot.ai/v1/chat/completions",
+    defaultModel: "kimi-for-coding",
     buildBody: (query, model) => ({
       model,
       messages: [{ role: "user", content: query }],

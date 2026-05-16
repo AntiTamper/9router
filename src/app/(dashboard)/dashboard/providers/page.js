@@ -28,10 +28,11 @@ import { getErrorCode, getRelativeTime } from "@/shared/utils";
 import { useNotificationStore } from "@/store/notificationStore";
 import { useHeaderSearchStore } from "@/store/headerSearchStore";
 import ModelAvailabilityBadge from "./components/ModelAvailabilityBadge";
+import { buildProviderQuotaAverages } from "../usage/components/ProviderLimits/utils";
 import {
-  buildProviderQuotaAverages,
-  parseQuotaData,
-} from "../usage/components/ProviderLimits/utils";
+  fetchQuotaWithCache,
+  getCachedQuotaDataForConnections,
+} from "../usage/components/ProviderLimits/quotaCache";
 
 function isUsageEligibleConnection(conn) {
   return (
@@ -46,7 +47,18 @@ function quotaBarColor(percentage) {
   return "bg-red-500";
 }
 
-function AverageQuotaBar({ percentage }) {
+function AverageQuotaBar({ percentage, loading = false }) {
+  if (loading) {
+    return (
+      <div
+        className="relative h-4 overflow-hidden rounded-full bg-black/5 dark:bg-white/10"
+        title="Quota loading"
+        aria-label="Quota loading"
+      >
+        <div className="h-full w-full animate-pulse bg-gradient-to-r from-black/5 via-black/20 to-black/5 dark:from-white/5 dark:via-white/25 dark:to-white/5" />
+      </div>
+    );
+  }
   if (percentage === null || percentage === undefined) return null;
   const value = Math.max(0, Math.min(100, Math.round(Number(percentage) || 0)));
   return (
@@ -136,6 +148,8 @@ export default function ProvidersPage() {
   const [providerNodes, setProviderNodes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [quotaData, setQuotaData] = useState({});
+  const [quotaLoading, setQuotaLoading] = useState({});
+  const [quotaCompleted, setQuotaCompleted] = useState({});
   const [showAllApikey, setShowAllApikey] = useState(false);
   const [showAddCompatibleModal, setShowAddCompatibleModal] = useState(false);
   const [showAddAnthropicCompatibleModal, setShowAddAnthropicCompatibleModal] =
@@ -182,39 +196,77 @@ export default function ProvidersPage() {
     const fetchQuotaData = async (connectionList) => {
       const eligibleConnections = connectionList.filter(isUsageEligibleConnection);
       if (eligibleConnections.length === 0) {
-        if (!cancelled) setQuotaData({});
+        if (!cancelled) {
+          setQuotaData({});
+          setQuotaLoading({});
+          setQuotaCompleted({});
+        }
         return;
       }
 
-      const nextQuotaData = {};
-      for (let i = 0; i < eligibleConnections.length; i += 6) {
-        const batch = eligibleConnections.slice(i, i + 6);
+      const cachedQuotaData =
+        getCachedQuotaDataForConnections(eligibleConnections);
+      const cachedIds = new Set(Object.keys(cachedQuotaData));
+      const pendingConnections = eligibleConnections.filter(
+        (conn) => !cachedIds.has(conn.id),
+      );
+      const initialLoading = Object.fromEntries(
+        eligibleConnections.map((conn) => [conn.id, !cachedIds.has(conn.id)]),
+      );
+      const initialCompleted = Object.fromEntries(
+        eligibleConnections.map((conn) => [conn.id, cachedIds.has(conn.id)]),
+      );
+      if (!cancelled) {
+        setQuotaData(cachedQuotaData);
+        setQuotaLoading(initialLoading);
+        setQuotaCompleted(initialCompleted);
+      }
+
+      const nextQuotaData = { ...cachedQuotaData };
+      for (let i = 0; i < pendingConnections.length; i += 6) {
+        const batch = pendingConnections.slice(i, i + 6);
         await Promise.all(
           batch.map(async (conn) => {
             try {
-              const response = await fetch(`/api/usage/${conn.id}`);
-              if (!response.ok) return;
-              const data = await response.json();
-              nextQuotaData[conn.id] = {
-                data,
-                quotas: parseQuotaData(conn.provider, data),
-              };
+              const { entry } = await fetchQuotaWithCache(conn);
+              if (entry) nextQuotaData[conn.id] = entry;
+              else delete nextQuotaData[conn.id];
+              if (!cancelled) {
+                setQuotaData((prev) => {
+                  const next = { ...prev };
+                  if (entry) next[conn.id] = entry;
+                  else delete next[conn.id];
+                  return next;
+                });
+              }
             } catch (error) {
               console.log(`Error fetching quota for ${conn.provider}:`, error);
+            } finally {
+              if (!cancelled) {
+                setQuotaLoading((prev) => ({ ...prev, [conn.id]: false }));
+                setQuotaCompleted((prev) => ({ ...prev, [conn.id]: true }));
+              }
             }
           }),
         );
         if (cancelled) return;
       }
 
-      if (!cancelled) setQuotaData(nextQuotaData);
+      if (!cancelled) {
+        const eligibleIds = new Set(eligibleConnections.map((conn) => conn.id));
+        setQuotaData(
+          Object.fromEntries(
+            Object.entries(nextQuotaData).filter(([id]) => eligibleIds.has(id)),
+          ),
+        );
+      }
     };
 
     const fetchData = async () => {
       try {
         const [connectionsRes, nodesRes] = await Promise.all([
-          fetch("/api/providers"),
-          fetch("/api/provider-nodes"),
+          fetch("/api/providers", { cache: "no-store" }),
+          fetch("/api/provider-nodes", { cache: "no-store" }),
         ]);
         const connectionsData = await connectionsRes.json();
         const nodesData = await nodesRes.json();
@@ -240,9 +292,12 @@ export default function ProvidersPage() {
     const providerConnections = connections.filter(
       (c) => c.provider === providerId && c.authType === authType,
     );
-    const averageQuota =
-      buildProviderQuotaAverages(providerConnections, quotaData)[0]?.averageRemaining ??
-      null;
+    const averageQuotaStats = buildProviderQuotaAverages(
+      providerConnections.filter(isUsageEligibleConnection),
+      quotaData,
+      { loadingById: quotaLoading, completedById: quotaCompleted },
+    )[0];
+    const averageQuota = averageQuotaStats?.averageRemaining ?? null;
 
     const getEffectiveStatus = (conn) => {
       const isCooldown = Object.entries(conn).some(
@@ -279,7 +334,16 @@ export default function ProvidersPage() {
       ? getRelativeTime(latestError.lastErrorAt)
       : null;
 
-    return { connected, error, total, errorCode, errorTime, allDisabled, averageQuota };
+    return {
+      connected,
+      error,
+      total,
+      errorCode,
+      errorTime,
+      allDisabled,
+      averageQuota,
+      averageQuotaLoading: averageQuotaStats?.isLoading === true,
+    };
   };
 
   // Toggle all connections for a provider on/off
@@ -669,7 +733,15 @@ export default function ProvidersPage() {
 }
 
 function ProviderCard({ providerId, provider, stats, authType, onToggle }) {
-  const { connected, error, errorCode, errorTime, allDisabled, averageQuota } = stats;
+  const {
+    connected,
+    error,
+    errorCode,
+    errorTime,
+    allDisabled,
+    averageQuota,
+    averageQuotaLoading,
+  } = stats;
   const isNoAuth = !!provider.noAuth;
 
   const dotColors = {
@@ -756,7 +828,12 @@ function ProviderCard({ providerId, provider, stats, authType, onToggle }) {
               )}
             </div>
           </div>
-          {stats.total > 0 && <AverageQuotaBar percentage={averageQuota} />}
+          {stats.total > 0 && (
+            <AverageQuotaBar
+              percentage={averageQuota}
+              loading={averageQuotaLoading}
+            />
+          )}
         </div>
       </Card>
     </Link>
@@ -778,6 +855,7 @@ ProviderCard.propTypes = {
     errorTime: PropTypes.string,
     total: PropTypes.number,
     averageQuota: PropTypes.number,
+    averageQuotaLoading: PropTypes.bool,
   }).isRequired,
   authType: PropTypes.string,
   onToggle: PropTypes.func,
@@ -790,7 +868,15 @@ function ApiKeyProviderCard({
   authType,
   onToggle,
 }) {
-  const { connected, error, errorCode, errorTime, allDisabled, averageQuota } = stats;
+  const {
+    connected,
+    error,
+    errorCode,
+    errorTime,
+    allDisabled,
+    averageQuota,
+    averageQuotaLoading,
+  } = stats;
   const isCompatible = providerId.startsWith(OPENAI_COMPATIBLE_PREFIX);
   const isAnthropicCompatible = providerId.startsWith(
     ANTHROPIC_COMPATIBLE_PREFIX,
@@ -899,7 +985,12 @@ function ApiKeyProviderCard({
               )}
             </div>
           </div>
-          {stats.total > 0 && <AverageQuotaBar percentage={averageQuota} />}
+          {stats.total > 0 && (
+            <AverageQuotaBar
+              percentage={averageQuota}
+              loading={averageQuotaLoading}
+            />
+          )}
         </div>
       </Card>
     </Link>
@@ -922,6 +1013,7 @@ ApiKeyProviderCard.propTypes = {
     errorTime: PropTypes.string,
     total: PropTypes.number,
     averageQuota: PropTypes.number,
+    averageQuotaLoading: PropTypes.bool,
   }).isRequired,
   authType: PropTypes.string,
   onToggle: PropTypes.func,

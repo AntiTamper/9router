@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
-import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, IFlowCookieModal, GitLabAuthModal, Toggle, Select, EditConnectionModal, NoAuthProxyCard, ConfirmModal } from "@/shared/components";
+import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, IFlowCookieModal, GitLabAuthModal, EditConnectionModal, NoAuthProxyCard, ConfirmModal } from "@/shared/components";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS, THINKING_CONFIG } from "@/shared/constants/providers";
 import { getModelsByProviderId } from "@/shared/constants/models";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
@@ -260,10 +260,10 @@ export default function ProviderDetailPage() {
     }
   };
 
-  const handleRoundRobinToggle = (enabled) => {
-    const strategy = enabled ? "round-robin" : null;
-    const sticky = enabled ? (providerStickyLimit || "1") : providerStickyLimit;
-    if (enabled && !providerStickyLimit) setProviderStickyLimit("1");
+  const handleProviderStrategyChange = (value) => {
+    const strategy = value === "global" ? null : value;
+    const sticky = strategy === "round-robin" ? (providerStickyLimit || "1") : providerStickyLimit;
+    if (strategy === "round-robin" && !providerStickyLimit) setProviderStickyLimit("1");
     setProviderStrategy(strategy);
     saveProviderStrategy(strategy, sticky);
   };
@@ -555,8 +555,26 @@ export default function ProviderDetailPage() {
 
   const isSelected = (connectionId) => selectedConnectionIds.includes(connectionId);
 
+  const openAddConnection = () => {
+    if (isOAuth) {
+      setShowOAuthModal(true);
+      return;
+    }
+    setAddConnectionError("");
+    setShowAddApiKeyModal(true);
+  };
+
+  const addConnectionLabel = isCompatible
+    ? "Add API Key"
+    : providerId === "iflow"
+      ? "OAuth"
+      : "Add Connection";
+
   const connectionsList = (
-    <div className="flex min-w-0 flex-col divide-y divide-black/[0.03] dark:divide-white/[0.03]">
+    <div
+      className="flex min-w-0 flex-col divide-y divide-black/[0.03] overflow-y-auto pr-1 dark:divide-white/[0.03]"
+      style={{ maxHeight: "min(58rem, calc(100vh - 9rem))" }}
+    >
       {connections
         .map((conn, index) => (
           <div key={conn.id} className="flex min-w-0 items-stretch">
@@ -944,17 +962,6 @@ export default function ProviderDetailPage() {
             <div className="grid grid-cols-1 gap-2 sm:flex sm:items-center">
               <Button
                 size="sm"
-                icon="add"
-                onClick={() => {
-                  setAddConnectionError("");
-                  setShowAddApiKeyModal(true);
-                }}
-                className="w-full sm:w-auto"
-              >
-                Add API Key
-              </Button>
-              <Button
-                size="sm"
                 variant="secondary"
                 icon="edit"
                 onClick={() => setShowEditNodeModal(true)}
@@ -1000,6 +1007,26 @@ export default function ProviderDetailPage() {
           <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <h2 className="text-lg font-semibold">Connections</h2>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
+              {providerId === "iflow" && (
+                <Button
+                  size="sm"
+                  icon="cookie"
+                  variant="secondary"
+                  onClick={() => setShowIFlowCookieModal(true)}
+                  title="Add connection using browser cookie"
+                  className="w-full sm:w-auto"
+                >
+                  Cookie
+                </Button>
+              )}
+              <Button
+                size="sm"
+                icon="add"
+                onClick={openAddConnection}
+                className="w-full sm:w-auto"
+              >
+                {addConnectionLabel}
+              </Button>
               {connections.length > 0 && proxyPools.length > 0 && (
                 <Button
                   size="sm"
@@ -1025,13 +1052,18 @@ export default function ProviderDetailPage() {
                   </select>
                 </div>
               )} */}
-              {/* Round Robin toggle */}
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs text-text-muted font-medium">Round Robin</span>
-                <Toggle
-                  checked={providerStrategy === "round-robin"}
-                  onChange={handleRoundRobinToggle}
-                />
+                <span className="text-xs text-text-muted font-medium">Route</span>
+                <select
+                  value={providerStrategy || "global"}
+                  onChange={(e) => handleProviderStrategyChange(e.target.value)}
+                  className="h-8 rounded-lg border border-border bg-background px-2 text-xs text-text-primary focus:outline-none focus:border-primary"
+                >
+                  <option value="global">Global</option>
+                  <option value="fill-first">Fill first</option>
+                  <option value="round-robin">Round robin</option>
+                  <option value="highest-session-quota">Highest session quota</option>
+                </select>
                 {providerStrategy === "round-robin" && (
                   <div className="flex items-center gap-1.5">
                     <span className="text-xs text-text-muted">Sticky:</span>
@@ -1050,69 +1082,17 @@ export default function ProviderDetailPage() {
           </div>
 
           {connections.length === 0 ? (
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-3">
               <div className="flex items-center gap-3">
                 <div className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-primary/10 text-primary shrink-0">
                   <span className="material-symbols-outlined text-[18px]">{isOAuth ? "lock" : "key"}</span>
                 </div>
                 <p className="text-sm text-text-muted">No connections yet</p>
               </div>
-              <div className="flex gap-2">
-                {!isCompatible && providerId === "iflow" && (
-                  <Button size="sm" icon="cookie" variant="secondary" onClick={() => setShowIFlowCookieModal(true)}>
-                    Cookie
-                  </Button>
-                )}
-                <Button
-                  size="sm"
-                  icon="add"
-                  onClick={() => {
-                    if (isOAuth) {
-                      setShowOAuthModal(true);
-                      return;
-                    }
-                    setAddConnectionError("");
-                    setShowAddApiKeyModal(true);
-                  }}
-                >
-                  {isCompatible ? "Add API Key" : (providerId === "iflow" ? "OAuth" : "Add Connection")}
-                </Button>
-              </div>
             </div>
           ) : (
             <>
               {connectionsList}
-              {!isCompatible && (
-                <div className="mt-4 grid grid-cols-1 gap-2 sm:flex">
-                  {providerId === "iflow" && (
-                    <Button
-                      size="sm"
-                      icon="cookie"
-                      variant="secondary"
-                      onClick={() => setShowIFlowCookieModal(true)}
-                      title="Add connection using browser cookie"
-                      className="w-full sm:w-auto"
-                    >
-                      Cookie
-                    </Button>
-                  )}
-                  <Button
-                    size="sm"
-                    icon="add"
-                    onClick={() => {
-                      if (isOAuth) {
-                        setShowOAuthModal(true);
-                        return;
-                      }
-                      setAddConnectionError("");
-                      setShowAddApiKeyModal(true);
-                    }}
-                    className="w-full sm:w-auto"
-                  >
-                    Add
-                  </Button>
-                </div>
-              )}
             </>
           )}
         </Card>

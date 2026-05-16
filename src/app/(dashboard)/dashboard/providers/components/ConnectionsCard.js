@@ -408,16 +408,22 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
           <h2 className="text-lg font-semibold">Connections</h2>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-text-muted font-medium">Round Robin</span>
-            <Toggle
-              checked={providerStrategy === "round-robin"}
-              onChange={(enabled) => {
-                const strategy = enabled ? "round-robin" : null;
+            <span className="text-xs text-text-muted font-medium">Route</span>
+            <select
+              value={providerStrategy || "global"}
+              onChange={(event) => {
+                const strategy = event.target.value === "global" ? null : event.target.value;
                 setProviderStrategy(strategy);
-                if (enabled && !providerStickyLimit) setProviderStickyLimit("1");
-                saveStrategy(strategy, enabled ? (providerStickyLimit || "1") : providerStickyLimit);
+                if (strategy === "round-robin" && !providerStickyLimit) setProviderStickyLimit("1");
+                saveStrategy(strategy, strategy === "round-robin" ? (providerStickyLimit || "1") : providerStickyLimit);
               }}
-            />
+              className="h-8 rounded-lg border border-border bg-background px-2 text-xs text-text-primary focus:outline-none focus:border-primary"
+            >
+              <option value="global">Global</option>
+              <option value="fill-first">Fill first</option>
+              <option value="round-robin">Round robin</option>
+              <option value="highest-session-quota">Highest session quota</option>
+            </select>
             {providerStrategy === "round-robin" && (
               <div className="flex flex-wrap items-center gap-1.5">
                 <span className="text-xs text-text-muted">Sticky:</span>

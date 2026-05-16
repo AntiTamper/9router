@@ -21,11 +21,21 @@ beforeEach(async () => {
 
 afterEach(() => {
   resetDbAdapterForTests();
+  vi.unstubAllGlobals();
   if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
   tempDir = null;
   if (originalDataDir === undefined) delete process.env.DATA_DIR;
   else process.env.DATA_DIR = originalDataDir;
 });
+
+function createLocalStorageMock() {
+  const items = new Map();
+  return {
+    getItem: vi.fn((key) => items.get(key) ?? null),
+    setItem: vi.fn((key, value) => items.set(key, String(value))),
+    removeItem: vi.fn((key) => items.delete(key)),
+  };
+}
 
 describe("provider quota auto-disable", () => {
   it("disables exhausted accounts and stores reset metadata", async () => {
@@ -47,6 +57,12 @@ describe("provider quota auto-disable", () => {
     expect(updated.isActive).toBe(false);
     expect(updated.quotaAutoDisabled).toBe(true);
     expect(updated.quotaAutoDisabledUntil).toBe(resetAt);
+    expect(updated.lastQuotaSnapshot.quotas[0]).toMatchObject({
+      name: "daily",
+      used: 100,
+      total: 100,
+      remainingPercentage: 0,
+    });
   });
 
   it("restores only auto-disabled accounts after reset time passes", async () => {
@@ -72,6 +88,56 @@ describe("provider quota auto-disable", () => {
 
     expect((await db.getProviderConnectionById(auto.id)).isActive).toBe(true);
     expect((await db.getProviderConnectionById(manual.id)).isActive).toBe(false);
+  });
+
+  it("does not take ownership of manually disabled exhausted accounts", async () => {
+    const conn = await db.createProviderConnection({
+      provider: "codex",
+      authType: "oauth",
+      email: "manual-off@example.com",
+      isActive: false,
+    });
+
+    await quota.syncConnectionQuotaState(conn, {
+      quotas: {
+        daily: {
+          used: 100,
+          total: 100,
+          resetAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+      },
+    });
+
+    const updated = await db.getProviderConnectionById(conn.id);
+    expect(updated.isActive).toBe(false);
+    expect(updated.quotaAutoDisabled).toBeUndefined();
+  });
+
+  it("updates reset metadata for already auto-disabled exhausted accounts", async () => {
+    const conn = await db.createProviderConnection({
+      provider: "codex",
+      authType: "oauth",
+      email: "auto-refresh@example.com",
+      isActive: false,
+    });
+    await db.updateProviderConnection(conn.id, {
+      quotaAutoDisabled: true,
+      quotaAutoDisabledUntil: new Date(Date.now() + 60_000).toISOString(),
+      quotaAutoDisabledReason: "daily",
+    });
+    const updatedResetAt = new Date(Date.now() + 120_000).toISOString();
+
+    await quota.syncConnectionQuotaState(await db.getProviderConnectionById(conn.id), {
+      quotas: {
+        weekly: { used: 200, total: 200, resetAt: updatedResetAt },
+      },
+    });
+
+    const updated = await db.getProviderConnectionById(conn.id);
+    expect(updated.isActive).toBe(false);
+    expect(updated.quotaAutoDisabled).toBe(true);
+    expect(updated.quotaAutoDisabledUntil).toBe(updatedResetAt);
+    expect(updated.quotaAutoDisabledReason).toBe("weekly");
   });
 
   it("does nothing when auto toggle is disabled", async () => {
@@ -128,5 +194,126 @@ describe("provider quota auto-disable", () => {
       measuredAccounts: 0,
       averageRemaining: null,
     });
+  });
+
+  it("uses session quota rows for provider service averages", async () => {
+    const { buildProviderQuotaAverages } = await import("@/app/(dashboard)/dashboard/usage/components/ProviderLimits/utils.js");
+    const averages = buildProviderQuotaAverages(
+      [{ id: "codex-a", provider: "codex", isActive: true }],
+      {
+        "codex-a": {
+          quotas: [
+            { name: "session", used: 25, total: 100 },
+            { name: "weekly", used: 90, total: 100 },
+          ],
+        },
+      },
+    );
+
+    expect(averages.find((avg) => avg.provider === "codex")).toMatchObject({
+      measuredAccounts: 1,
+      averageRemaining: 75,
+    });
+  });
+
+  it("waits for all quota fetches before averaging a provider", async () => {
+    const { buildProviderQuotaAverages } = await import("@/app/(dashboard)/dashboard/usage/components/ProviderLimits/utils.js");
+    const connections = [
+      { id: "codex-a", provider: "codex", isActive: true },
+      { id: "codex-b", provider: "codex", isActive: true },
+    ];
+    const quotaData = {
+      "codex-a": {
+        quotas: [{ name: "session", used: 20, total: 100 }],
+      },
+      "codex-b": {
+        quotas: [{ name: "session", used: 60, total: 100 }],
+      },
+    };
+
+    const loadingAverage = buildProviderQuotaAverages(connections, quotaData, {
+      loadingById: { "codex-b": true },
+      completedById: { "codex-a": true, "codex-b": false },
+    }).find((avg) => avg.provider === "codex");
+
+    expect(loadingAverage).toMatchObject({
+      isLoading: true,
+      pendingCount: 1,
+      averageRemaining: null,
+    });
+
+    const readyAverage = buildProviderQuotaAverages(connections, quotaData, {
+      loadingById: { "codex-a": false, "codex-b": false },
+      completedById: { "codex-a": true, "codex-b": true },
+    }).find((avg) => avg.provider === "codex");
+
+    expect(readyAverage).toMatchObject({
+      isLoading: false,
+      pendingCount: 0,
+      averageRemaining: 60,
+    });
+  });
+
+  it("reuses fresh provider quota cache without a usage API call", async () => {
+    vi.resetModules();
+    const localStorage = createLocalStorageMock();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("window", { localStorage });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const quotaCache = await import("@/app/(dashboard)/dashboard/usage/components/ProviderLimits/quotaCache.js");
+    quotaCache.mergeQuotaCacheEntries({
+      "codex-cache": {
+        quotas: [{ name: "session", used: 10, total: 100 }],
+        plan: "pro",
+        message: null,
+      },
+    });
+
+    const result = await quotaCache.fetchQuotaWithCache({
+      id: "codex-cache",
+      provider: "codex",
+    });
+
+    expect(result.fromCache).toBe(true);
+    expect(result.entry.quotas[0].total).toBe(100);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("routes to the account with the highest cached session quota", async () => {
+    await db.updateSettings({ fallbackStrategy: "highest-session-quota" });
+    const low = await db.createProviderConnection({
+      provider: "codex",
+      authType: "oauth",
+      email: "low@example.com",
+      accessToken: "low-token",
+      priority: 1,
+    });
+    const high = await db.createProviderConnection({
+      provider: "codex",
+      authType: "oauth",
+      email: "high@example.com",
+      accessToken: "high-token",
+      priority: 2,
+    });
+
+    await db.updateProviderConnection(low.id, {
+      lastQuotaSnapshot: {
+        quotas: [{ name: "session", used: 80, total: 100 }],
+        savedAt: new Date().toISOString(),
+      },
+    });
+    await db.updateProviderConnection(high.id, {
+      lastQuotaSnapshot: {
+        quotas: [{ name: "session", used: 10, total: 100 }],
+        savedAt: new Date().toISOString(),
+      },
+    });
+
+    const { getProviderCredentials } = await import("@/sse/services/auth.js");
+    const credentials = await getProviderCredentials("codex");
+
+    expect(credentials.connectionId).toBe(high.id);
+    expect(credentials.accessToken).toBe("high-token");
   });
 });

@@ -6,7 +6,7 @@ function toTime(value) {
   return Number.isFinite(t) ? t : null;
 }
 
-function normalizeQuotaRows(usage) {
+export function normalizeQuotaRows(usage) {
   if (!usage?.quotas || typeof usage.quotas !== "object") return [];
   return Object.entries(usage.quotas).map(([name, quota]) => {
     const total = Number(quota?.total ?? 0);
@@ -24,6 +24,16 @@ function normalizeQuotaRows(usage) {
       remainingPercentage: Number.isFinite(remainingPercentage) ? remainingPercentage : null,
     };
   });
+}
+
+export function buildQuotaSnapshot(usage) {
+  const rows = normalizeQuotaRows(usage);
+  return {
+    quotas: rows,
+    plan: usage?.plan || null,
+    message: usage?.message || null,
+    savedAt: new Date().toISOString(),
+  };
 }
 
 export function getQuotaAutoState(usage) {
@@ -48,13 +58,23 @@ export function getQuotaAutoState(usage) {
 
 export async function syncConnectionQuotaState(connection, usage) {
   if (!connection?.id) return connection;
+  const snapshot = buildQuotaSnapshot(usage);
+  const snapshotUpdate = {
+    lastQuotaSnapshot: snapshot,
+    lastQuotaSnapshotAt: snapshot.savedAt,
+  };
   const settings = await getSettings();
-  if (settings.quotaAutoToggleEnabled === false) return connection;
+  if (settings.quotaAutoToggleEnabled === false) {
+    return await updateProviderConnection(connection.id, snapshotUpdate);
+  }
   const state = getQuotaAutoState(usage);
 
   if (state.exhausted) {
-    if (connection.quotaAutoDisabled && connection.isActive === false) return connection;
+    if (connection.isActive === false && !connection.quotaAutoDisabled) {
+      return await updateProviderConnection(connection.id, snapshotUpdate);
+    }
     return await updateProviderConnection(connection.id, {
+      ...snapshotUpdate,
       isActive: false,
       quotaAutoDisabled: true,
       quotaAutoDisabledAt: new Date().toISOString(),
@@ -68,6 +88,7 @@ export async function syncConnectionQuotaState(connection, usage) {
 
   if (connection.quotaAutoDisabled) {
     return await updateProviderConnection(connection.id, {
+      ...snapshotUpdate,
       isActive: true,
       quotaAutoDisabled: false,
       quotaAutoDisabledAt: null,
@@ -80,7 +101,7 @@ export async function syncConnectionQuotaState(connection, usage) {
     });
   }
 
-  return connection;
+  return await updateProviderConnection(connection.id, snapshotUpdate);
 }
 
 export async function restoreExpiredAutoDisabledConnections(provider = null) {

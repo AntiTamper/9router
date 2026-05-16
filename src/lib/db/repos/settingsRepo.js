@@ -10,6 +10,7 @@ const DEFAULT_SETTINGS = {
   tunnelProvider: "cloudflare",
   tailscaleEnabled: false,
   tailscaleUrl: "",
+  fallbackStrategy: "fill-first",
   stickyRoundRobinLimit: 3,
   providerStrategies: {},
   comboStrategy: "fallback",
@@ -37,6 +38,7 @@ const DEFAULT_SETTINGS = {
   cavemanEnabled: false,
   cavemanLevel: "full",
   quotaAutoToggleEnabled: true,
+  quotaRefreshIntervalMs: null,
 };
 
 async function readRaw() {

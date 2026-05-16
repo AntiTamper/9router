@@ -150,6 +150,7 @@ const PROVIDER_MODELS_CONFIG = {
     }
   },
   openai: createOpenAIModelsConfig("https://api.openai.com/v1/models"),
+  kimi: createOpenAIModelsConfig("https://api.kimi.com/coding/v1/models"),
   openrouter: createOpenAIModelsConfig("https://openrouter.ai/api/v1/models"),
   anthropic: {
     url: "https://api.anthropic.com/v1/models",

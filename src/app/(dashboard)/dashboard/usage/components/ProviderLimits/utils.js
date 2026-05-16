@@ -89,8 +89,37 @@ function quotaRemainingPercentage(quota) {
   return clampPercentage(calculatePercentage(quota.used, quota.total));
 }
 
-export function buildProviderQuotaAverages(connections = [], quotaData = {}) {
+function isSessionQuotaRow(quota) {
+  const label = String(
+    quota?.name ?? quota?.label ?? quota?.window ?? quota?.type ?? "",
+  ).toLowerCase();
+  if (!label) return false;
+  if (label.includes("weekly") || label.includes("daily")) return false;
+  return (
+    label.includes("session") ||
+    label.includes("5h") ||
+    label.includes("5-hour") ||
+    label.includes("five_hour")
+  );
+}
+
+function selectQuotaRowsForServiceAverage(quotas) {
+  if (!Array.isArray(quotas) || quotas.length === 0) return [];
+  const sessionRows = quotas.filter(isSessionQuotaRow);
+  if (sessionRows.length > 0) return sessionRows;
+  return quotas;
+}
+
+export function buildProviderQuotaAverages(
+  connections = [],
+  quotaData = {},
+  options = {},
+) {
   const groups = new Map();
+  const loadingById = options.loadingById || {};
+  const completedById = options.completedById || null;
+  const hasCompletionTracking =
+    completedById && typeof completedById === "object";
 
   for (const conn of connections) {
     if (!conn?.provider) continue;
@@ -99,16 +128,29 @@ export function buildProviderQuotaAverages(connections = [], quotaData = {}) {
       accountCount: 0,
       activeCount: 0,
       measuredAccounts: 0,
+      pendingCount: 0,
       exhaustedCount: 0,
       lowCount: 0,
       totalRemaining: 0,
       averageRemaining: null,
+      isLoading: false,
     };
 
     group.accountCount += 1;
     if (conn.isActive !== false) group.activeCount += 1;
 
-    const quotas = quotaData[conn.id]?.quotas || [];
+    const isPending =
+      loadingById[conn.id] === true ||
+      (hasCompletionTracking && completedById[conn.id] !== true);
+
+    if (isPending) {
+      group.pendingCount += 1;
+      group.isLoading = true;
+      groups.set(conn.provider, group);
+      continue;
+    }
+
+    const quotas = selectQuotaRowsForServiceAverage(quotaData[conn.id]?.quotas || []);
     const percentages = quotas
       .map(quotaRemainingPercentage)
       .filter((percentage) => percentage !== null);
@@ -131,7 +173,9 @@ export function buildProviderQuotaAverages(connections = [], quotaData = {}) {
   return Array.from(groups.values())
     .map((group) => ({
       ...group,
-      averageRemaining: group.measuredAccounts > 0
+      averageRemaining: group.isLoading
+        ? null
+        : group.measuredAccounts > 0
         ? Math.round(group.totalRemaining / group.measuredAccounts)
         : null,
     }))

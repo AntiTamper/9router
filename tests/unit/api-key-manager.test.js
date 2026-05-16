@@ -136,6 +136,26 @@ describe("API key manager", () => {
     expect(await db.getApiKeyById(key.id)).toBeNull();
   });
 
+  it("preserves explicit expiry when creating keys through the API route", async () => {
+    const { POST } = await import("@/app/api/keys/route.js");
+    const expiresAt = "2099-01-01T00:00:00.000Z";
+
+    const response = await POST(new Request("http://localhost/api/keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "  route timed  ",
+        expiresAt,
+      }),
+    }));
+
+    expect(response.status).toBe(201);
+    const data = await response.json();
+    expect(data.name).toBe("route timed");
+    expect(data.expiresAt).toBe(expiresAt);
+    expect((await db.getApiKeyById(data.id)).expiresAt).toBe(expiresAt);
+  });
+
   it("imports legacy exported API keys as unlimited", async () => {
     const createdAt = new Date().toISOString();
 

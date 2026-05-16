@@ -849,16 +849,21 @@ export default function ProfilePage() {
           <div className="flex flex-col gap-4">
             <div className="flex items-start sm:items-center justify-between gap-4">
               <div className="flex-1 min-w-0">
-                <p className="font-medium text-sm sm:text-base">Round Robin</p>
+                <p className="font-medium text-sm sm:text-base">Account Mode</p>
                 <p className="text-xs sm:text-sm text-text-muted">
-                  Cycle through accounts to distribute load
+                  Choose how 9Router selects accounts for each provider
                 </p>
               </div>
-              <Toggle
-                checked={settings.fallbackStrategy === "round-robin"}
-                onChange={() => updateFallbackStrategy(settings.fallbackStrategy === "round-robin" ? "fill-first" : "round-robin")}
+              <select
+                value={settings.fallbackStrategy || "fill-first"}
+                onChange={(e) => updateFallbackStrategy(e.target.value)}
                 disabled={loading}
-              />
+                className="h-9 rounded-lg border border-border bg-background px-2 text-sm text-text-main focus:outline-none focus:border-primary"
+              >
+                <option value="fill-first">Fill first</option>
+                <option value="round-robin">Round robin</option>
+                <option value="highest-session-quota">Highest session quota</option>
+              </select>
             </div>
 
             {/* Sticky Round Robin Limit */}
@@ -921,6 +926,8 @@ export default function ProfilePage() {
             <p className="text-xs text-text-muted italic pt-2 border-t border-border/50">
               {settings.fallbackStrategy === "round-robin"
                 ? `Currently distributing requests across all available accounts with ${settings.stickyRoundRobinLimit || 3} calls per account.`
+                : settings.fallbackStrategy === "highest-session-quota"
+                  ? "Currently choosing the account with the highest cached session quota."
                 : "Currently using accounts in priority order (Fill First)."}
               {settings.comboStrategy === "round-robin"
                 ? ` Combos rotate after ${settings.comboStickyRoundRobinLimit || 1} call${(settings.comboStickyRoundRobinLimit || 1) === 1 ? "" : "s"} per model.`

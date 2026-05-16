@@ -40,15 +40,16 @@ function parseKeyConfig(body = {}) {
     if (!Number.isFinite(expiresInMs) || expiresInMs <= 0) return { error: "Invalid expiry duration" };
   }
 
-  return {
+  const config = {
     limitMode,
     tokenLimit: limitMode === "unlimited" || limitMode === "daily_weekly" ? null : tokenLimit,
     dailyTokenLimit: limitMode === "daily_weekly" ? dailyTokenLimit : null,
     weeklyTokenLimit: limitMode === "daily_weekly" ? weeklyTokenLimit : null,
     expiresAt,
-    expiresInMs,
     autoDeleteExpired: body.autoDeleteExpired !== false,
   };
+  if (expiresInMs !== null) config.expiresInMs = expiresInMs;
+  return config;
 }
 
 // GET /api/keys - List API keys
@@ -66,7 +67,7 @@ export async function GET() {
 export async function POST(request) {
   try {
     const body = await request.json();
-    const { name } = body;
+    const name = String(body.name || "").trim();
 
     if (!name) {
       return NextResponse.json({ error: "Name is required" }, { status: 400 });

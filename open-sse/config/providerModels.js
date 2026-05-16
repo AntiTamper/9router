@@ -157,6 +157,7 @@ export const PROVIDER_MODELS = {
     { id: "gpt-5.3-codex", name: "GPT 5.3 Codex" },
   ],
   kmc: [  // Kimi Coding
+    { id: "kimi-for-coding", name: "Kimi for Coding" },
     { id: "kimi-k2.6", name: "Kimi K2.6" },
     { id: "kimi-k2.5", name: "Kimi K2.5" },
     { id: "kimi-k2.5-thinking", name: "Kimi K2.5 Thinking" },
@@ -312,6 +313,7 @@ export const PROVIDER_MODELS = {
     { id: "glm-4.5-air", name: "GLM-4.5-Air" },
   ],
   kimi: [
+    { id: "kimi-for-coding", name: "Kimi for Coding" },
     { id: "kimi-k2.6", name: "Kimi K2.6" },
     { id: "kimi-k2.5", name: "Kimi K2.5" },
     { id: "kimi-k2.5-thinking", name: "Kimi K2.5 Thinking" },

@@ -9,6 +9,7 @@ const OPTIONAL_FIELDS = [
   "lastTested", "lastError", "lastErrorAt", "rateLimitedUntil", "expiresIn", "errorCode",
   "consecutiveUseCount", "backoffLevel",
   "quotaAutoDisabled", "quotaAutoDisabledAt", "quotaAutoDisabledUntil", "quotaAutoDisabledReason",
+  "lastQuotaSnapshot", "lastQuotaSnapshotAt",
 ];
 
 function rowToConn(row) {
@@ -196,6 +197,7 @@ export async function cleanupProviderConnections() {
     "lastTested", "lastError", "lastErrorAt", "rateLimitedUntil", "expiresIn",
     "consecutiveUseCount", "backoffLevel",
     "quotaAutoDisabled", "quotaAutoDisabledAt", "quotaAutoDisabledUntil", "quotaAutoDisabledReason",
+    "lastQuotaSnapshot", "lastQuotaSnapshotAt",
   ];
   let cleaned = 0;
   db.transaction(() => {

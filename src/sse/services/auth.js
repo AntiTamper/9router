@@ -9,6 +9,70 @@ import * as log from "../utils/logger.js";
 // Mutex to prevent race conditions during account selection
 let selectionMutex = Promise.resolve();
 
+function clampPercentage(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+function quotaRemainingPercentage(quota) {
+  if (!quota || !quota.total || quota.total <= 0) return null;
+  if (quota.remainingPercentage !== undefined && quota.remainingPercentage !== null) {
+    return clampPercentage(quota.remainingPercentage);
+  }
+  const used = Number(quota.used || 0);
+  const total = Number(quota.total || 0);
+  if (!Number.isFinite(used) || !Number.isFinite(total) || total <= 0) return null;
+  return clampPercentage(((total - used) / total) * 100);
+}
+
+function isSessionQuotaRow(quota) {
+  const label = String(
+    quota?.name ?? quota?.label ?? quota?.window ?? quota?.type ?? "",
+  ).toLowerCase();
+  if (!label) return false;
+  if (label.includes("weekly") || label.includes("daily")) return false;
+  return (
+    label.includes("session") ||
+    label.includes("5h") ||
+    label.includes("5-hour") ||
+    label.includes("five_hour")
+  );
+}
+
+function getSessionQuotaScore(connection) {
+  const quotas = Array.isArray(connection?.lastQuotaSnapshot?.quotas)
+    ? connection.lastQuotaSnapshot.quotas
+    : [];
+  const sessionRows = quotas.filter(isSessionQuotaRow);
+  if (sessionRows.length === 0) return null;
+
+  const percentages = sessionRows
+    .map(quotaRemainingPercentage)
+    .filter((percentage) => percentage !== null);
+  if (percentages.length === 0) return null;
+
+  return Math.round(
+    percentages.reduce((sum, percentage) => sum + percentage, 0) / percentages.length,
+  );
+}
+
+async function markSelectedConnection(connection, consecutiveUseCount = 1) {
+  await updateProviderConnection(connection.id, {
+    lastUsedAt: new Date().toISOString(),
+    consecutiveUseCount,
+  });
+}
+
+function sortByPriorityThenOldest(a, b) {
+  const priorityDiff = (a.priority || 999) - (b.priority || 999);
+  if (priorityDiff !== 0) return priorityDiff;
+  if (!a.lastUsedAt && !b.lastUsedAt) return 0;
+  if (!a.lastUsedAt) return -1;
+  if (!b.lastUsedAt) return 1;
+  return new Date(a.lastUsedAt) - new Date(b.lastUsedAt);
+}
+
 /**
  * Get provider credentials from localDb
  * Filters out unavailable accounts and returns the selected account based on strategy
@@ -114,6 +178,22 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     }
     if (connection) {
       // skip strategy
+    } else if (strategy === "highest-session-quota") {
+      const scored = availableConnections
+        .map((candidate) => ({
+          candidate,
+          score: getSessionQuotaScore(candidate),
+        }))
+        .filter((entry) => entry.score !== null)
+        .sort((a, b) => {
+          if (b.score !== a.score) return b.score - a.score;
+          return sortByPriorityThenOldest(a.candidate, b.candidate);
+        });
+
+      connection = scored[0]?.candidate || availableConnections[0];
+      if (connection) {
+        await markSelectedConnection(connection, (connection.consecutiveUseCount || 0) + 1);
+      }
     } else if (strategy === "round-robin") {
       const stickyLimit = providerOverride.stickyRoundRobinLimit || settings.stickyRoundRobinLimit || 3;
 
@@ -131,11 +211,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       if (current && current.lastUsedAt && currentCount < stickyLimit) {
         // Stay with current account
         connection = current;
-        // Update lastUsedAt and increment count (await to ensure persistence)
-        await updateProviderConnection(connection.id, {
-          lastUsedAt: new Date().toISOString(),
-          consecutiveUseCount: (connection.consecutiveUseCount || 0) + 1
-        });
+        await markSelectedConnection(connection, (connection.consecutiveUseCount || 0) + 1);
       } else {
         // Pick the least recently used (excluding current if possible)
         const sortedByOldest = [...availableConnections].sort((a, b) => {
@@ -147,11 +223,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
 
         connection = sortedByOldest[0];
 
-        // Update lastUsedAt and reset count to 1 (await to ensure persistence)
-        await updateProviderConnection(connection.id, {
-          lastUsedAt: new Date().toISOString(),
-          consecutiveUseCount: 1
-        });
+        await markSelectedConnection(connection, 1);
       }
     } else {
       // Default: fill-first (already sorted by priority in getProviderConnections)

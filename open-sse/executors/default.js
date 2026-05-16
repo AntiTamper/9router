@@ -15,6 +15,17 @@ export class DefaultExecutor extends BaseExecutor {
     return injectReasoningContent({ provider: this.provider, model, body });
   }
 
+  shouldRetry(status, urlIndex) {
+    if (
+      this.provider === "kimi" &&
+      (status === 401 || status === 403) &&
+      urlIndex + 1 < this.getFallbackCount()
+    ) {
+      return true;
+    }
+    return super.shouldRetry(status, urlIndex);
+  }
+
   buildUrl(model, stream, urlIndex = 0, credentials = null) {
     if (this.provider?.startsWith?.("openai-compatible-")) {
       const baseUrl = credentials?.providerSpecificData?.baseUrl || "https://api.openai.com/v1";
@@ -30,10 +41,11 @@ export class DefaultExecutor extends BaseExecutor {
     switch (this.provider) {
       case "claude":
       case "glm":
-      case "kimi":
       case "minimax":
       case "minimax-cn":
         return `${this.config.baseUrl}?beta=true`;
+      case "kimi":
+        return this.getBaseUrls()[urlIndex] || this.config.baseUrl;
       case "kimi-coding":
         return `${this.config.baseUrl}?beta=true`;
       case "gemini":
@@ -93,13 +105,18 @@ export class DefaultExecutor extends BaseExecutor {
         break;
       }
       case "glm":
-      case "kimi":
       case "minimax":
       case "minimax-cn":
       case "kimi-coding":
         headers["x-api-key"] = credentials.apiKey || credentials.accessToken;
         if (this.provider === "kimi-coding") Object.assign(headers, buildKimiHeaders());
         break;
+      case "kimi": {
+        const token = credentials.apiKey || credentials.accessToken;
+        headers["Authorization"] = `Bearer ${token}`;
+        headers["x-api-key"] = token;
+        break;
+      }
       default:
         if (this.provider?.startsWith?.("anthropic-compatible-")) {
           if (credentials.apiKey) {
