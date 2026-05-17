@@ -35,14 +35,38 @@ async function clientPingUrl(url) {
   } catch { return false; }
 }
 
-const CAVEMAN_LEVELS = [
+const CAVEMAN_MODES = [
+  { id: "normal", label: "Normal", desc: "Terse English output" },
+  { id: "wenyan", label: "Wenyan", desc: "Classical concise Chinese" },
+];
+
+const CAVEMAN_INTENSITIES = [
   { id: "lite", label: "Lite", desc: "Drop filler, keep grammar" },
   { id: "full", label: "Full", desc: "Drop articles, fragments OK" },
   { id: "ultra", label: "Ultra", desc: "Telegraphic, max compression" },
-  { id: "wenyan-lite", label: "Wenyan L", desc: "Semi-classical concise Chinese" },
-  { id: "wenyan-full", label: "Wenyan F", desc: "Classical terse Chinese" },
-  { id: "wenyan-ultra", label: "Wenyan U", desc: "Extreme classical compression" },
 ];
+
+const CAVEMAN_INTENSITY_IDS = new Set(CAVEMAN_INTENSITIES.map((item) => item.id));
+
+function getCavemanSelection(level) {
+  const raw = typeof level === "string" ? level : "full";
+  if (raw.startsWith("wenyan-")) {
+    const intensity = raw.slice("wenyan-".length);
+    return {
+      mode: "wenyan",
+      intensity: CAVEMAN_INTENSITY_IDS.has(intensity) ? intensity : "full",
+    };
+  }
+  return {
+    mode: "normal",
+    intensity: CAVEMAN_INTENSITY_IDS.has(raw) ? raw : "full",
+  };
+}
+
+function toCavemanLevel({ mode, intensity }) {
+  const safeIntensity = CAVEMAN_INTENSITY_IDS.has(intensity) ? intensity : "full";
+  return mode === "wenyan" ? `wenyan-${safeIntensity}` : safeIntensity;
+}
 
 const API_KEY_LIMIT_MODES = [
   { id: "unlimited", label: "Unlimited" },
@@ -523,6 +547,16 @@ export default function APIPageClient({ machineId }) {
   const handleCavemanLevel = (level) => {
     setCavemanLevel(level);
     patchSetting({ cavemanLevel: level });
+  };
+
+  const handleCavemanMode = (mode) => {
+    const current = getCavemanSelection(cavemanLevel);
+    handleCavemanLevel(toCavemanLevel({ ...current, mode }));
+  };
+
+  const handleCavemanIntensity = (intensity) => {
+    const current = getCavemanSelection(cavemanLevel);
+    handleCavemanLevel(toCavemanLevel({ ...current, intensity }));
   };
 
   const fetchData = async () => {
@@ -1066,6 +1100,8 @@ export default function APIPageClient({ machineId }) {
   const hiddenPreviewKeyCount = Math.max(0, keys.length - previewKeys.length);
   const needsCreateTokenLimit = newKeyLimitMode !== "unlimited" && newKeyLimitMode !== DUAL_LIMIT_MODE && !newKeyTokenLimit;
   const needsCreateDualLimits = newKeyLimitMode === DUAL_LIMIT_MODE && (!newKeyDailyTokenLimit || !newKeyWeeklyTokenLimit);
+  const cavemanSelection = getCavemanSelection(cavemanLevel);
+  const cavemanIntensityIndex = Math.max(0, CAVEMAN_INTENSITIES.findIndex((item) => item.id === cavemanSelection.intensity));
 
   return (
     <div className="flex flex-col gap-8">
@@ -1343,21 +1379,50 @@ export default function APIPageClient({ machineId }) {
           </div>
           <div className="flex items-center gap-3 shrink-0">
             {cavemanEnabled && (
-              <div className="flex items-center justify-end gap-1.5 flex-wrap max-w-[420px]">
-                {CAVEMAN_LEVELS.map((lvl) => (
-                  <button
-                    key={lvl.id}
-                    onClick={() => handleCavemanLevel(lvl.id)}
-                    className={`px-2.5 py-1.5 rounded text-xs font-medium border transition-colors ${
-                      cavemanLevel === lvl.id
-                        ? "bg-primary text-white border-primary"
-                        : "bg-transparent border-border text-text-muted hover:bg-surface-2"
-                    }`}
-                    title={lvl.desc}
-                  >
-                    {lvl.label}
-                  </button>
-                ))}
+              <div className="flex items-center justify-end gap-3 flex-wrap">
+                <div className="flex items-center gap-1 rounded-[10px] border border-border bg-bg p-1">
+                  {CAVEMAN_MODES.map((mode) => (
+                    <button
+                      key={mode.id}
+                      type="button"
+                      onClick={() => handleCavemanMode(mode.id)}
+                      className={`px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                        cavemanSelection.mode === mode.id
+                          ? "bg-primary text-white"
+                          : "text-text-muted hover:bg-surface-2 hover:text-text-main"
+                      }`}
+                      title={mode.desc}
+                    >
+                      {mode.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="min-w-[190px] rounded-[10px] border border-border bg-bg px-3 py-2">
+                  <input
+                    type="range"
+                    min="0"
+                    max={CAVEMAN_INTENSITIES.length - 1}
+                    step="1"
+                    value={cavemanIntensityIndex}
+                    onChange={(event) => {
+                      const next = CAVEMAN_INTENSITIES[Number(event.target.value)] || CAVEMAN_INTENSITIES[1];
+                      handleCavemanIntensity(next.id);
+                    }}
+                    className="block w-full accent-primary"
+                    aria-label="Caveman intensity"
+                  />
+                  <div className="mt-1 grid grid-cols-3 gap-1 text-center text-[11px] font-medium text-text-muted">
+                    {CAVEMAN_INTENSITIES.map((item) => (
+                      <span
+                        key={item.id}
+                        className={cavemanSelection.intensity === item.id ? "text-primary" : ""}
+                        title={item.desc}
+                      >
+                        {item.label}
+                      </span>
+                    ))}
+                  </div>
+                </div>
               </div>
             )}
             <Toggle
