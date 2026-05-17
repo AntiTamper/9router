@@ -268,6 +268,7 @@ export default function APIPageClient({ machineId }) {
   const [tunnelChecking, setTunnelChecking] = useState(true);
   const [tunnelEnabled, setTunnelEnabled] = useState(false);
   const [tunnelReachable, setTunnelReachable] = useState(false);
+  const [tunnelCanClientPing, setTunnelCanClientPing] = useState(false);
   const [tunnelUrl, setTunnelUrl] = useState("");
   const [tunnelPublicUrl, setTunnelPublicUrl] = useState("");
   const [tunnelLoading, setTunnelLoading] = useState(false);
@@ -279,6 +280,7 @@ export default function APIPageClient({ machineId }) {
   // Tailscale state
   const [tsEnabled, setTsEnabled] = useState(false);
   const [tsReachable, setTsReachable] = useState(false);
+  const [tsCanClientPing, setTsCanClientPing] = useState(false);
   const [tsUrl, setTsUrl] = useState("");
   const [tsLoading, setTsLoading] = useState(false);
   const [tsProgress, setTsProgress] = useState("");
@@ -348,14 +350,14 @@ export default function APIPageClient({ machineId }) {
   useEffect(() => {
     const probeBoth = async () => {
       if (document.hidden) return;
-      if (tunnelEnabled && tunnelUrl) {
+      if (tunnelEnabled && tunnelUrl && tunnelCanClientPing) {
         const ok = await clientPingUrl(tunnelUrl);
         tunnelClientReachableRef.current = ok;
         if (ok) { tunnelMissRef.current = 0; setTunnelReachable(true); if (!tunnelEverReachableRef.current) { tunnelEverReachableRef.current = true; setTunnelEverReachable(true); } }
       } else {
         tunnelClientReachableRef.current = false;
       }
-      if (tsEnabled && tsUrl) {
+      if (tsEnabled && tsUrl && tsCanClientPing) {
         const ok = await clientPingUrl(tsUrl);
         tsClientReachableRef.current = ok;
         if (ok) { tsMissRef.current = 0; setTsReachable(true); if (!tsEverReachableRef.current) { tsEverReachableRef.current = true; setTsEverReachable(true); } }
@@ -363,7 +365,7 @@ export default function APIPageClient({ machineId }) {
         tsClientReachableRef.current = false;
       }
     };
-    const anyEnabled = (tunnelEnabled && tunnelUrl) || (tsEnabled && tsUrl);
+    const anyEnabled = (tunnelEnabled && tunnelUrl && tunnelCanClientPing) || (tsEnabled && tsUrl && tsCanClientPing);
     if (!anyEnabled) return;
     probeBoth();
     const tunnelHealthy = !tunnelEnabled || tunnelReachable;
@@ -372,7 +374,7 @@ export default function APIPageClient({ machineId }) {
     const delay = allHealthy ? CLIENT_PING_SLOW_MS : CLIENT_PING_FAST_MS;
     const id = setInterval(probeBoth, delay);
     return () => clearInterval(id);
-  }, [tunnelEnabled, tunnelUrl, tsEnabled, tsUrl, tunnelReachable, tsReachable]);
+  }, [tunnelEnabled, tunnelUrl, tunnelCanClientPing, tsEnabled, tsUrl, tsCanClientPing, tunnelReachable, tsReachable]);
 
   // Effective reachable = serverReachable OR clientReachable (1 of 2 is enough).
   // Miss-debounce: only flip to false after N consecutive misses on BOTH sides.
@@ -399,15 +401,19 @@ export default function APIPageClient({ machineId }) {
       const data = await statusRes.json();
       const tEnabled = data.tunnel?.settingsEnabled ?? data.tunnel?.enabled ?? false;
       const tUrl = data.tunnel?.tunnelUrl || "";
+      const tCanClientPing = !!(data.tunnel?.running || data.tunnel?.enabled || data.tunnel?.reachable);
       setTunnelUrl(tUrl);
       setTunnelPublicUrl(data.tunnel?.publicUrl || "");
       setTunnelEnabled(tEnabled);
+      setTunnelCanClientPing(tCanClientPing);
       updateReachable(!!data.tunnel?.reachable, tunnelClientReachableRef, tunnelMissRef, setTunnelReachable, tunnelEverReachableRef, setTunnelEverReachable);
 
       const tsEn = data.tailscale?.settingsEnabled ?? data.tailscale?.enabled ?? false;
       const tsUrlVal = data.tailscale?.tunnelUrl || "";
+      const tsCanClientPingValue = !!(data.tailscale?.running || data.tailscale?.enabled || data.tailscale?.reachable);
       setTsUrl(tsUrlVal);
       setTsEnabled(tsEn);
+      setTsCanClientPing(tsCanClientPingValue);
       updateReachable(!!data.tailscale?.reachable, tsClientReachableRef, tsMissRef, setTsReachable, tsEverReachableRef, setTsEverReachable);
     } catch { /* ignore poll errors */ }
   };
@@ -433,15 +439,19 @@ export default function APIPageClient({ machineId }) {
         const data = await statusRes.json();
         const tEnabled = data.tunnel?.settingsEnabled ?? data.tunnel?.enabled ?? false;
         const tUrl = data.tunnel?.tunnelUrl || "";
+        const tCanClientPing = !!(data.tunnel?.running || data.tunnel?.enabled || data.tunnel?.reachable);
         setTunnelUrl(tUrl);
         setTunnelPublicUrl(data.tunnel?.publicUrl || "");
         setTunnelEnabled(tEnabled);
+        setTunnelCanClientPing(tCanClientPing);
         updateReachable(!!data.tunnel?.reachable, tunnelClientReachableRef, tunnelMissRef, setTunnelReachable, tunnelEverReachableRef, setTunnelEverReachable);
 
         const tsEn = data.tailscale?.settingsEnabled ?? data.tailscale?.enabled ?? false;
         const tsUrlVal = data.tailscale?.tunnelUrl || "";
+        const tsCanClientPingValue = !!(data.tailscale?.running || data.tailscale?.enabled || data.tailscale?.reachable);
         setTsUrl(tsUrlVal);
         setTsEnabled(tsEn);
+        setTsCanClientPing(tsCanClientPingValue);
         updateReachable(!!data.tailscale?.reachable, tsClientReachableRef, tsMissRef, setTsReachable, tsEverReachableRef, setTsEverReachable);
       }
     } catch (error) {
@@ -539,6 +549,7 @@ export default function APIPageClient({ machineId }) {
         const ping = await fetch(healthUrl, { mode: "no-cors", cache: "no-store" });
         if (ping.ok || ping.type === "opaque") {
           setTunnelEnabled(true);
+          setTunnelCanClientPing(true);
           setTunnelLoading(false);
           setTunnelProgress("");
           return true;
@@ -627,6 +638,7 @@ export default function APIPageClient({ machineId }) {
       const data = await res.json();
       if (res.ok) {
         setTunnelEnabled(false);
+        setTunnelCanClientPing(false);
         setTunnelUrl("");
         setShowDisableTunnelModal(false);
         setTunnelStatus({ type: "success", message: "Tunnel disabled" });
@@ -748,6 +760,7 @@ export default function APIPageClient({ machineId }) {
 
       if (res.ok && data.success) {
         setTsUrl(data.tunnelUrl || "");
+        setTsCanClientPing(true);
         const reachable = await pingTsHealth(data.tunnelUrl);
         setTsEnabled(true);
         setTsStatus(reachable ? null : { type: "warning", message: "Connected but not reachable yet." });
@@ -770,6 +783,7 @@ export default function APIPageClient({ machineId }) {
                 const data2 = await res2.json();
                 if (res2.ok && data2.success) {
                   setTsUrl(data2.tunnelUrl || "");
+                  setTsCanClientPing(true);
                   const ok2 = await pingTsHealth(data2.tunnelUrl);
                   setTsEnabled(true);
                   setTsStatus(ok2 ? null : { type: "warning", message: "Connected but not reachable yet." });
@@ -815,6 +829,7 @@ export default function APIPageClient({ machineId }) {
         if (res.ok && data.success) {
           clearUserAuth();
           setTsUrl(data.tunnelUrl || "");
+          setTsCanClientPing(true);
           const ok3 = await pingTsHealth(data.tunnelUrl);
           setTsEnabled(true);
           setTsStatus(ok3 ? null : { type: "warning", message: "Connected but not reachable yet." });
@@ -840,6 +855,7 @@ export default function APIPageClient({ machineId }) {
       const data = await res.json();
       if (res.ok) {
         setTsEnabled(false);
+        setTsCanClientPing(false);
         setTsUrl("");
         setShowDisableTsModal(false);
         setTsStatus({ type: "success", message: "Tailscale disabled" });
