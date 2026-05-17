@@ -17,6 +17,10 @@ import AddApiKeyModal from "./AddApiKeyModal";
 import EditCompatibleNodeModal from "./EditCompatibleNodeModal";
 import AddCustomModelModal from "./AddCustomModelModal";
 
+const PROVIDER_ICON_OVERRIDES = {
+  "kimi-api": "/providers/kimi.png",
+};
+
 export default function ProviderDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -42,6 +46,10 @@ export default function ProviderDetailPage() {
   const [selectedConnectionIds, setSelectedConnectionIds] = useState([]);
   const [bulkProxyPoolId, setBulkProxyPoolId] = useState("__none__");
   const [bulkUpdatingProxy, setBulkUpdatingProxy] = useState(false);
+
+  useEffect(() => {
+    setHeaderImgError(false);
+  }, [providerId]);
   const [providerStrategy, setProviderStrategy] = useState(null);
   const [providerStickyLimit, setProviderStickyLimit] = useState("");
   const [thinkingMode, setThinkingMode] = useState("auto");
@@ -867,6 +875,9 @@ export default function ProviderDetailPage() {
     }
     if (isAnthropicCompatible) {
       return "/providers/anthropic-m.png";
+    }
+    if (PROVIDER_ICON_OVERRIDES[providerInfo.id]) {
+      return PROVIDER_ICON_OVERRIDES[providerInfo.id];
     }
     return `/providers/${providerInfo.id}.png`;
   };

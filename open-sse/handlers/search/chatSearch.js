@@ -1,6 +1,6 @@
 /**
  * Wrap chat-completions endpoints (with built-in web search) into the unified
- * /v1/search response format. Supports gemini, openai, xai, kimi, minimax, perplexity.
+ * /v1/search response format. Supports gemini, openai, xai, kimi-api, minimax, perplexity.
  */
 
 const REQUEST_TIMEOUT_MS = 15000;
@@ -35,6 +35,41 @@ function normalizeCitation(c) {
   if (typeof c === "string") return { url: c };
   if (typeof c === "object" && c.url) return c;
   return null;
+}
+
+function extractKimiSearchAnswer(data) {
+  const msg = data?.choices?.[0]?.message || {};
+  const text = msg.content || "";
+  const calls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+  const citations = [];
+  for (const call of calls) {
+    const argStr = call?.function?.arguments;
+    if (!argStr) continue;
+    let parsed;
+    try {
+      parsed = typeof argStr === "string" ? JSON.parse(argStr) : argStr;
+    } catch {
+      continue;
+    }
+    const items =
+      parsed?.search_results ||
+      parsed?.results ||
+      parsed?.references ||
+      [];
+    if (Array.isArray(items)) {
+      for (const it of items) {
+        const url = it?.url || it?.link;
+        if (!url) continue;
+        citations.push({
+          url,
+          title: it.title || "",
+          snippet: it.snippet || it.summary || ""
+        });
+      }
+    }
+  }
+  const tokens = data?.usage?.total_tokens || 0;
+  return { text, citations, tokens };
 }
 
 /**
@@ -144,56 +179,6 @@ const CHAT_SEARCH_CONFIG = {
     }
   },
 
-  kimi: {
-    endpoint: () => "https://api.moonshot.ai/v1/chat/completions",
-    defaultModel: "kimi-for-coding",
-    buildBody: (query, model) => ({
-      model,
-      messages: [{ role: "user", content: query }],
-      tools: [
-        { type: "builtin_function", function: { name: "$web_search" } }
-      ]
-    }),
-    buildHeaders: (token) => ({
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`
-    }),
-    extractAnswer: (data) => {
-      const msg = data?.choices?.[0]?.message || {};
-      const text = msg.content || "";
-      const calls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
-      const citations = [];
-      for (const call of calls) {
-        const argStr = call?.function?.arguments;
-        if (!argStr) continue;
-        let parsed;
-        try {
-          parsed = typeof argStr === "string" ? JSON.parse(argStr) : argStr;
-        } catch {
-          continue;
-        }
-        const items =
-          parsed?.search_results ||
-          parsed?.results ||
-          parsed?.references ||
-          [];
-        if (Array.isArray(items)) {
-          for (const it of items) {
-            const url = it?.url || it?.link;
-            if (!url) continue;
-            citations.push({
-              url,
-              title: it.title || "",
-              snippet: it.snippet || it.summary || ""
-            });
-          }
-        }
-      }
-      const tokens = data?.usage?.total_tokens || 0;
-      return { text, citations, tokens };
-    }
-  },
-
   "kimi-api": {
     endpoint: () => "https://api.moonshot.ai/v1/chat/completions",
     defaultModel: "kimi-k2.6",
@@ -208,7 +193,7 @@ const CHAT_SEARCH_CONFIG = {
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`
     }),
-    extractAnswer: (data) => CHAT_SEARCH_CONFIG.kimi.extractAnswer(data)
+    extractAnswer: extractKimiSearchAnswer
   },
 
   minimax: {

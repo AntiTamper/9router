@@ -8,6 +8,7 @@ import {
 import { getProviderConnections, getCombos, getCustomModels, getModelAliases } from "@/lib/localDb";
 import { getDisabledModels } from "@/lib/disabledModelsDb";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
+import { guardedFetch } from "@/lib/security/urlGuard";
 
 // Per-provider live model resolvers. Each receives a connection record and
 // returns { models: [{ id, name? }, ...] } | null on failure.
@@ -91,11 +92,14 @@ async function fetchCompatibleModelIds(connection) {
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000);
-    const response = await fetch(url, {
+    const response = await guardedFetch(url, {
       method: "GET",
       headers,
       cache: "no-store",
       signal: controller.signal,
+    }, {
+      protocols: ["http:", "https:"],
+      timeoutMs: 5000,
     });
     clearTimeout(timeoutId);
 

@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { PROVIDERS } from "../../open-sse/config/providers.js";
+import { CHAT_SEARCH_CONFIG } from "../../open-sse/handlers/search/chatSearch.js";
 import { DefaultExecutor } from "../../open-sse/executors/default.js";
 import {
   buildProviderHeaders,
   buildProviderUrl,
 } from "../../open-sse/services/provider.js";
+import { AI_PROVIDERS } from "../../src/shared/constants/providers.js";
 
 describe("Kimi Code API key provider", () => {
   it("uses the Kimi Code OpenAI-compatible endpoint", () => {
@@ -57,5 +59,12 @@ describe("Kimi Code API key provider", () => {
     const headers = executor.buildHeaders({ apiKey: "sk-moonshot" }, true);
     expect(headers.Authorization).toBe("Bearer sk-moonshot");
     expect(headers["x-api-key"]).toBeUndefined();
+  });
+
+  it("keeps Kimi Code out of generic web-search and uses Kimi API for Moonshot search", () => {
+    expect(AI_PROVIDERS.kimi.serviceKinds).toEqual(["llm"]);
+    expect(AI_PROVIDERS["kimi-api"].serviceKinds).toContain("webSearch");
+    expect(CHAT_SEARCH_CONFIG.kimi).toBeUndefined();
+    expect(CHAT_SEARCH_CONFIG["kimi-api"].defaultModel).toBe("kimi-k2.6");
   });
 });

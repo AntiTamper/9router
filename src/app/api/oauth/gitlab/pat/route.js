@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { createProviderConnection } from "@/models";
+import { guardedFetch, validatePublicUrl, UrlGuardError } from "@/lib/security/urlGuard";
 
 const GITLAB_DEFAULT_BASE = "https://gitlab.com";
+const GITLAB_URL_GUARD = { protocols: ["https:"], timeoutMs: 10000 };
 
 /**
  * POST /api/oauth/gitlab/pat
@@ -22,11 +24,12 @@ export async function POST(request) {
     }
 
     const base = (baseUrl?.trim() || GITLAB_DEFAULT_BASE).replace(/\/$/, "");
+    await validatePublicUrl(base, GITLAB_URL_GUARD);
 
     // Verify token by fetching current user
-    const userRes = await fetch(`${base}/api/v4/user`, {
+    const userRes = await guardedFetch(`${base}/api/v4/user`, {
       headers: { "Private-Token": token.trim(), Accept: "application/json" },
-    });
+    }, GITLAB_URL_GUARD);
 
     if (!userRes.ok) {
       const err = await userRes.text();
@@ -56,6 +59,9 @@ export async function POST(request) {
 
     return NextResponse.json({ success: true });
   } catch (error) {
+    if (error instanceof UrlGuardError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
     console.error("GitLab PAT auth error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

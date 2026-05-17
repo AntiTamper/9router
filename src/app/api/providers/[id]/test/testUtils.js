@@ -5,6 +5,7 @@ import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/sha
 import { PROVIDER_ENDPOINTS } from "@/shared/constants/config";
 import { getDefaultModel } from "open-sse/config/providerModels.js";
 import { resolveOllamaLocalHost } from "open-sse/config/providers.js";
+import { validatePublicUrl } from "@/lib/security/urlGuard";
 import {
   GEMINI_CONFIG,
   ANTIGRAVITY_CONFIG,
@@ -16,6 +17,9 @@ import {
   KILOCODE_CONFIG,
 } from "@/lib/oauth/constants/oauth";
 import { buildClineHeaders } from "@/shared/utils/clineAuth";
+
+const USER_PROVIDER_URL_GUARD = { protocols: ["http:", "https:"] };
+const KIMI_CODE_AGENT_ERROR = "Kimi Code keys are for coding-agent compatible flows only. Use Kimi API for generic OpenAI-compatible requests.";
 
 // OAuth provider test endpoints
 const OAUTH_TEST_CONFIG = {
@@ -341,6 +345,7 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
     const modelsBase = connection.providerSpecificData?.baseUrl;
     if (!modelsBase) return { valid: false, error: "Missing base URL" };
     try {
+      await validatePublicUrl(modelsBase, USER_PROVIDER_URL_GUARD);
       const res = await fetchWithConnectionProxy(`${modelsBase.replace(/\/$/, "")}/models`, {
         headers: { "Authorization": `Bearer ${connection.apiKey}` },
       }, effectiveProxy);
@@ -354,6 +359,7 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
     let modelsBase = connection.providerSpecificData?.baseUrl;
     if (!modelsBase) return { valid: false, error: "Missing base URL" };
     try {
+      await validatePublicUrl(modelsBase, USER_PROVIDER_URL_GUARD);
       modelsBase = modelsBase.replace(/\/$/, "");
       if (modelsBase.endsWith("/messages")) modelsBase = modelsBase.slice(0, -9);
       const res = await fetchWithConnectionProxy(`${modelsBase}/models`, {
@@ -383,6 +389,8 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
       case "azure": {
         const psd = connection.providerSpecificData || {};
         const endpoint = (psd.azureEndpoint || "").replace(/\/$/, "");
+        if (!endpoint) return { valid: false, error: "Missing Azure endpoint" };
+        await validatePublicUrl(endpoint, { protocols: ["https:"] });
         const deployment = psd.deployment || "gpt-4";
         const apiVersion = psd.apiVersion || "2024-10-01-preview";
         const url = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`;
@@ -464,6 +472,12 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
           }, effectiveProxy);
           if (res.status !== 401 && res.status !== 403) {
             return { valid: true, error: null };
+          }
+          if (res.status === 403) {
+            const body = await res.text().catch(() => "");
+            if (/coding agents?/i.test(body) || /kimi for coding/i.test(body)) {
+              return { valid: false, error: KIMI_CODE_AGENT_ERROR };
+            }
           }
         }
         return { valid: false, error: "Invalid API key" };

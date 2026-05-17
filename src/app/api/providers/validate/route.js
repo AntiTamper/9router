@@ -6,6 +6,10 @@ import { resolveOllamaLocalHost, PROVIDERS } from "open-sse/config/providers.js"
 import { openaiToCommandCode } from "open-sse/translator/request/openai-to-commandcode.js";
 import { PROVIDER_ENDPOINTS } from "@/shared/constants/config";
 import { normalizeProviderId } from "@/lib/providerNormalization";
+import { guardedFetch, validatePublicUrl } from "@/lib/security/urlGuard";
+
+const USER_PROVIDER_URL_GUARD = { protocols: ["http:", "https:"], timeoutMs: 10000 };
+const KIMI_CODE_AGENT_ERROR = "Kimi Code keys are for coding-agent compatible flows only. Use Kimi API for generic OpenAI-compatible requests.";
 
 // Probe a webSearch/webFetch provider using its searchConfig/fetchConfig.
 // Returns true if API key is accepted (status !== 401 && !== 403).
@@ -100,6 +104,34 @@ async function validateOpenAIChatEndpoints(apiKey, endpoints, model) {
   return false;
 }
 
+async function validateKimiCodeEndpoint(apiKey, endpoints, model) {
+  let lastError = "Invalid API key";
+  for (const endpoint of endpoints.filter(Boolean)) {
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 1,
+        messages: [{ role: "user", content: "test" }],
+      }),
+    });
+    if (res.status !== 401 && res.status !== 403) {
+      return { valid: true, error: null };
+    }
+    if (res.status === 403) {
+      const body = await res.text().catch(() => "");
+      if (/coding agents?/i.test(body) || /kimi for coding/i.test(body)) {
+        lastError = KIMI_CODE_AGENT_ERROR;
+      }
+    }
+  }
+  return { valid: false, error: lastError };
+}
+
 // POST /api/providers/validate - Validate API key with provider
 export async function POST(request) {
   try {
@@ -123,9 +155,9 @@ export async function POST(request) {
           return NextResponse.json({ error: "OpenAI Compatible node not found" }, { status: 404 });
         }
         const modelsUrl = `${node.baseUrl?.replace(/\/$/, "")}/models`;
-        const res = await fetch(modelsUrl, {
+        const res = await guardedFetch(modelsUrl, {
           headers: { "Authorization": `Bearer ${apiKey}` },
-        });
+        }, USER_PROVIDER_URL_GUARD);
         isValid = res.ok;
         return NextResponse.json({
           valid: isValid,
@@ -140,9 +172,9 @@ export async function POST(request) {
           return NextResponse.json({ error: "Custom Embedding node not found" }, { status: 404 });
         }
         const baseUrl = node.baseUrl?.replace(/\/$/, "");
-        const modelsRes = await fetch(`${baseUrl}/models`, {
+        const modelsRes = await guardedFetch(`${baseUrl}/models`, {
           headers: { "Authorization": `Bearer ${apiKey}` },
-        });
+        }, USER_PROVIDER_URL_GUARD);
         if (modelsRes.ok) {
           return NextResponse.json({ valid: true });
         }
@@ -151,11 +183,11 @@ export async function POST(request) {
           return NextResponse.json({ valid: false, error: "Invalid API key" });
         }
         // Fallback: probe /embeddings with a common test model — many providers lack /models
-        const embedRes = await fetch(`${baseUrl}/embeddings`, {
+        const embedRes = await guardedFetch(`${baseUrl}/embeddings`, {
           method: "POST",
           headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
           body: JSON.stringify({ model: "test", input: "ping" }),
-        });
+        }, USER_PROVIDER_URL_GUARD);
         // 401/403 = bad key; anything else (including 400 "model not found") means key works
         isValid = embedRes.status !== 401 && embedRes.status !== 403;
         return NextResponse.json({
@@ -177,13 +209,13 @@ export async function POST(request) {
 
         const modelsUrl = `${normalizedBase}/models`;
 
-        const res = await fetch(modelsUrl, {
+        const res = await guardedFetch(modelsUrl, {
           headers: {
             "x-api-key": apiKey,
             "anthropic-version": "2023-06-01",
             "Authorization": `Bearer ${apiKey}`
           },
-        });
+        }, USER_PROVIDER_URL_GUARD);
 
         isValid = res.ok;
         return NextResponse.json({
@@ -221,6 +253,10 @@ export async function POST(request) {
         const deployment = providerSpecificData?.deployment || "gpt-4";
         const apiVersion = providerSpecificData?.apiVersion || "2024-10-01-preview";
         const organization = providerSpecificData?.organization;
+        if (!endpoint) {
+          return NextResponse.json({ valid: false, error: "Missing Azure endpoint" });
+        }
+        await validatePublicUrl(endpoint, { protocols: ["https:"] });
 
         const url = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`;
         const headers = {
@@ -229,14 +265,14 @@ export async function POST(request) {
         };
         if (organization) headers["OpenAI-Organization"] = organization;
 
-        const azureRes = await fetch(url, {
+        const azureRes = await guardedFetch(url, {
           method: "POST",
           headers,
           body: JSON.stringify({
             messages: [{ role: "user", content: "test" }],
             max_tokens: 1,
           }),
-        });
+        }, { protocols: ["https:"], timeoutMs: 10000 });
         isValid = azureRes.status !== 401 && azureRes.status !== 403;
         return NextResponse.json({
           valid: isValid,
@@ -324,7 +360,13 @@ export async function POST(request) {
             const endpoints = provider === "kimi" || provider === "kimi-api"
               ? (cfg.baseUrls || [cfg.baseUrl])
               : [cfg.baseUrl];
-            isValid = await validateOpenAIChatEndpoints(apiKey, endpoints, testModel);
+            if (provider === "kimi") {
+              const result = await validateKimiCodeEndpoint(apiKey, endpoints, testModel);
+              isValid = result.valid;
+              error = result.error;
+            } else {
+              isValid = await validateOpenAIChatEndpoints(apiKey, endpoints, testModel);
+            }
           } else {
             const testModel = getDefaultModel(provider) || "claude-sonnet-4-20250514";
             const authHeaders = { "x-api-key": apiKey };
