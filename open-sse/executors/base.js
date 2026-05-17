@@ -1,5 +1,6 @@
 import { HTTP_STATUS, RETRY_CONFIG, DEFAULT_RETRY_CONFIG, resolveRetryEntry } from "../config/runtimeConfig.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
+import { detectKimiCodingAgent } from "../utils/kimiCodingAgentHeaders.js";
 
 /**
  * BaseExecutor - Base class for provider executors
@@ -122,7 +123,8 @@ export class BaseExecutor {
       if (this.provider === "kimi") {
         const upstreamModel = transformedBody?.model || model;
         const modelPart = upstreamModel !== model ? `${model}→${upstreamModel}` : model;
-        const agentPart = headers["user-agent"] ? "agent=forwarded" : "agent=none";
+        const clientAgent = detectKimiCodingAgent(clientRawRequest?.headers || {});
+        const agentPart = clientAgent ? `agent=forwarded:${clientAgent}` : "agent=openai-compat";
         log?.debug?.("KIMI", `${modelPart} | ${agentPart} | ${url}`);
       }
 

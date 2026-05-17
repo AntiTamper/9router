@@ -20,7 +20,7 @@ export async function POST(request) {
       apiKey = keys.find((k) => k.isActive !== false)?.key || null;
     } catch {}
 
-    const headers = { "Content-Type": "application/json" };
+    const headers = { "Content-Type": "application/json", "Accept": "application/json" };
     if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
     // Bypass dashboardGuard for internal self-call via CLI token (machineId-based)
     headers["x-9r-cli-token"] = await getConsistentMachineId(CLI_TOKEN_SALT);
@@ -49,17 +49,6 @@ export async function POST(request) {
         return NextResponse.json({ ok: false, latencyMs, status: res.status, error: "Provider returned no embedding data" });
       }
       return NextResponse.json({ ok: true, latencyMs, error: null, status: res.status });
-    }
-
-    if (model.startsWith("kimi/")) {
-      return NextResponse.json({
-        ok: true,
-        skipped: true,
-        latencyMs: Date.now() - start,
-        error: null,
-        status: 204,
-        message: "Kimi Code model probes are deferred; use a supported coding-agent client for the live request path.",
-      });
     }
 
     // Default: chat completions

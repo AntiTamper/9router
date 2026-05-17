@@ -4,9 +4,31 @@ import { OAUTH_ENDPOINTS, buildKimiHeaders } from "../config/appConstants.js";
 import { getModelUpstreamId } from "../config/providerModels.js";
 import { buildClineHeaders } from "../../src/shared/utils/clineAuth.js";
 import { getCachedClaudeHeaders } from "../utils/claudeHeaderCache.js";
-import { buildKimiCodingAgentHeaders } from "../utils/kimiCodingAgentHeaders.js";
+import { buildKimiOpenAICompatibilityHeaders } from "../utils/kimiCodingAgentHeaders.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
+
+const KIMI_CODING_SYSTEM_PROMPT = "You are Claude Code, Anthropic's official CLI for Claude.";
+
+function hasKimiCodingSystemPrompt(messages = []) {
+  return messages.some((message) => {
+    if (message?.role !== "system") return false;
+    if (typeof message.content === "string") return message.content.includes(KIMI_CODING_SYSTEM_PROMPT);
+    if (!Array.isArray(message.content)) return false;
+    return message.content.some((part) => part?.type === "text" && String(part.text || "").includes(KIMI_CODING_SYSTEM_PROMPT));
+  });
+}
+
+function injectKimiCodingSystemPrompt(body) {
+  if (!Array.isArray(body?.messages) || hasKimiCodingSystemPrompt(body.messages)) return body;
+  return {
+    ...body,
+    messages: [
+      { role: "system", content: KIMI_CODING_SYSTEM_PROMPT },
+      ...body.messages,
+    ],
+  };
+}
 
 export class DefaultExecutor extends BaseExecutor {
   constructor(provider) {
@@ -14,8 +36,9 @@ export class DefaultExecutor extends BaseExecutor {
   }
 
   transformRequest(model, body) {
-    const transformed = injectReasoningContent({ provider: this.provider, model, body });
+    let transformed = injectReasoningContent({ provider: this.provider, model, body });
     if (this.provider === "kimi" || this.provider === "kimi-coding") {
+      if (this.provider === "kimi") transformed = injectKimiCodingSystemPrompt(transformed);
       const alias = this.provider === "kimi-coding" ? "kmc" : "kimi";
       const upstreamModel = getModelUpstreamId(alias, transformed?.model || model);
       if (upstreamModel && upstreamModel !== transformed?.model) {
@@ -125,7 +148,7 @@ export class DefaultExecutor extends BaseExecutor {
       case "kimi": {
         const token = credentials.apiKey || credentials.accessToken;
         headers["Authorization"] = `Bearer ${token}`;
-        const agentHeaders = buildKimiCodingAgentHeaders(requestContext?.clientRawRequest?.headers || {});
+        const agentHeaders = buildKimiOpenAICompatibilityHeaders(requestContext?.clientRawRequest?.headers || {});
         Object.assign(headers, agentHeaders.headers);
         break;
       }

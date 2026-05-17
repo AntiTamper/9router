@@ -8,7 +8,7 @@ import {
 } from "../../open-sse/services/provider.js";
 import { AI_PROVIDERS } from "../../src/shared/constants/providers.js";
 import { getDefaultModel, getModelUpstreamId } from "../../open-sse/config/providerModels.js";
-import { buildKimiCodingAgentHeaders, detectKimiCodingAgent } from "../../open-sse/utils/kimiCodingAgentHeaders.js";
+import { buildKimiCodingAgentHeaders, buildKimiOpenAICompatibilityHeaders, detectKimiCodingAgent } from "../../open-sse/utils/kimiCodingAgentHeaders.js";
 
 describe("Kimi Code API key provider", () => {
   it("uses the Kimi Code OpenAI-compatible endpoint", () => {
@@ -39,6 +39,10 @@ describe("Kimi Code API key provider", () => {
     });
 
     expect(transformed.model).toBe("kimi-for-coding");
+    expect(transformed.messages[0]).toEqual({
+      role: "system",
+      content: "You are Claude Code, Anthropic's official CLI for Claude.",
+    });
   });
 
   it("does not append Claude beta query params to Kimi Code requests", () => {
@@ -83,14 +87,16 @@ describe("Kimi Code API key provider", () => {
     expect(headers.cookie).toBeUndefined();
   });
 
-  it("does not spoof Kimi Code coding-agent headers for dashboard/internal probes", () => {
+  it("bridges generic OpenAI-compatible clients with Kimi Code compatibility headers", () => {
     const executor = new DefaultExecutor("kimi");
     const headers = executor.buildHeaders({ apiKey: "sk-kimi" }, true, {
       clientRawRequest: { headers: { "user-agent": "node" } },
     });
 
     expect(headers.Authorization).toBe("Bearer sk-kimi");
-    expect(headers["user-agent"]).toBeUndefined();
+    expect(headers["user-agent"]).toContain("claude-cli/");
+    expect(headers["x-app"]).toBe("cli");
+    expect(headers["anthropic-version"]).toBe("2023-06-01");
   });
 
   it("detects supported Kimi Code clients for identity forwarding", () => {
@@ -107,6 +113,16 @@ describe("Kimi Code API key provider", () => {
     expect(headers["user-agent"]).toBe("claude-code/2.1.138");
     expect(headers["anthropic-version"]).toBe("2023-06-01");
     expect(headers.authorization).toBeUndefined();
+  });
+
+  it("prefers real coding-agent headers over compatibility bridge headers", () => {
+    const { agent, headers } = buildKimiOpenAICompatibilityHeaders({
+      "User-Agent": "Roo-Code/3.0",
+      "X-App": "roo",
+    });
+    expect(agent).toBe("roo-code");
+    expect(headers["user-agent"]).toBe("Roo-Code/3.0");
+    expect(headers["x-app"]).toBe("roo");
   });
 
   it("supports Kimi API as a separate Moonshot provider", () => {

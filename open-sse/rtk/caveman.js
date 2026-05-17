@@ -6,6 +6,7 @@ import { FORMATS } from "../translator/formats.js";
 import { CAVEMAN_PROMPTS } from "./cavemanPrompts.js";
 
 const SEP = "\n\n";
+const CAVEMAN_PROMPT_SET = new Set(Object.values(CAVEMAN_PROMPTS));
 
 export function injectCaveman(body, format, level) {
   const prompt = CAVEMAN_PROMPTS[level];
@@ -32,31 +33,35 @@ export function injectCaveman(body, format, level) {
 function injectMessagesSystem(body, prompt) {
   // OpenAI Responses API: top-level string field
   if (typeof body.instructions === "string") {
+    body.instructions = stripExistingPromptText(body.instructions);
     body.instructions = body.instructions
       ? `${body.instructions}${SEP}${prompt}`
       : prompt;
     return;
   }
 
-  const arr = Array.isArray(body.messages) ? body.messages
-    : Array.isArray(body.input) ? body.input
-    : null;
+  const isChat = Array.isArray(body.messages);
+  const isResponses = !isChat && Array.isArray(body.input);
+  const arr = isChat ? body.messages
+    : isResponses ? body.input
+      : null;
   if (!arr) return;
 
   const idx = arr.findIndex(m => m && (m.role === "system" || m.role === "developer"));
   if (idx >= 0) {
-    appendToOpenAIMessage(arr[idx], prompt);
+    appendToOpenAIMessage(arr[idx], prompt, isResponses ? "input_text" : "text");
   } else {
-    arr.unshift({ role: "system", content: prompt });
+    arr.unshift({ role: "system", content: isResponses ? [{ type: "input_text", text: prompt }] : prompt });
   }
 }
 
-function appendToOpenAIMessage(msg, prompt) {
+function appendToOpenAIMessage(msg, prompt, partType) {
   if (typeof msg.content === "string") {
+    msg.content = stripExistingPromptText(msg.content);
     msg.content = `${msg.content}${SEP}${prompt}`;
   } else if (Array.isArray(msg.content)) {
-    // Responses-style array of parts {type:"input_text"|"text", text}
-    msg.content.push({ type: "input_text", text: prompt });
+    msg.content = stripExistingPromptParts(msg.content);
+    msg.content.push({ type: partType, text: prompt });
   } else {
     msg.content = prompt;
   }
@@ -66,10 +71,12 @@ function appendToOpenAIMessage(msg, prompt) {
 // Insert before the last cache_control block to keep caveman inside the cached prefix.
 function injectClaudeSystem(body, prompt) {
   if (typeof body.system === "string" && body.system.length > 0) {
+    body.system = stripExistingPromptText(body.system);
     body.system = `${body.system}${SEP}${prompt}`;
     return;
   }
   if (Array.isArray(body.system)) {
+    body.system = stripExistingPromptParts(body.system);
     const block = { type: "text", text: prompt };
     let lastCacheIdx = -1;
     for (let i = body.system.length - 1; i >= 0; i--) {
@@ -93,8 +100,28 @@ function injectGeminiSystem(body, prompt) {
   const key = useSnake ? "system_instruction" : "systemInstruction";
   const sys = target[key];
   if (sys && Array.isArray(sys.parts)) {
+    sys.parts = stripExistingPromptParts(sys.parts);
     sys.parts.push({ text: prompt });
     return;
   }
   target[key] = { parts: [{ text: prompt }] };
+}
+
+function stripExistingPromptText(value) {
+  let text = String(value || "");
+  for (const oldPrompt of CAVEMAN_PROMPT_SET) {
+    if (!oldPrompt) continue;
+    text = text
+      .split(`${SEP}${oldPrompt}`).join("")
+      .split(`${oldPrompt}${SEP}`).join("")
+      .split(oldPrompt).join("");
+  }
+  return text.trim();
+}
+
+function stripExistingPromptParts(parts) {
+  return parts.filter((part) => {
+    if (!part || typeof part.text !== "string") return true;
+    return !CAVEMAN_PROMPT_SET.has(part.text);
+  });
 }

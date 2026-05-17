@@ -39,6 +39,9 @@ const CAVEMAN_LEVELS = [
   { id: "lite", label: "Lite", desc: "Drop filler, keep grammar" },
   { id: "full", label: "Full", desc: "Drop articles, fragments OK" },
   { id: "ultra", label: "Ultra", desc: "Telegraphic, max compression" },
+  { id: "wenyan-lite", label: "Wenyan L", desc: "Semi-classical concise Chinese" },
+  { id: "wenyan-full", label: "Wenyan F", desc: "Classical terse Chinese" },
+  { id: "wenyan-ultra", label: "Wenyan U", desc: "Extreme classical compression" },
 ];
 
 const API_KEY_LIMIT_MODES = [
@@ -1340,12 +1343,12 @@ export default function APIPageClient({ machineId }) {
           </div>
           <div className="flex items-center gap-3 shrink-0">
             {cavemanEnabled && (
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center justify-end gap-1.5 flex-wrap max-w-[420px]">
                 {CAVEMAN_LEVELS.map((lvl) => (
                   <button
                     key={lvl.id}
                     onClick={() => handleCavemanLevel(lvl.id)}
-                    className={`px-3 py-1.5 rounded text-xs font-medium border transition-colors ${
+                    className={`px-2.5 py-1.5 rounded text-xs font-medium border transition-colors ${
                       cavemanLevel === lvl.id
                         ? "bg-primary text-white border-primary"
                         : "bg-transparent border-border text-text-muted hover:bg-surface-2"

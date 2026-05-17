@@ -10,6 +10,7 @@ export const revalidate = 0;
 const SETTINGS_RESPONSE_HEADERS = {
   "Cache-Control": "no-store"
 };
+const ALLOWED_CAVEMAN_LEVELS = new Set(["lite", "full", "ultra", "wenyan-lite", "wenyan-full", "wenyan-ultra"]);
 
 export async function GET() {
   try {
@@ -35,6 +36,10 @@ export async function GET() {
 export async function PATCH(request) {
   try {
     const body = await request.json();
+
+    if (Object.prototype.hasOwnProperty.call(body, "cavemanLevel") && !ALLOWED_CAVEMAN_LEVELS.has(body.cavemanLevel)) {
+      return NextResponse.json({ error: "Invalid cavemanLevel" }, { status: 400 });
+    }
 
     // If updating password, hash it
     if (body.newPassword) {
