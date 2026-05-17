@@ -8,6 +8,7 @@
 
 import { describe, it, expect } from "vitest";
 import { openaiToClaudeRequest } from "../../open-sse/translator/request/openai-to-claude.js";
+import { prepareClaudeRequest } from "../../open-sse/translator/helpers/claudeHelper.js";
 
 describe("openaiToClaudeRequest", () => {
   describe("response_format handling", () => {
@@ -119,6 +120,70 @@ describe("openaiToClaudeRequest", () => {
       
       expect(systemText).toContain("You are a helpful math tutor");
       expect(systemText).toContain("You must respond with valid JSON");
+    });
+  });
+
+  describe("tool_choice handling", () => {
+    const baseTool = {
+      type: "function",
+      function: {
+        name: "scan_project",
+        description: "Scan project",
+        parameters: { type: "object", properties: {} }
+      }
+    };
+
+    it("should convert OpenAI string tool_choice into Claude object form", () => {
+      const result = openaiToClaudeRequest("claude-sonnet-4.5", {
+        messages: [{ role: "user", content: "scan" }],
+        tools: [baseTool],
+        tool_choice: "auto"
+      }, false);
+
+      expect(result.tool_choice).toEqual({ type: "auto" });
+    });
+
+    it("should convert OpenAI required tool_choice into Claude any form", () => {
+      const result = openaiToClaudeRequest("claude-sonnet-4.5", {
+        messages: [{ role: "user", content: "scan" }],
+        tools: [baseTool],
+        tool_choice: "required"
+      }, false);
+
+      expect(result.tool_choice).toEqual({ type: "any" });
+    });
+
+    it("should convert OpenAI function tool_choice into Claude tool form", () => {
+      const result = openaiToClaudeRequest("claude-sonnet-4.5", {
+        messages: [{ role: "user", content: "scan" }],
+        tools: [baseTool],
+        tool_choice: { type: "function", function: { name: "scan_project" } }
+      }, false);
+
+      expect(result.tool_choice).toEqual({ type: "tool", name: "scan_project" });
+    });
+
+    it("should normalize same-format Claude string tool_choice before dispatch", () => {
+      const body = {
+        messages: [{ role: "user", content: [{ type: "text", text: "scan" }] }],
+        tools: [{ name: "scan_project", description: "Scan project", input_schema: { type: "object", properties: {} } }],
+        tool_choice: "auto"
+      };
+
+      const result = prepareClaudeRequest(body, "claude");
+
+      expect(result.tool_choice).toEqual({ type: "auto" });
+    });
+
+    it("should remove tool_choice when Claude tools are absent", () => {
+      const body = {
+        messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+        tool_choice: "auto"
+      };
+
+      const result = prepareClaudeRequest(body, "claude");
+
+      expect(result.tool_choice).toBeUndefined();
     });
   });
 });

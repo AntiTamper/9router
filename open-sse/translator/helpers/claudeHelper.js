@@ -78,6 +78,46 @@ export function fixToolUseOrdering(messages) {
 
 const CLAUDE_FORMAT_PROVIDERS_WITHOUT_OUTPUT_CONFIG = new Set(["minimax", "minimax-cn"]);
 
+function normalizeClaudeToolChoice(choice) {
+  if (!choice) return null;
+
+  if (typeof choice === "string") {
+    if (choice === "auto" || choice === "none") return { type: choice };
+    if (choice === "required" || choice === "any") return { type: "any" };
+    return { type: "auto" };
+  }
+
+  if (typeof choice !== "object") return null;
+
+  const disableParallel = choice.disable_parallel_tool_use;
+  const withDisableParallel = (value) => ({
+    ...value,
+    ...(disableParallel !== undefined ? { disable_parallel_tool_use: disableParallel } : {})
+  });
+
+  if (choice.function?.name) {
+    return withDisableParallel({ type: "tool", name: choice.function.name });
+  }
+
+  if (choice.type === "function" && choice.function?.name) {
+    return withDisableParallel({ type: "tool", name: choice.function.name });
+  }
+
+  if (choice.type === "tool" && choice.name) {
+    return withDisableParallel({ type: "tool", name: choice.name });
+  }
+
+  if (choice.type === "auto" || choice.type === "none" || choice.type === "any") {
+    return withDisableParallel({ type: choice.type });
+  }
+
+  if (choice.type === "required") {
+    return withDisableParallel({ type: "any" });
+  }
+
+  return { type: "auto" };
+}
+
 // Prepare request for Claude format endpoints
 // - Cleanup cache_control
 // - Filter empty messages
@@ -201,6 +241,19 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
     if (body.tools.length === 0) {
       delete body.tools;
       delete body.tool_choice;
+    }
+  }
+
+  if (body.tool_choice !== undefined) {
+    if (!Array.isArray(body.tools) || body.tools.length === 0) {
+      delete body.tool_choice;
+    } else {
+      const normalizedToolChoice = normalizeClaudeToolChoice(body.tool_choice);
+      if (normalizedToolChoice) {
+        body.tool_choice = normalizedToolChoice;
+      } else {
+        delete body.tool_choice;
+      }
     }
   }
 
