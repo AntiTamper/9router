@@ -1,8 +1,10 @@
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
 import { OAUTH_ENDPOINTS, buildKimiHeaders } from "../config/appConstants.js";
+import { getModelUpstreamId } from "../config/providerModels.js";
 import { buildClineHeaders } from "../../src/shared/utils/clineAuth.js";
 import { getCachedClaudeHeaders } from "../utils/claudeHeaderCache.js";
+import { buildKimiCodingAgentHeaders } from "../utils/kimiCodingAgentHeaders.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 
@@ -12,7 +14,15 @@ export class DefaultExecutor extends BaseExecutor {
   }
 
   transformRequest(model, body) {
-    return injectReasoningContent({ provider: this.provider, model, body });
+    const transformed = injectReasoningContent({ provider: this.provider, model, body });
+    if (this.provider === "kimi" || this.provider === "kimi-coding") {
+      const alias = this.provider === "kimi-coding" ? "kmc" : "kimi";
+      const upstreamModel = getModelUpstreamId(alias, transformed?.model || model);
+      if (upstreamModel && upstreamModel !== transformed?.model) {
+        return { ...transformed, model: upstreamModel };
+      }
+    }
+    return transformed;
   }
 
   shouldRetry(status, urlIndex) {
@@ -63,7 +73,7 @@ export class DefaultExecutor extends BaseExecutor {
     }
   }
 
-  buildHeaders(credentials, stream = true) {
+  buildHeaders(credentials, stream = true, requestContext = null) {
     const headers = { "Content-Type": "application/json", ...this.config.headers };
 
     switch (this.provider) {
@@ -115,6 +125,8 @@ export class DefaultExecutor extends BaseExecutor {
       case "kimi": {
         const token = credentials.apiKey || credentials.accessToken;
         headers["Authorization"] = `Bearer ${token}`;
+        const agentHeaders = buildKimiCodingAgentHeaders(requestContext?.clientRawRequest?.headers || {});
+        Object.assign(headers, agentHeaders.headers);
         break;
       }
       case "kimi-api": {

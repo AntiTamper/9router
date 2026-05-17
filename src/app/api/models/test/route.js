@@ -51,6 +51,17 @@ export async function POST(request) {
       return NextResponse.json({ ok: true, latencyMs, error: null, status: res.status });
     }
 
+    if (model.startsWith("kimi/")) {
+      return NextResponse.json({
+        ok: true,
+        skipped: true,
+        latencyMs: Date.now() - start,
+        error: null,
+        status: 204,
+        message: "Kimi Code model probes are deferred; use a supported coding-agent client for the live request path.",
+      });
+    }
+
     // Default: chat completions
     const res = await fetch(`${baseUrl}/api/v1/chat/completions`, {
       method: "POST",

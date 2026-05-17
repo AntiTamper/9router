@@ -95,7 +95,7 @@ export class BaseExecutor {
     return { status: response.status, message: bodyText || `HTTP ${response.status}` };
   }
 
-  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
+  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, clientRawRequest = null }) {
     const fallbackCount = this.getFallbackCount();
     let lastError = null;
     let lastStatus = 0;
@@ -117,7 +117,14 @@ export class BaseExecutor {
     for (let urlIndex = 0; urlIndex < fallbackCount; urlIndex++) {
       const url = this.buildUrl(model, stream, urlIndex, credentials);
       const transformedBody = this.transformRequest(model, body, stream, credentials);
-      const headers = this.buildHeaders(credentials, stream);
+      const headers = this.buildHeaders(credentials, stream, { clientRawRequest, model, body: transformedBody });
+
+      if (this.provider === "kimi") {
+        const upstreamModel = transformedBody?.model || model;
+        const modelPart = upstreamModel !== model ? `${model}→${upstreamModel}` : model;
+        const agentPart = headers["user-agent"] ? "agent=forwarded" : "agent=none";
+        log?.debug?.("KIMI", `${modelPart} | ${agentPart} | ${url}`);
+      }
 
       if (!retryAttemptsByUrl[urlIndex]) retryAttemptsByUrl[urlIndex] = 0;
 

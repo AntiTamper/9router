@@ -7,6 +7,8 @@ import {
   buildProviderUrl,
 } from "../../open-sse/services/provider.js";
 import { AI_PROVIDERS } from "../../src/shared/constants/providers.js";
+import { getDefaultModel, getModelUpstreamId } from "../../open-sse/config/providerModels.js";
+import { buildKimiCodingAgentHeaders, detectKimiCodingAgent } from "../../open-sse/utils/kimiCodingAgentHeaders.js";
 
 describe("Kimi Code API key provider", () => {
   it("uses the Kimi Code OpenAI-compatible endpoint", () => {
@@ -18,17 +20,32 @@ describe("Kimi Code API key provider", () => {
     ]);
 
     const executor = new DefaultExecutor("kimi");
-    expect(executor.buildUrl("kimi-for-coding", true)).toBe(PROVIDERS.kimi.baseUrl);
-    expect(buildProviderUrl("kimi", "kimi-for-coding", true)).toBe(
+    expect(executor.buildUrl("kimi-k2.6", true)).toBe(PROVIDERS.kimi.baseUrl);
+    expect(buildProviderUrl("kimi", "kimi-k2.6", true)).toBe(
       PROVIDERS.kimi.baseUrl,
     );
+  });
+
+  it("exposes Kimi K2.6 while sending Kimi Code's stable upstream model ID", () => {
+    expect(getDefaultModel("kimi")).toBe("kimi-k2.6");
+    expect(getModelUpstreamId("kimi", "kimi-k2.6")).toBe("kimi-for-coding");
+    expect(getModelUpstreamId("kmc", "kimi-k2.6")).toBe("kimi-for-coding");
+
+    const executor = new DefaultExecutor("kimi");
+    const transformed = executor.transformRequest("kimi-k2.6", {
+      model: "kimi-k2.6",
+      max_tokens: 1,
+      messages: [{ role: "user", content: "hi" }],
+    });
+
+    expect(transformed.model).toBe("kimi-for-coding");
   });
 
   it("does not append Claude beta query params to Kimi Code requests", () => {
     const executor = new DefaultExecutor("kimi");
     expect(executor.getFallbackCount()).toBe(1);
     expect(executor.shouldRetry(401, 0)).toBe(false);
-    expect(executor.buildUrl("kimi-for-coding", true)).not.toContain("beta=true");
+    expect(executor.buildUrl("kimi-k2.6", true)).not.toContain("beta=true");
   });
 
   it("sends Kimi API keys as bearer for OpenAI-compatible requests", () => {
@@ -44,6 +61,52 @@ describe("Kimi Code API key provider", () => {
       expect(headers.Authorization).toBe("Bearer sk-kimi");
       expect(headers["x-api-key"]).toBeUndefined();
     }
+  });
+
+  it("forwards real coding-agent identity headers to Kimi Code without leaking client auth", () => {
+    const executor = new DefaultExecutor("kimi");
+    const headers = executor.buildHeaders({ apiKey: "sk-kimi" }, true, {
+      clientRawRequest: {
+        headers: {
+          "user-agent": "Roo-Code/3.0",
+          authorization: "Bearer client-secret",
+          cookie: "session=secret",
+          "x-app": "roo",
+        },
+      },
+    });
+
+    expect(headers.Authorization).toBe("Bearer sk-kimi");
+    expect(headers["user-agent"]).toBe("Roo-Code/3.0");
+    expect(headers["x-app"]).toBe("roo");
+    expect(headers.authorization).toBeUndefined();
+    expect(headers.cookie).toBeUndefined();
+  });
+
+  it("does not spoof Kimi Code coding-agent headers for dashboard/internal probes", () => {
+    const executor = new DefaultExecutor("kimi");
+    const headers = executor.buildHeaders({ apiKey: "sk-kimi" }, true, {
+      clientRawRequest: { headers: { "user-agent": "node" } },
+    });
+
+    expect(headers.Authorization).toBe("Bearer sk-kimi");
+    expect(headers["user-agent"]).toBeUndefined();
+  });
+
+  it("detects supported Kimi Code clients for identity forwarding", () => {
+    expect(detectKimiCodingAgent({ "user-agent": "claude-cli/2.1.138" })).toBe("claude-code");
+    expect(detectKimiCodingAgent({ "user-agent": "Roo-Code/3.0" })).toBe("roo-code");
+    expect(detectKimiCodingAgent({ "user-agent": "OpenCode/1.0" })).toBe("opencode");
+    expect(detectKimiCodingAgent({ "user-agent": "node" })).toBeNull();
+
+    const { headers } = buildKimiCodingAgentHeaders({
+      "User-Agent": "claude-code/2.1.138",
+      "Anthropic-Version": "2023-06-01",
+      Authorization: "Bearer secret",
+    });
+    expect(headers["user-agent"]).toBe("claude-code/2.1.138");
+    expect(headers["anthropic-version"]).toBe("2023-06-01");
+    expect(headers.authorization).toBeUndefined();
   });
 
   it("supports Kimi API as a separate Moonshot provider", () => {

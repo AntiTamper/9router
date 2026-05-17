@@ -19,7 +19,6 @@ import {
 import { buildClineHeaders } from "@/shared/utils/clineAuth";
 
 const USER_PROVIDER_URL_GUARD = { protocols: ["http:", "https:"] };
-const KIMI_CODE_AGENT_ERROR = "Kimi Code keys are for coding-agent compatible flows only. Use Kimi API for generic OpenAI-compatible requests.";
 
 // OAuth provider test endpoints
 const OAUTH_TEST_CONFIG = {
@@ -458,29 +457,7 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
         return { valid, error: valid ? null : "Invalid API key" };
       }
       case "kimi": {
-        const endpoints = [
-          PROVIDER_ENDPOINTS.kimi,
-        ];
-        for (const endpoint of endpoints) {
-          const res = await fetchWithConnectionProxy(endpoint, {
-            method: "POST",
-            headers: {
-              "Authorization": `Bearer ${connection.apiKey}`,
-              "content-type": "application/json",
-            },
-            body: JSON.stringify({ model: getDefaultModel("kimi"), max_tokens: 1, messages: [{ role: "user", content: "test" }] }),
-          }, effectiveProxy);
-          if (res.status !== 401 && res.status !== 403) {
-            return { valid: true, error: null };
-          }
-          if (res.status === 403) {
-            const body = await res.text().catch(() => "");
-            if (/coding agents?/i.test(body) || /kimi for coding/i.test(body)) {
-              return { valid: false, error: KIMI_CODE_AGENT_ERROR };
-            }
-          }
-        }
-        return { valid: false, error: "Invalid API key" };
+        return { valid: true, error: null, deferred: true };
       }
       case "kimi-api": {
         const endpoints = [

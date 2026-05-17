@@ -9,7 +9,7 @@ import { normalizeProviderId } from "@/lib/providerNormalization";
 import { guardedFetch, validatePublicUrl } from "@/lib/security/urlGuard";
 
 const USER_PROVIDER_URL_GUARD = { protocols: ["http:", "https:"], timeoutMs: 10000 };
-const KIMI_CODE_AGENT_ERROR = "Kimi Code keys are for coding-agent compatible flows only. Use Kimi API for generic OpenAI-compatible requests.";
+const KIMI_CODE_AGENT_ERROR = "Kimi Code key is required.";
 
 // Probe a webSearch/webFetch provider using its searchConfig/fetchConfig.
 // Returns true if API key is accepted (status !== 401 && !== 403).
@@ -104,32 +104,10 @@ async function validateOpenAIChatEndpoints(apiKey, endpoints, model) {
   return false;
 }
 
-async function validateKimiCodeEndpoint(apiKey, endpoints, model) {
-  let lastError = "Invalid API key";
-  for (const endpoint of endpoints.filter(Boolean)) {
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: 1,
-        messages: [{ role: "user", content: "test" }],
-      }),
-    });
-    if (res.status !== 401 && res.status !== 403) {
-      return { valid: true, error: null };
-    }
-    if (res.status === 403) {
-      const body = await res.text().catch(() => "");
-      if (/coding agents?/i.test(body) || /kimi for coding/i.test(body)) {
-        lastError = KIMI_CODE_AGENT_ERROR;
-      }
-    }
-  }
-  return { valid: false, error: lastError };
+async function validateKimiCodeEndpoint(apiKey) {
+  return apiKey?.trim?.()
+    ? { valid: true, error: null, deferred: true }
+    : { valid: false, error: KIMI_CODE_AGENT_ERROR };
 }
 
 // POST /api/providers/validate - Validate API key with provider
@@ -361,7 +339,7 @@ export async function POST(request) {
               ? (cfg.baseUrls || [cfg.baseUrl])
               : [cfg.baseUrl];
             if (provider === "kimi") {
-              const result = await validateKimiCodeEndpoint(apiKey, endpoints, testModel);
+              const result = await validateKimiCodeEndpoint(apiKey);
               isValid = result.valid;
               error = result.error;
             } else {

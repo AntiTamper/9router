@@ -86,6 +86,19 @@ export async function POST(request, { params }) {
       return NextResponse.json({ error: "No models configured for this provider" }, { status: 400 });
     }
 
+    if (providerId === "kimi") {
+      const results = models.map((model) => ({
+        modelId: model.id,
+        name: model.name || model.id,
+        ok: true,
+        skipped: true,
+        latencyMs: 0,
+        error: null,
+        message: "Kimi Code model probes are deferred; use a supported coding-agent client for the live request path.",
+      }));
+      return NextResponse.json({ provider: providerId, connectionId: id, results });
+    }
+
     const apiKey = await getInternalApiKey();
     // Bypass dashboardGuard for internal self-call via CLI token (machineId-based)
     const cliToken = await getConsistentMachineId(CLI_TOKEN_SALT);
