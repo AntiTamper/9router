@@ -20,6 +20,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   resetDbAdapterForTests();
   vi.unstubAllGlobals();
   if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
@@ -280,8 +281,8 @@ describe("provider quota auto-disable", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("routes to the account with the highest cached session quota", async () => {
-    await db.updateSettings({ fallbackStrategy: "highest-session-quota" });
+  it("routes to the account with the highest cached quota", async () => {
+    await db.updateSettings({ fallbackStrategy: "highest" });
     const low = await db.createProviderConnection({
       provider: "codex",
       authType: "oauth",
@@ -315,5 +316,143 @@ describe("provider quota auto-disable", () => {
 
     expect(credentials.connectionId).toBe(high.id);
     expect(credentials.accessToken).toBe("high-token");
+  });
+
+  it("keeps legacy highest-session-quota routing compatible", async () => {
+    await db.updateSettings({ fallbackStrategy: "highest-session-quota" });
+    const low = await db.createProviderConnection({
+      provider: "codex",
+      authType: "oauth",
+      email: "legacy-low@example.com",
+      accessToken: "legacy-low-token",
+      priority: 1,
+    });
+    const high = await db.createProviderConnection({
+      provider: "codex",
+      authType: "oauth",
+      email: "legacy-high@example.com",
+      accessToken: "legacy-high-token",
+      priority: 2,
+    });
+
+    await db.updateProviderConnection(low.id, {
+      lastQuotaSnapshot: {
+        quotas: [{ name: "session", used: 90, total: 100 }],
+        savedAt: new Date().toISOString(),
+      },
+    });
+    await db.updateProviderConnection(high.id, {
+      lastQuotaSnapshot: {
+        quotas: [{ name: "session", used: 30, total: 100 }],
+        savedAt: new Date().toISOString(),
+      },
+    });
+
+    const { getProviderCredentials } = await import("@/sse/services/auth.js");
+    const credentials = await getProviderCredentials("codex");
+
+    expect(credentials.connectionId).toBe(high.id);
+    expect(credentials.accessToken).toBe("legacy-high-token");
+  });
+
+  it("routes to the account with the lowest cached quota", async () => {
+    await db.updateSettings({ fallbackStrategy: "lowest" });
+    const low = await db.createProviderConnection({
+      provider: "codex",
+      authType: "oauth",
+      email: "lowest-low@example.com",
+      accessToken: "lowest-low-token",
+      priority: 1,
+    });
+    const high = await db.createProviderConnection({
+      provider: "codex",
+      authType: "oauth",
+      email: "lowest-high@example.com",
+      accessToken: "lowest-high-token",
+      priority: 2,
+    });
+
+    await db.updateProviderConnection(low.id, {
+      lastQuotaSnapshot: {
+        quotas: [{ name: "session", used: 80, total: 100 }],
+        savedAt: new Date().toISOString(),
+      },
+    });
+    await db.updateProviderConnection(high.id, {
+      lastQuotaSnapshot: {
+        quotas: [{ name: "session", used: 10, total: 100 }],
+        savedAt: new Date().toISOString(),
+      },
+    });
+
+    const { getProviderCredentials } = await import("@/sse/services/auth.js");
+    const credentials = await getProviderCredentials("codex");
+
+    expect(credentials.connectionId).toBe(low.id);
+    expect(credentials.accessToken).toBe("lowest-low-token");
+  });
+
+  it("routes default mode one by one in provider order", async () => {
+    await db.updateSettings({ fallbackStrategy: "default" });
+    const first = await db.createProviderConnection({
+      provider: "codex",
+      authType: "oauth",
+      email: "default-1@example.com",
+      accessToken: "default-token-1",
+      priority: 1,
+    });
+    const second = await db.createProviderConnection({
+      provider: "codex",
+      authType: "oauth",
+      email: "default-2@example.com",
+      accessToken: "default-token-2",
+      priority: 2,
+    });
+    const third = await db.createProviderConnection({
+      provider: "codex",
+      authType: "oauth",
+      email: "default-3@example.com",
+      accessToken: "default-token-3",
+      priority: 3,
+    });
+
+    const { getProviderCredentials } = await import("@/sse/services/auth.js");
+
+    expect((await getProviderCredentials("codex")).connectionId).toBe(first.id);
+    expect((await getProviderCredentials("codex")).connectionId).toBe(second.id);
+    expect((await getProviderCredentials("codex")).connectionId).toBe(third.id);
+    expect((await getProviderCredentials("codex")).connectionId).toBe(first.id);
+  });
+
+  it("routes random mode to a random available account", async () => {
+    await db.updateSettings({ fallbackStrategy: "random" });
+    await db.createProviderConnection({
+      provider: "codex",
+      authType: "oauth",
+      email: "random-1@example.com",
+      accessToken: "random-token-1",
+      priority: 1,
+    });
+    const second = await db.createProviderConnection({
+      provider: "codex",
+      authType: "oauth",
+      email: "random-2@example.com",
+      accessToken: "random-token-2",
+      priority: 2,
+    });
+    await db.createProviderConnection({
+      provider: "codex",
+      authType: "oauth",
+      email: "random-3@example.com",
+      accessToken: "random-token-3",
+      priority: 3,
+    });
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    const { getProviderCredentials } = await import("@/sse/services/auth.js");
+    const credentials = await getProviderCredentials("codex");
+
+    expect(credentials.connectionId).toBe(second.id);
+    expect(credentials.accessToken).toBe("random-token-2");
   });
 });

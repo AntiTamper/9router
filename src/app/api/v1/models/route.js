@@ -1,3 +1,4 @@
+﻿import { corsOptionsResponse, getCorsHeaders } from "@/lib/cors.js";
 import { PROVIDER_MODELS, PROVIDER_ID_TO_ALIAS } from "@/shared/constants/models";
 import {
   AI_PROVIDERS,
@@ -187,8 +188,11 @@ export async function buildModelsList(kindFilter) {
   }
 
   const models = [];
+  const comboModels = [];
 
-  // Combos first (filtered by kind). Web combos expose `kind` so AI knows search vs fetch.
+  // Keep combos after concrete provider models. Many clients auto-select
+  // the first /v1/models entry; exposing a combo first makes that combo the
+  // implicit default.
   for (const combo of combos) {
     if (!comboMatchesKinds(combo, kindFilter)) continue;
     const entry = {
@@ -199,7 +203,7 @@ export async function buildModelsList(kindFilter) {
     if (combo.kind === "webSearch" || combo.kind === "webFetch") {
       entry.kind = combo.kind;
     }
-    models.push(entry);
+    comboModels.push(entry);
   }
 
   if (connections.length === 0) {
@@ -394,7 +398,7 @@ export async function buildModelsList(kindFilter) {
 
   const dedupedModels = [];
   const seenModelIds = new Set();
-  for (const model of models) {
+  for (const model of [...models, ...comboModels]) {
     if (!model?.id || seenModelIds.has(model.id)) continue;
     seenModelIds.add(model.id);
     dedupedModels.push(model);
@@ -406,26 +410,18 @@ export async function buildModelsList(kindFilter) {
 /**
  * Handle CORS preflight
  */
-export async function OPTIONS() {
-  return new Response(null, {
-    headers: {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, OPTIONS",
-      "Access-Control-Allow-Headers": "*",
-    },
-  });
+export async function OPTIONS(request) {
+  return corsOptionsResponse(request);
 }
 
 /**
  * GET /v1/models - OpenAI compatible models list (LLM/chat models only by default).
  * For other capabilities use /v1/models/{kind} (image, tts, stt, embedding, image-to-text, web).
  */
-export async function GET() {
+export async function GET(request) {
   try {
     const data = await buildModelsList([LLM_KIND]);
-    return Response.json({ object: "list", data }, {
-      headers: { "Access-Control-Allow-Origin": "*" },
-    });
+    return Response.json({ object: "list", data }, { headers: getCorsHeaders(request) });
   } catch (error) {
     console.log("Error fetching models:", error);
     return Response.json(

@@ -10,7 +10,7 @@ export const CAVEMAN_LEVELS = {
   WENYAN_ULTRA: "wenyan-ultra",
 };
 
-const SHARED_BOUNDARIES = "Code blocks, file paths, commands, errors, URLs: keep exact. Security warnings, irreversible action confirmations, multi-step ordered sequences: write normal. Resume terse style after.";
+const SHARED_BOUNDARIES = "Code blocks, file paths, commands, errors, URLs: keep exact. Code, commits, PRs: write normal. Security warnings, irreversible action confirmations, multi-step ordered sequences, clarification after repeated questions, or any ambiguity: write normal. Resume terse style after.";
 
 export const CAVEMAN_PROMPTS = {
   [CAVEMAN_LEVELS.LITE]: [

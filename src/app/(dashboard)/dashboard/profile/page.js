@@ -5,10 +5,11 @@ import { Card, Button, Toggle, Input } from "@/shared/components";
 import { useTheme } from "@/shared/hooks/useTheme";
 import { cn } from "@/shared/utils/cn";
 import { APP_CONFIG } from "@/shared/constants/config";
+import { ACCOUNT_ROUTING_MODE_OPTIONS, normalizeAccountRoutingMode } from "@/shared/utils/accountRouting";
 
 export default function ProfilePage() {
   const { theme, setTheme, isDark } = useTheme();
-  const [settings, setSettings] = useState({ fallbackStrategy: "fill-first" });
+  const [settings, setSettings] = useState({ fallbackStrategy: "default" });
   const [loading, setLoading] = useState(true);
   const [passwords, setPasswords] = useState({ current: "", new: "", confirm: "" });
   const [passStatus, setPassStatus] = useState({ type: "", message: "" });
@@ -231,24 +232,6 @@ export default function ProfilePage() {
       }
     } catch (err) {
       console.error("Failed to update combo strategy:", err);
-    }
-  };
-
-  const updateStickyLimit = async (limit) => {
-    const numLimit = parseInt(limit);
-    if (isNaN(numLimit) || numLimit < 1) return;
-
-    try {
-      const res = await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ stickyRoundRobinLimit: numLimit }),
-      });
-      if (res.ok) {
-        setSettings(prev => ({ ...prev, stickyRoundRobinLimit: numLimit }));
-      }
-    } catch (err) {
-      console.error("Failed to update sticky limit:", err);
     }
   };
 
@@ -851,41 +834,20 @@ export default function ProfilePage() {
               <div className="flex-1 min-w-0">
                 <p className="font-medium text-sm sm:text-base">Account Mode</p>
                 <p className="text-xs sm:text-sm text-text-muted">
-                  Choose how 9Router selects accounts for each provider
+                  Default rotates in account order; quota modes use cached quota status.
                 </p>
               </div>
               <select
-                value={settings.fallbackStrategy || "fill-first"}
+                value={normalizeAccountRoutingMode(settings.fallbackStrategy)}
                 onChange={(e) => updateFallbackStrategy(e.target.value)}
                 disabled={loading}
                 className="h-9 rounded-lg border border-border bg-background px-2 text-sm text-text-main focus:outline-none focus:border-primary"
               >
-                <option value="fill-first">Fill first</option>
-                <option value="round-robin">Round robin</option>
-                <option value="highest-session-quota">Highest session quota</option>
+                {ACCOUNT_ROUTING_MODE_OPTIONS.map((option) => (
+                  <option key={option.id} value={option.id}>{option.label}</option>
+                ))}
               </select>
             </div>
-
-            {/* Sticky Round Robin Limit */}
-            {settings.fallbackStrategy === "round-robin" && (
-              <div className="flex items-start sm:items-center justify-between gap-4 pt-2 border-t border-border/50">
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium text-sm sm:text-base">Sticky Limit</p>
-                  <p className="text-xs sm:text-sm text-text-muted">
-                    Calls per account before switching
-                  </p>
-                </div>
-                <Input
-                  type="number"
-                  min="1"
-                  max="10"
-                  value={settings.stickyRoundRobinLimit || 3}
-                  onChange={(e) => updateStickyLimit(e.target.value)}
-                  disabled={loading}
-                  className="w-16 sm:w-20 text-center shrink-0"
-                />
-              </div>
-            )}
 
             {/* Combo Round Robin */}
             <div className="flex items-start sm:items-center justify-between gap-4 pt-4 border-t border-border/50">
@@ -924,11 +886,13 @@ export default function ProfilePage() {
             )}
 
             <p className="text-xs text-text-muted italic pt-2 border-t border-border/50">
-              {settings.fallbackStrategy === "round-robin"
-                ? `Currently distributing requests across all available accounts with ${settings.stickyRoundRobinLimit || 3} calls per account.`
-                : settings.fallbackStrategy === "highest-session-quota"
-                  ? "Currently choosing the account with the highest cached session quota."
-                : "Currently using accounts in priority order (Fill First)."}
+              {normalizeAccountRoutingMode(settings.fallbackStrategy) === "highest"
+                ? "Currently choosing the account with the highest cached quota."
+                : normalizeAccountRoutingMode(settings.fallbackStrategy) === "lowest"
+                  ? "Currently choosing the account with the lowest cached quota."
+                  : normalizeAccountRoutingMode(settings.fallbackStrategy) === "random"
+                    ? "Currently choosing a random available account."
+                    : "Currently rotating through accounts in priority order."}
               {settings.comboStrategy === "round-robin"
                 ? ` Combos rotate after ${settings.comboStickyRoundRobinLimit || 1} call${(settings.comboStickyRoundRobinLimit || 1) === 1 ? "" : "s"} per model.`
                 : " Combos always start with their first model."}

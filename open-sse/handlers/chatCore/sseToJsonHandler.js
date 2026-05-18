@@ -100,7 +100,7 @@ export function parseSSEToOpenAIResponse(rawSSE, fallbackModel) {
  */
 export async function handleForcedSSEToJson({ providerResponse, sourceFormat, provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, trackDone, appendLog }) {
   const contentType = providerResponse.headers.get("content-type") || "";
-  const isSSE = contentType.includes("text/event-stream") || (contentType === "" && provider === "codex") || provider === "kimi";
+  const isSSE = contentType.includes("text/event-stream") || (contentType === "" && provider === "codex");
   if (!isSSE) return null; // not handled here
 
   trackDone();

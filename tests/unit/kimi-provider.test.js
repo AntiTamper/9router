@@ -9,11 +9,16 @@ import {
 import { AI_PROVIDERS } from "../../src/shared/constants/providers.js";
 import { getDefaultModel, getModelUpstreamId } from "../../open-sse/config/providerModels.js";
 import { buildKimiCodingAgentHeaders, buildKimiOpenAICompatibilityHeaders, detectKimiCodingAgent } from "../../open-sse/utils/kimiCodingAgentHeaders.js";
+import { handleForcedSSEToJson } from "../../open-sse/handlers/chatCore/sseToJsonHandler.js";
+import { isLocalProxyFailure } from "../../open-sse/utils/error.js";
 
 describe("Kimi Code API key provider", () => {
   it("uses the Kimi Code OpenAI-compatible endpoint", () => {
     expect(PROVIDERS.kimi.baseUrl).toBe(
       "https://api.kimi.com/coding/v1/chat/completions",
+    );
+    expect(PROVIDERS.kimi.anthropicBaseUrl).toBe(
+      "https://api.kimi.com/coding/v1/messages",
     );
     expect(PROVIDERS.kimi.baseUrls).toEqual([
       "https://api.kimi.com/coding/v1/chat/completions",
@@ -21,6 +26,9 @@ describe("Kimi Code API key provider", () => {
 
     const executor = new DefaultExecutor("kimi");
     expect(executor.buildUrl("kimi-k2.6", true)).toBe(PROVIDERS.kimi.baseUrl);
+    expect(
+      executor.buildUrl("kimi-k2.6", true, 0, null, { targetFormat: "claude" }),
+    ).toBe(PROVIDERS.kimi.anthropicBaseUrl);
     expect(buildProviderUrl("kimi", "kimi-k2.6", true)).toBe(
       PROVIDERS.kimi.baseUrl,
     );
@@ -43,6 +51,53 @@ describe("Kimi Code API key provider", () => {
       role: "system",
       content: "You are Claude Code, Anthropic's official CLI for Claude.",
     });
+  });
+
+  it("preserves Claude-format Kimi requests on the Anthropic-style endpoint", () => {
+    const executor = new DefaultExecutor("kimi");
+    const transformed = executor.transformRequest(
+      "kimi-k2.6",
+      {
+        model: "kimi-k2.6",
+        max_tokens: 1,
+        system: [{ type: "text", text: "system prompt" }],
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      },
+      true,
+      { apiKey: "sk-kimi" },
+      { targetFormat: "claude" },
+    );
+
+    expect(transformed.model).toBe("kimi-for-coding");
+    expect(transformed.system[0].text).toBe("system prompt");
+    expect(transformed.messages).toEqual([
+      { role: "user", content: [{ type: "text", text: "hi" }] },
+    ]);
+  });
+
+  it("does not force JSON Kimi responses through the SSE converter", async () => {
+    const response = new Response(JSON.stringify({ id: "chatcmpl_ok" }), {
+      headers: { "content-type": "application/json" },
+    });
+
+    const result = await handleForcedSSEToJson({
+      providerResponse: response,
+      provider: "kimi",
+      model: "kimi-k2.6",
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("classifies local Kimi parser errors without treating them as account failures", () => {
+    expect(
+      isLocalProxyFailure(502, "Invalid SSE response for non-streaming request"),
+    ).toBe(true);
+    expect(isLocalProxyFailure(502, "Invalid JSON response from kimi")).toBe(true);
+    expect(isLocalProxyFailure(502, "[502]: upstream gateway timeout")).toBe(false);
+    expect(
+      isLocalProxyFailure(403, "Invalid SSE response for non-streaming request"),
+    ).toBe(false);
   });
 
   it("does not append Claude beta query params to Kimi Code requests", () => {

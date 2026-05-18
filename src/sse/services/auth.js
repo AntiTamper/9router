@@ -3,11 +3,13 @@ import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
+import { normalizeAccountRoutingMode } from "@/shared/utils/accountRouting.js";
 import { restoreExpiredAutoDisabledConnections } from "@/lib/quota/autoDisable.js";
 import * as log from "../utils/logger.js";
 
 // Mutex to prevent race conditions during account selection
 let selectionMutex = Promise.resolve();
+let lastSelectionTimeMs = 0;
 
 function clampPercentage(value) {
   const n = Number(value);
@@ -57,9 +59,33 @@ function getSessionQuotaScore(connection) {
   );
 }
 
+function getQuotaRoutingScore(connection) {
+  const sessionScore = getSessionQuotaScore(connection);
+  if (sessionScore !== null) return sessionScore;
+
+  const quotas = Array.isArray(connection?.lastQuotaSnapshot?.quotas)
+    ? connection.lastQuotaSnapshot.quotas
+    : [];
+  if (quotas.length === 0) return null;
+
+  const sessionRows = quotas.filter(isSessionQuotaRow);
+  const rows = sessionRows.length > 0 ? sessionRows : quotas;
+  const percentages = rows
+    .map(quotaRemainingPercentage)
+    .filter((percentage) => percentage !== null);
+  if (percentages.length === 0) return null;
+
+  return Math.round(
+    percentages.reduce((sum, percentage) => sum + percentage, 0) / percentages.length,
+  );
+}
+
 async function markSelectedConnection(connection, consecutiveUseCount = 1) {
+  let selectedAtMs = Date.now();
+  if (selectedAtMs <= lastSelectionTimeMs) selectedAtMs = lastSelectionTimeMs + 1;
+  lastSelectionTimeMs = selectedAtMs;
   await updateProviderConnection(connection.id, {
-    lastUsedAt: new Date().toISOString(),
+    lastUsedAt: new Date(selectedAtMs).toISOString(),
     consecutiveUseCount,
   });
 }
@@ -71,6 +97,41 @@ function sortByPriorityThenOldest(a, b) {
   if (!a.lastUsedAt) return -1;
   if (!b.lastUsedAt) return 1;
   return new Date(a.lastUsedAt) - new Date(b.lastUsedAt);
+}
+
+function sortByOldestThenPriority(a, b) {
+  if (!a.lastUsedAt && !b.lastUsedAt) return (a.priority || 999) - (b.priority || 999);
+  if (!a.lastUsedAt) return -1;
+  if (!b.lastUsedAt) return 1;
+  const lastUsedDiff = new Date(a.lastUsedAt) - new Date(b.lastUsedAt);
+  if (lastUsedDiff !== 0) return lastUsedDiff;
+  return (a.priority || 999) - (b.priority || 999);
+}
+
+function pickDefaultConnection(availableConnections) {
+  return [...availableConnections].sort(sortByOldestThenPriority)[0] || null;
+}
+
+function pickQuotaConnection(availableConnections, direction) {
+  const scored = availableConnections
+    .map((candidate) => ({
+      candidate,
+      score: getQuotaRoutingScore(candidate),
+    }))
+    .filter((entry) => entry.score !== null)
+    .sort((a, b) => {
+      if (a.score !== b.score) {
+        return direction === "lowest" ? a.score - b.score : b.score - a.score;
+      }
+      return sortByPriorityThenOldest(a.candidate, b.candidate);
+    });
+
+  return scored[0]?.candidate || pickDefaultConnection(availableConnections);
+}
+
+function pickRandomConnection(availableConnections) {
+  if (availableConnections.length === 0) return null;
+  return availableConnections[Math.floor(Math.random() * availableConnections.length)] || availableConnections[0];
 }
 
 /**
@@ -166,7 +227,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const settings = await getSettings();
     // Per-provider strategy overrides global setting
     const providerOverride = (settings.providerStrategies || {})[providerId] || {};
-    const strategy = providerOverride.fallbackStrategy || settings.fallbackStrategy || "fill-first";
+    const strategy = normalizeAccountRoutingMode(providerOverride.fallbackStrategy || settings.fallbackStrategy);
 
     let connection;
     // Pin to preferred connection if specified and available
@@ -176,58 +237,20 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         log.info("AUTH", `${provider} | pinned to ${connection.id?.slice(0, 8)} (${connection.name || connection.email || "unnamed"})`);
       }
     }
-    if (connection) {
-      // skip strategy
-    } else if (strategy === "highest-session-quota") {
-      const scored = availableConnections
-        .map((candidate) => ({
-          candidate,
-          score: getSessionQuotaScore(candidate),
-        }))
-        .filter((entry) => entry.score !== null)
-        .sort((a, b) => {
-          if (b.score !== a.score) return b.score - a.score;
-          return sortByPriorityThenOldest(a.candidate, b.candidate);
-        });
-
-      connection = scored[0]?.candidate || availableConnections[0];
-      if (connection) {
-        await markSelectedConnection(connection, (connection.consecutiveUseCount || 0) + 1);
-      }
-    } else if (strategy === "round-robin") {
-      const stickyLimit = providerOverride.stickyRoundRobinLimit || settings.stickyRoundRobinLimit || 3;
-
-      // Sort by lastUsed (most recent first) to find current candidate
-      const byRecency = [...availableConnections].sort((a, b) => {
-        if (!a.lastUsedAt && !b.lastUsedAt) return (a.priority || 999) - (b.priority || 999);
-        if (!a.lastUsedAt) return 1;
-        if (!b.lastUsedAt) return -1;
-        return new Date(b.lastUsedAt) - new Date(a.lastUsedAt);
-      });
-
-      const current = byRecency[0];
-      const currentCount = current?.consecutiveUseCount || 0;
-
-      if (current && current.lastUsedAt && currentCount < stickyLimit) {
-        // Stay with current account
-        connection = current;
-        await markSelectedConnection(connection, (connection.consecutiveUseCount || 0) + 1);
+    if (!connection) {
+      if (strategy === "highest") {
+        connection = pickQuotaConnection(availableConnections, "highest");
+      } else if (strategy === "lowest") {
+        connection = pickQuotaConnection(availableConnections, "lowest");
+      } else if (strategy === "random") {
+        connection = pickRandomConnection(availableConnections);
       } else {
-        // Pick the least recently used (excluding current if possible)
-        const sortedByOldest = [...availableConnections].sort((a, b) => {
-          if (!a.lastUsedAt && !b.lastUsedAt) return (a.priority || 999) - (b.priority || 999);
-          if (!a.lastUsedAt) return -1;
-          if (!b.lastUsedAt) return 1;
-          return new Date(a.lastUsedAt) - new Date(b.lastUsedAt);
-        });
-
-        connection = sortedByOldest[0];
-
-        await markSelectedConnection(connection, 1);
+        connection = pickDefaultConnection(availableConnections);
       }
-    } else {
-      // Default: fill-first (already sorted by priority in getProviderConnections)
-      connection = availableConnections[0];
+    }
+
+    if (connection) {
+      await markSelectedConnection(connection, (connection.consecutiveUseCount || 0) + 1);
     }
 
     const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});

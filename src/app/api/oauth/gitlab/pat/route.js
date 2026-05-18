@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+﻿import { NextResponse } from "next/server";
 import { createProviderConnection } from "@/models";
 import { guardedFetch, validatePublicUrl, UrlGuardError } from "@/lib/security/urlGuard";
 
@@ -62,7 +62,7 @@ export async function POST(request) {
     if (error instanceof UrlGuardError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
-    console.error("GitLab PAT auth error:", error);
+    console.error("GitLab PAT auth error:", error?.message || error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

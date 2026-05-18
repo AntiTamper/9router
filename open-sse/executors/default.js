@@ -35,10 +35,12 @@ export class DefaultExecutor extends BaseExecutor {
     super(provider, PROVIDERS[provider] || PROVIDERS.openai);
   }
 
-  transformRequest(model, body) {
+  transformRequest(model, body, stream = true, credentials = null, requestContext = null) {
     let transformed = injectReasoningContent({ provider: this.provider, model, body });
     if (this.provider === "kimi" || this.provider === "kimi-coding") {
-      if (this.provider === "kimi") transformed = injectKimiCodingSystemPrompt(transformed);
+      if (this.provider === "kimi" && requestContext?.targetFormat !== "claude") {
+        transformed = injectKimiCodingSystemPrompt(transformed);
+      }
       const alias = this.provider === "kimi-coding" ? "kmc" : "kimi";
       const upstreamModel = getModelUpstreamId(alias, transformed?.model || model);
       if (upstreamModel && upstreamModel !== transformed?.model) {
@@ -59,7 +61,7 @@ export class DefaultExecutor extends BaseExecutor {
     return super.shouldRetry(status, urlIndex);
   }
 
-  buildUrl(model, stream, urlIndex = 0, credentials = null) {
+  buildUrl(model, stream, urlIndex = 0, credentials = null, requestContext = null) {
     if (this.provider?.startsWith?.("openai-compatible-")) {
       const baseUrl = credentials?.providerSpecificData?.baseUrl || "https://api.openai.com/v1";
       const normalized = baseUrl.replace(/\/$/, "");
@@ -78,6 +80,10 @@ export class DefaultExecutor extends BaseExecutor {
       case "minimax-cn":
         return `${this.config.baseUrl}?beta=true`;
       case "kimi":
+        if (requestContext?.targetFormat === "claude") {
+          return this.config.anthropicBaseUrl || this.config.baseUrl;
+        }
+        return this.getBaseUrls()[urlIndex] || this.config.baseUrl;
       case "kimi-api":
         return this.getBaseUrls()[urlIndex] || this.config.baseUrl;
       case "kimi-coding":
