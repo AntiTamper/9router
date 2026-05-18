@@ -1,4 +1,4 @@
-﻿import { Inter } from "next/font/google";
+import { Inter } from "next/font/google";
 import "material-symbols/outlined.css";
 import "./globals.css";
 import { ThemeProvider } from "@/shared/components/ThemeProvider";
@@ -24,6 +24,8 @@ export const metadata = {
 
 export const viewport = {
   themeColor: "#0a0a0a",
+  width: "device-width",
+  initialScale: 1,
 };
 
 export default function RootLayout({ children }) {

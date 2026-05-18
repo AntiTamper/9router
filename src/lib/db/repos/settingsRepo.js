@@ -38,6 +38,7 @@ const DEFAULT_SETTINGS = {
   rtkEnabled: true,
   cavemanEnabled: false,
   cavemanLevel: "full",
+  toonEnabled: false,
   quotaAutoToggleEnabled: true,
   quotaRefreshIntervalMs: null,
 };

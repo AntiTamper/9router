@@ -19,6 +19,7 @@ import { detectClientTool, isNativePassthrough } from "../utils/clientDetector.j
 import { dedupeTools } from "../utils/toolDeduper.js";
 import { injectCaveman } from "../rtk/caveman.js";
 import { compressMessages, formatRtkLog } from "../rtk/index.js";
+import { applyToon, formatToonLog } from "../rtk/toon.js";
 
 /**
  * Core chat handler - shared between SSE and Worker
@@ -27,7 +28,7 @@ import { compressMessages, formatRtkLog } from "../rtk/index.js";
  * @param {object} options.credentials - Provider credentials
  * @param {string} options.sourceFormatOverride - Override detected source format (e.g. "openai-responses")
  */
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, cavemanEnabled, cavemanLevel, sourceFormatOverride, providerThinking }) {
+export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, cavemanEnabled, cavemanLevel, toonEnabled, sourceFormatOverride, providerThinking }) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
 
@@ -120,6 +121,11 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   const rtkStats = compressMessages(translatedBody, rtkEnabled);
   const rtkLine = formatRtkLog(rtkStats);
   if (rtkLine) console.log(rtkLine);
+
+  // TOON: compress JSON tool_result content
+  const toonStats = applyToon(translatedBody, toonEnabled);
+  const toonLine = formatToonLog(toonStats);
+  if (toonLine) console.log(toonLine);
 
   // Caveman: inject terse-style system prompt
   if (cavemanEnabled && cavemanLevel) {

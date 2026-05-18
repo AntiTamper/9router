@@ -267,6 +267,14 @@ function ApiKeyUsageBar({ apiKey, className = "" }) {
 }
 
 export default function APIPageClient({ machineId }) {
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showKeyManager, setShowKeyManager] = useState(false);
@@ -290,6 +298,7 @@ export default function APIPageClient({ machineId }) {
   const [rtkEnabled, setRtkEnabledState] = useState(true);
   const [cavemanEnabled, setCavemanEnabled] = useState(false);
   const [cavemanLevel, setCavemanLevel] = useState("full");
+  const [toonEnabled, setToonEnabled] = useState(false);
 
   // Cloudflare Tunnel state
   const [tunnelChecking, setTunnelChecking] = useState(true);
@@ -406,6 +415,7 @@ export default function APIPageClient({ machineId }) {
   // Effective reachable = serverReachable OR clientReachable (1 of 2 is enough).
   // Miss-debounce: only flip to false after N consecutive misses on BOTH sides.
   const updateReachable = useCallback((serverReachable, clientRef, missRef, setter, everRef, everSetter) => {
+    if (!isMountedRef.current) return;
     const reachable = serverReachable || clientRef.current;
     if (reachable) {
       missRef.current = 0;
@@ -424,8 +434,10 @@ export default function APIPageClient({ machineId }) {
   const syncTunnelStatus = async () => {
     try {
       const statusRes = await fetch("/api/tunnel/status", { cache: "no-store" });
+      if (!isMountedRef.current) return;
       if (!statusRes.ok) return;
       const data = await statusRes.json();
+      if (!isMountedRef.current) return;
       const tEnabled = data.tunnel?.settingsEnabled ?? data.tunnel?.enabled ?? false;
       const tUrl = data.tunnel?.tunnelUrl || "";
       const tCanClientPing = !!(data.tunnel?.running || data.tunnel?.enabled || data.tunnel?.reachable);
@@ -446,12 +458,13 @@ export default function APIPageClient({ machineId }) {
   };
 
   const loadSettings = async () => {
-    setTunnelChecking(true);
+    if (isMountedRef.current) setTunnelChecking(true);
     try {
       const [settingsRes, statusRes] = await Promise.all([
         fetch("/api/settings"),
         fetch("/api/tunnel/status", { cache: "no-store" })
       ]);
+      if (!isMountedRef.current) return;
       if (settingsRes.ok) {
         const data = await settingsRes.json();
         setRequireApiKey(data.requireApiKey || false);
@@ -461,6 +474,7 @@ export default function APIPageClient({ machineId }) {
         setRtkEnabledState(data.rtkEnabled !== false);
         setCavemanEnabled(!!data.cavemanEnabled);
         setCavemanLevel(data.cavemanLevel || "full");
+        setToonEnabled(!!data.toonEnabled);
       }
       if (statusRes.ok) {
         const data = await statusRes.json();
@@ -484,7 +498,7 @@ export default function APIPageClient({ machineId }) {
     } catch (error) {
       console.log("Error loading settings:", error);
     } finally {
-      setTunnelChecking(false);
+      if (isMountedRef.current) setTunnelChecking(false);
     }
   };
 
@@ -549,6 +563,11 @@ export default function APIPageClient({ machineId }) {
     patchSetting({ cavemanLevel: level });
   };
 
+  const handleToonEnabled = (value) => {
+    setToonEnabled(value);
+    patchSetting({ toonEnabled: value });
+  };
+
   const handleCavemanMode = (mode) => {
     const current = getCavemanSelection(cavemanLevel);
     handleCavemanLevel(toCavemanLevel({ ...current, mode }));
@@ -563,27 +582,31 @@ export default function APIPageClient({ machineId }) {
     try {
       const keysRes = await fetch("/api/keys");
       const keysData = await keysRes.json();
-      if (keysRes.ok) {
+      if (keysRes.ok && isMountedRef.current) {
         setKeys(keysData.keys || []);
       }
     } catch (error) {
       console.log("Error fetching data:", error);
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) setLoading(false);
     }
   };
 
-  // u2500u2500u2500 Cloudflare Tunnel handlers
+  // ─── Cloudflare Tunnel handlers
   // Ping tunnel health until reachable, also check backend status to detect process die
   const pingTunnelHealth = async (url) => {
-    setTunnelLoading(true);
-    setTunnelProgress("Waiting for tunnel ready...");
+    if (isMountedRef.current) {
+      setTunnelLoading(true);
+      setTunnelProgress("Waiting for tunnel ready...");
+    }
     const healthUrl = `${url}/api/health`;
     const start = Date.now();
     while (Date.now() - start < TUNNEL_PING_MAX_MS) {
       await new Promise((r) => setTimeout(r, TUNNEL_PING_INTERVAL_MS));
+      if (!isMountedRef.current) return false;
       try {
         const ping = await fetch(healthUrl, { mode: "no-cors", cache: "no-store" });
+        if (!isMountedRef.current) return false;
         if (ping.ok || ping.type === "opaque") {
           setTunnelEnabled(true);
           setTunnelCanClientPing(true);
@@ -596,8 +619,10 @@ export default function APIPageClient({ machineId }) {
       if ((Date.now() - start) % 10000 < TUNNEL_PING_INTERVAL_MS) {
         try {
           const statusRes = await fetch("/api/tunnel/status");
+          if (!isMountedRef.current) return false;
           if (statusRes.ok) {
             const status = await statusRes.json();
+            if (!isMountedRef.current) return false;
             if (!status.tunnel?.enabled) {
               setTunnelStatus({ type: "error", message: "Tunnel process stopped unexpectedly." });
               setTunnelLoading(false);
@@ -608,9 +633,11 @@ export default function APIPageClient({ machineId }) {
         } catch { /* ignore */ }
       }
     }
-    setTunnelStatus({ type: "error", message: "Tunnel created but not reachable. Please try again." });
-    setTunnelLoading(false);
-    setTunnelProgress("");
+    if (isMountedRef.current) {
+      setTunnelStatus({ type: "error", message: "Tunnel created but not reachable. Please try again." });
+      setTunnelLoading(false);
+      setTunnelProgress("");
+    }
     return false;
   };
 
@@ -626,8 +653,10 @@ export default function APIPageClient({ machineId }) {
       while (polling) {
         try {
           const r = await fetch("/api/tunnel/status");
+          if (!isMountedRef.current) return;
           if (r.ok) {
             const s = await r.json();
+            if (!isMountedRef.current) return;
             if (s.download?.downloading) {
               setTunnelProgress(`Downloading cloudflared... ${s.download.progress}%`);
             } else if (polling) {
@@ -643,7 +672,9 @@ export default function APIPageClient({ machineId }) {
     try {
       const res = await fetch("/api/tunnel/enable", { method: "POST" });
       polling = false;
+      if (!isMountedRef.current) return;
       const data = await res.json();
+      if (!isMountedRef.current) return;
       if (!res.ok) {
         setTunnelStatus({ type: "error", message: data.error || "Failed to enable tunnel" });
         return;
@@ -659,11 +690,13 @@ export default function APIPageClient({ machineId }) {
       setTunnelPublicUrl(data.publicUrl || "");
       await pingTunnelHealth(url);
     } catch (error) {
-      setTunnelStatus({ type: "error", message: error.message });
+      if (isMountedRef.current) setTunnelStatus({ type: "error", message: error.message });
     } finally {
       polling = false;
-      setTunnelLoading(false);
-      setTunnelProgress("");
+      if (isMountedRef.current) {
+        setTunnelLoading(false);
+        setTunnelProgress("");
+      }
     }
   };
 
@@ -672,7 +705,9 @@ export default function APIPageClient({ machineId }) {
     setTunnelStatus(null);
     try {
       const res = await fetch("/api/tunnel/disable", { method: "POST" });
+      if (!isMountedRef.current) return;
       const data = await res.json();
+      if (!isMountedRef.current) return;
       if (res.ok) {
         setTunnelEnabled(false);
         setTunnelCanClientPing(false);
@@ -683,37 +718,44 @@ export default function APIPageClient({ machineId }) {
         setTunnelStatus({ type: "error", message: data.error || "Failed to disable tunnel" });
       }
     } catch (error) {
-      setTunnelStatus({ type: "error", message: error.message });
+      if (isMountedRef.current) setTunnelStatus({ type: "error", message: error.message });
     } finally {
-      setTunnelLoading(false);
+      if (isMountedRef.current) {
+        setTunnelLoading(false);
+      }
     }
   };
 
-  // u2500u2500u2500 Tailscale handlers
+  // ─── Tailscale handlers
   const checkTailscaleInstalled = async () => {
-    setTsInstalled(null);
+    if (isMountedRef.current) setTsInstalled(null);
     try {
       const res = await fetch("/api/tunnel/tailscale-check");
+      if (!isMountedRef.current) return { installed: false };
       if (res.ok) {
         const data = await res.json();
+        if (!isMountedRef.current) return { installed: false };
         setTsInstalled(data.installed);
         return data;
       }
     } catch { /* ignore */ }
-    setTsInstalled(false);
+    if (isMountedRef.current) setTsInstalled(false);
     return { installed: false };
   };
 
   const handleInstallTailscale = async () => {
-    setTsInstalling(true);
-    setTsStatus(null);
-    setTsInstallLog([]);
+    if (isMountedRef.current) {
+      setTsInstalling(true);
+      setTsStatus(null);
+      setTsInstallLog([]);
+    }
     try {
       const res = await fetch("/api/tunnel/tailscale-install", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sudoPassword: tsSudoPassword }),
       });
+      if (!isMountedRef.current) return;
       setTsSudoPassword("");
 
       const reader = res.body.getReader();
@@ -722,6 +764,7 @@ export default function APIPageClient({ machineId }) {
 
       while (true) {
         const { done, value } = await reader.read();
+        if (!isMountedRef.current) return;
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
         const parts = buffer.split("\n\n");
@@ -737,6 +780,7 @@ export default function APIPageClient({ machineId }) {
             }
           }
           if (!data) continue;
+          if (!isMountedRef.current) return;
           if (event === "progress") {
             setTsInstallLog((prev) => [...prev.slice(-50), data.message]);
           } else if (event === "done") {
@@ -751,21 +795,23 @@ export default function APIPageClient({ machineId }) {
         }
       }
     } catch (e) {
-      setTsStatus({ type: "error", message: e.message });
+      if (isMountedRef.current) setTsStatus({ type: "error", message: e.message });
     } finally {
-      setTsInstalling(false);
+      if (isMountedRef.current) setTsInstalling(false);
     }
   };
 
   // Ping Tailscale health until reachable
   const pingTsHealth = async (url) => {
-    setTsProgress("Waiting for Tailscale ready...");
+    if (isMountedRef.current) setTsProgress("Waiting for Tailscale ready...");
     const healthUrl = `${url}/api/health`;
     const start = Date.now();
     while (Date.now() - start < TUNNEL_PING_MAX_MS) {
       await new Promise((r) => setTimeout(r, TUNNEL_PING_INTERVAL_MS));
+      if (!isMountedRef.current) return false;
       try {
         const ping = await fetch(healthUrl, { mode: "no-cors", cache: "no-store" });
+        if (!isMountedRef.current) return false;
         if (ping.ok || ping.type === "opaque") return true;
       } catch { /* not ready yet */ }
     }
@@ -785,20 +831,25 @@ export default function APIPageClient({ machineId }) {
   };
 
   const handleConnectTailscale = async () => {
-    setShowTsModal(false);
-    setTsConnecting(true);
-    setTsLoading(true);
-    setTsStatus(null);
-    setTsProgress("Connecting...");
-    clearUserAuth();
+    if (isMountedRef.current) {
+      setShowTsModal(false);
+      setTsConnecting(true);
+      setTsLoading(true);
+      setTsStatus(null);
+      setTsProgress("Connecting...");
+      clearUserAuth();
+    }
     try {
       const res = await fetch("/api/tunnel/tailscale-enable", { method: "POST" });
+      if (!isMountedRef.current) return;
       const data = await res.json();
+      if (!isMountedRef.current) return;
 
       if (res.ok && data.success) {
         setTsUrl(data.tunnelUrl || "");
         setTsCanClientPing(true);
         const reachable = await pingTsHealth(data.tunnelUrl);
+        if (!isMountedRef.current) return;
         setTsEnabled(true);
         setTsStatus(reachable ? null : { type: "warning", message: "Connected but not reachable yet." });
         return;
@@ -809,19 +860,25 @@ export default function APIPageClient({ machineId }) {
         setTsProgress("Login required — click \"Open Login Page\" to continue");
         for (let i = 0; i < 40; i++) {
           await new Promise((r) => setTimeout(r, 3000));
+          if (!isMountedRef.current) return;
           try {
             const r2 = await fetch("/api/tunnel/tailscale-check");
+            if (!isMountedRef.current) return;
             if (r2.ok) {
               const check = await r2.json();
+              if (!isMountedRef.current) return;
               if (check.loggedIn) {
                 clearUserAuth();
                 setTsProgress("Starting funnel...");
                 const res2 = await fetch("/api/tunnel/tailscale-enable", { method: "POST" });
+                if (!isMountedRef.current) return;
                 const data2 = await res2.json();
+                if (!isMountedRef.current) return;
                 if (res2.ok && data2.success) {
                   setTsUrl(data2.tunnelUrl || "");
                   setTsCanClientPing(true);
                   const ok2 = await pingTsHealth(data2.tunnelUrl);
+                  if (!isMountedRef.current) return;
                   setTsEnabled(true);
                   setTsStatus(ok2 ? null : { type: "warning", message: "Connected but not reachable yet." });
                 } else if (data2.funnelNotEnabled && data2.enableUrl) {
@@ -834,8 +891,10 @@ export default function APIPageClient({ machineId }) {
             }
           } catch { /* retry */ }
         }
-        clearUserAuth();
-        setTsStatus({ type: "error", message: "Login timed out. Please try again." });
+        if (isMountedRef.current) {
+          clearUserAuth();
+          setTsStatus({ type: "error", message: "Login timed out. Please try again." });
+        }
         return;
       }
 
@@ -846,28 +905,36 @@ export default function APIPageClient({ machineId }) {
 
       setTsStatus({ type: "error", message: data.error || "Failed to connect" });
     } catch (error) {
-      setTsStatus({ type: "error", message: error.message });
+      if (isMountedRef.current) setTsStatus({ type: "error", message: error.message });
     } finally {
-      setTsLoading(false);
-      setTsConnecting(false);
-      setTsProgress("");
-      clearUserAuth();
+      if (isMountedRef.current) {
+        setTsLoading(false);
+        setTsConnecting(false);
+        setTsProgress("");
+        clearUserAuth();
+      }
     }
   };
 
   const pollFunnelEnable = async (enableUrl) => {
-    requestUserAuth(enableUrl, "Open Funnel Settings");
-    setTsProgress("Click \"Open Funnel Settings\" to enable Funnel...");
+    if (isMountedRef.current) {
+      requestUserAuth(enableUrl, "Open Funnel Settings");
+      setTsProgress("Click \"Open Funnel Settings\" to enable Funnel...");
+    }
     for (let i = 0; i < 40; i++) {
       await new Promise((r) => setTimeout(r, 3000));
+      if (!isMountedRef.current) return;
       try {
         const res = await fetch("/api/tunnel/tailscale-enable", { method: "POST" });
+        if (!isMountedRef.current) return;
         const data = await res.json();
+        if (!isMountedRef.current) return;
         if (res.ok && data.success) {
           clearUserAuth();
           setTsUrl(data.tunnelUrl || "");
           setTsCanClientPing(true);
           const ok3 = await pingTsHealth(data.tunnelUrl);
+          if (!isMountedRef.current) return;
           setTsEnabled(true);
           setTsStatus(ok3 ? null : { type: "warning", message: "Connected but not reachable yet." });
           return;
@@ -880,8 +947,10 @@ export default function APIPageClient({ machineId }) {
         }
       } catch { /* retry */ }
     }
-    clearUserAuth();
-    setTsStatus({ type: "error", message: "Timed out waiting for Funnel to be enabled." });
+    if (isMountedRef.current) {
+      clearUserAuth();
+      setTsStatus({ type: "error", message: "Timed out waiting for Funnel to be enabled." });
+    }
   };
 
   const handleDisableTailscale = async () => {
@@ -889,7 +958,9 @@ export default function APIPageClient({ machineId }) {
     setTsStatus(null);
     try {
       const res = await fetch("/api/tunnel/tailscale-disable", { method: "POST" });
+      if (!isMountedRef.current) return;
       const data = await res.json();
+      if (!isMountedRef.current) return;
       if (res.ok) {
         setTsEnabled(false);
         setTsCanClientPing(false);
@@ -900,9 +971,11 @@ export default function APIPageClient({ machineId }) {
         setTsStatus({ type: "error", message: data.error || "Failed to disable Tailscale" });
       }
     } catch (e) {
-      setTsStatus({ type: "error", message: e.message });
+      if (isMountedRef.current) setTsStatus({ type: "error", message: e.message });
     } finally {
-      setTsLoading(false);
+      if (isMountedRef.current) {
+        setTsLoading(false);
+      }
     }
   };
 
@@ -933,11 +1006,14 @@ export default function APIPageClient({ machineId }) {
           expiresInMs: newKeyExpiresInHours ? Number(newKeyExpiresInHours) * 60 * 60 * 1000 : null,
         }),
       });
+      if (!isMountedRef.current) return;
       const data = await res.json();
+      if (!isMountedRef.current) return;
 
       if (res.ok) {
         setCreatedKey(data.key);
         await fetchData();
+        if (!isMountedRef.current) return;
         setNewKeyName("");
         setNewKeyLimitMode("unlimited");
         setNewKeyTokenLimit("");
@@ -956,9 +1032,10 @@ export default function APIPageClient({ machineId }) {
       title: "Delete API Key",
       message: "Delete this API key?",
       onConfirm: async () => {
-        setConfirmState(null);
+        if (isMountedRef.current) setConfirmState(null);
         try {
           const res = await fetch(`/api/keys/${id}`, { method: "DELETE" });
+          if (!isMountedRef.current) return;
           if (res.ok) {
             setKeys(keys.filter((k) => k.id !== id));
             setVisibleKeys(prev => {
@@ -981,8 +1058,10 @@ export default function APIPageClient({ machineId }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ isActive }),
       });
+      if (!isMountedRef.current) return;
       if (res.ok) {
         const data = await res.json();
+        if (!isMountedRef.current) return;
         setKeys(prev => prev.map(k => k.id === id ? (data.key || { ...k, isActive }) : k));
       }
     } catch (error) {
@@ -1024,8 +1103,10 @@ export default function APIPageClient({ machineId }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
+      if (!isMountedRef.current) return;
+      const data = await res.json();
+      if (!isMountedRef.current) return;
       if (res.ok) {
-        const data = await res.json();
         setKeys((prev) => prev.map((k) => k.id === key.id ? data.key : k));
         setKeyEdits((prev) => {
           const next = { ...prev };
@@ -1037,7 +1118,7 @@ export default function APIPageClient({ machineId }) {
     } catch (error) {
       console.log("Error saving key config:", error);
     } finally {
-      setSavingKeyId(null);
+      if (isMountedRef.current) setSavingKeyId(null);
     }
   };
 
@@ -1047,11 +1128,13 @@ export default function APIPageClient({ machineId }) {
       title: "Reset Token Usage",
       message: `Reset ${label} token usage for "${key.name}"?`,
       onConfirm: async () => {
-        setConfirmState(null);
+        if (isMountedRef.current) setConfirmState(null);
         try {
           const res = await fetch(`/api/keys/${key.id}/usage?period=${period}`, { method: "DELETE" });
+          if (!isMountedRef.current) return;
           if (res.ok) {
             const data = await res.json();
+            if (!isMountedRef.current) return;
             setKeys((prev) => prev.map((k) => (k.id === key.id ? data.key : k)));
           }
         } catch (error) {
@@ -1430,6 +1513,28 @@ export default function APIPageClient({ machineId }) {
               onChange={() => handleCavemanEnabled(!cavemanEnabled)}
             />
           </div>
+        </div>
+        <div className="flex items-center justify-between pt-4 pb-2 gap-4 flex-wrap">
+          <div className="min-w-0 flex-1">
+            <p className="font-medium">
+              Compress JSON tool output{" "}
+              <a
+                href="https://toonformat.dev"
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs font-normal text-primary underline hover:opacity-80"
+              >
+                (TOON)
+              </a>
+            </p>
+            <p className="text-sm text-text-muted">
+              JSON tool_results → compact tabular notation (~20-50% fewer tokens)
+            </p>
+          </div>
+          <Toggle
+            checked={toonEnabled}
+            onChange={() => handleToonEnabled(!toonEnabled)}
+          />
         </div>
       </Card>
 
