@@ -57,7 +57,39 @@ export default function ProviderDetailPage() {
   const [kiloFreeModels, setKiloFreeModels] = useState([]);
   const [disabledModelIds, setDisabledModelIds] = useState([]);
   const [confirmState, setConfirmState] = useState(null);
+  const [showAgRiskModal, setShowAgRiskModal] = useState(false);
   const { copied, copy } = useCopyToClipboard();
+
+  const AG_RISK_STORAGE_KEY = "ag_risk_confirmed";
+
+  const triggerAddConnection = () => {
+    if (providerId === "antigravity" && typeof window !== "undefined") {
+      const confirmed = window.localStorage.getItem(AG_RISK_STORAGE_KEY) === "true";
+      if (!confirmed) {
+        setShowAgRiskModal(true);
+        return;
+      }
+    }
+    if (isOAuth) {
+      setShowOAuthModal(true);
+      return;
+    }
+    setAddConnectionError("");
+    setShowAddApiKeyModal(true);
+  };
+
+  const handleAgRiskConfirm = () => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(AG_RISK_STORAGE_KEY, "true");
+    }
+    setShowAgRiskModal(false);
+    if (isOAuth) {
+      setShowOAuthModal(true);
+      return;
+    }
+    setAddConnectionError("");
+    setShowAddApiKeyModal(true);
+  };
 
   const providerInfo = providerNode
     ? {
@@ -1069,17 +1101,55 @@ export default function ProviderDetailPage() {
           </div>
 
           {connections.length === 0 ? (
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 justify-between">
               <div className="flex items-center gap-3">
                 <div className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-primary/10 text-primary shrink-0">
                   <span className="material-symbols-outlined text-[18px]">{isOAuth ? "lock" : "key"}</span>
                 </div>
                 <p className="text-sm text-text-muted">No connections yet</p>
               </div>
+              <div className="flex gap-2">
+                {!isCompatible && providerId === "iflow" && (
+                  <Button size="sm" icon="cookie" variant="secondary" onClick={() => setShowIFlowCookieModal(true)}>
+                    Cookie
+                  </Button>
+                )}
+                <Button
+                  size="sm"
+                  icon="add"
+                  onClick={openAddConnection}
+                >
+                  {isCompatible ? "Add API Key" : (providerId === "iflow" ? "OAuth" : "Add Connection")}
+                </Button>
+              </div>
             </div>
           ) : (
             <>
               {connectionsList}
+              {!isCompatible && (
+                <div className="mt-4 grid grid-cols-1 gap-2 sm:flex">
+                  {providerId === "iflow" && (
+                    <Button
+                      size="sm"
+                      icon="cookie"
+                      variant="secondary"
+                      onClick={() => setShowIFlowCookieModal(true)}
+                      title="Add connection using browser cookie"
+                      className="w-full sm:w-auto"
+                    >
+                      Cookie
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    icon="add"
+                    onClick={openAddConnection}
+                    className="w-full sm:w-auto"
+                  >
+                    Add
+                  </Button>
+                </div>
+              )}
             </>
           )}
         </Card>
@@ -1208,6 +1278,18 @@ export default function ProviderDetailPage() {
           onClose={() => setShowAddCustomModel(false)}
         />
       )}
+
+      {/* AG Risk Confirmation Modal */}
+      <ConfirmModal
+        isOpen={showAgRiskModal}
+        onClose={() => setShowAgRiskModal(false)}
+        onConfirm={handleAgRiskConfirm}
+        title="Risk Notice"
+        message={providerInfo?.deprecationNotice}
+        confirmText="I Understand, Continue"
+        cancelText="Cancel"
+        variant="danger"
+      />
 
       {/* Confirm Modal */}
       <ConfirmModal

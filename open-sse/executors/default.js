@@ -1,5 +1,5 @@
 import { BaseExecutor } from "./base.js";
-import { PROVIDERS } from "../config/providers.js";
+import { PROVIDERS, resolveXiaomiTokenplanBaseUrl } from "../config/providers.js";
 import { OAUTH_ENDPOINTS, buildKimiHeaders } from "../config/appConstants.js";
 import { getModelUpstreamId } from "../config/providerModels.js";
 import { buildClineHeaders } from "../../src/shared/utils/clineAuth.js";
@@ -91,6 +91,9 @@ export class DefaultExecutor extends BaseExecutor {
       case "gemini":
         return `${this.config.baseUrl}/${model}:${stream ? "streamGenerateContent?alt=sse" : "generateContent"}`;
       default: {
+        if (this.provider === "xiaomi-tokenplan") {
+          return `${resolveXiaomiTokenplanBaseUrl(credentials)}/chat/completions`;
+        }
         const url = this.config.baseUrl;
         if (url?.includes("{accountId}")) {
           const accountId = credentials?.providerSpecificData?.accountId;
