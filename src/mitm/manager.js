@@ -88,6 +88,27 @@ function copyDirFresh(src, dest) {
   });
 }
 
+function copiedTreeComplete(src, dest) {
+  if (!fs.existsSync(src) || !fs.existsSync(dest)) return false;
+  const root = path.resolve(src);
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === "node_modules") continue;
+      const sourcePath = path.join(dir, entry.name);
+      const relativePath = path.relative(root, sourcePath);
+      const targetPath = path.join(dest, relativePath);
+      if (entry.isDirectory()) {
+        if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) return false;
+        if (!walk(sourcePath)) return false;
+      } else if (entry.isFile() && !fs.existsSync(targetPath)) {
+        return false;
+      }
+    }
+    return true;
+  };
+  return walk(root);
+}
+
 function hashRuntimeSource(mitmDir, extraFiles = []) {
   const h = crypto.createHash("sha256");
   const addFile = (file, base) => {
@@ -146,13 +167,17 @@ function ensureRuntimeServer(bundledPath) {
     const runtimeSrcDir = path.join(DATA_DIR, "runtime", `mitm-src-${runtimeHash}`, "src");
     const runtimeMitmDir = path.join(runtimeSrcDir, "mitm");
     const runtimeServer = path.join(runtimeMitmDir, "server.js");
-    if (fs.existsSync(runtimeServer)) return runtimeServer;
+    const runtimeHostsFile = path.join(runtimeSrcDir, "shared", "constants", "mitmToolHosts.js");
+    if (
+      fs.existsSync(runtimeServer) &&
+      copiedTreeComplete(sourceMitmDir, runtimeMitmDir) &&
+      (!fs.existsSync(sourceHostsFile) || fs.existsSync(runtimeHostsFile))
+    ) {
+      return runtimeServer;
+    }
 
     copyDirFresh(sourceMitmDir, runtimeMitmDir);
-    copyFileIfChanged(
-      sourceHostsFile,
-      path.join(runtimeSrcDir, "shared", "constants", "mitmToolHosts.js"),
-    );
+    if (fs.existsSync(sourceHostsFile)) copyFileIfChanged(sourceHostsFile, runtimeHostsFile);
 
     return runtimeServer;
   } catch (e) {

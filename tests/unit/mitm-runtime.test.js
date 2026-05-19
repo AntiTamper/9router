@@ -78,4 +78,27 @@ describe("MITM runtime packaging", () => {
 
     expect(nodePath.split(path.delimiter)).toContain(path.join(packageRoot, "node_modules"));
   });
+
+  it("repairs an incomplete copied runtime from older builds", () => {
+    const packageRoot = path.join(tempDir, "node_modules", "9router");
+    const serverPath = path.join(packageRoot, "src", "mitm", "server.js");
+    write(serverPath, "module.exports = require('./logger.js');\n");
+    write(path.join(packageRoot, "src", "mitm", "logger.js"), "module.exports = { ok: true };\n");
+    write(
+      path.join(packageRoot, "src", "shared", "constants", "mitmToolHosts.js"),
+      "module.exports = { TOOL_HOSTS: { antigravity: ['cloudcode-pa.googleapis.com'] } };\n",
+    );
+
+    const manager = loadManager();
+    const runtimeServer = manager._test.ensureRuntimeServer(serverPath);
+    fs.rmSync(path.join(path.dirname(runtimeServer), "logger.js"), { force: true });
+    expect(fs.existsSync(path.join(path.dirname(runtimeServer), "logger.js"))).toBe(false);
+
+    const repairedServer = manager._test.ensureRuntimeServer(serverPath);
+    const loaded = require(repairedServer);
+
+    expect(repairedServer).toBe(runtimeServer);
+    expect(loaded).toEqual({ ok: true });
+    expect(fs.existsSync(path.join(path.dirname(runtimeServer), "logger.js"))).toBe(true);
+  });
 });
