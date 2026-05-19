@@ -1,6 +1,20 @@
 // All intercepted domains + URL patterns per tool
 
+const fs = require("fs");
+
 const IS_DEV = process.env.NODE_ENV === "development";
+
+// Packaged apps / sudo secure_path may strip /usr/sbin from PATH.
+const LSOF_BIN = (() => {
+  if (process.platform === "win32") return null;
+  for (const p of ["/usr/sbin/lsof", "/usr/bin/lsof", "/sbin/lsof"]) {
+    try {
+      fs.accessSync(p, fs.constants.X_OK);
+      return p;
+    } catch { /* try next */ }
+  }
+  return "lsof";
+})();
 
 const TARGET_HOSTS = [
   "daily-cloudcode-pa.googleapis.com",
@@ -53,4 +67,4 @@ function getToolForHost(host) {
   return null;
 }
 
-module.exports = { IS_DEV, TARGET_HOSTS, URL_PATTERNS, MODEL_SYNONYMS, MODEL_PATTERNS, LOG_BLACKLIST_URL_PARTS, getToolForHost };
+module.exports = { IS_DEV, LSOF_BIN, TARGET_HOSTS, URL_PATTERNS, MODEL_SYNONYMS, MODEL_PATTERNS, LOG_BLACKLIST_URL_PARTS, getToolForHost };

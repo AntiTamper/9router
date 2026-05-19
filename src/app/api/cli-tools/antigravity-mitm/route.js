@@ -90,7 +90,7 @@ export async function GET() {
   }
 }
 
-// POST - Start MITM server (cert + server, no DNS)
+// POST - Start MITM server and auto-add hosts entries
 export async function POST(request) {
   try {
     const { apiKey, sudoPassword, mitmRouterBaseUrl, forceKillPort443 } = await request.json();
@@ -125,7 +125,13 @@ export async function POST(request) {
     const result = await startServer(apiKey, pwd, !!forceKillPort443);
     if (!isWin) setCachedPassword(pwd);
 
-    return NextResponse.json({ success: true, running: result.running, pid: result.pid });
+    return NextResponse.json({
+      success: true,
+      running: result.running,
+      pid: result.pid,
+      dnsStatus: result.dnsStatus || {},
+      dnsErrors: result.dnsErrors || {},
+    });
   } catch (error) {
     console.log("Error starting MITM server:", error.message);
     if (error.code === "PORT_443_BUSY") {
