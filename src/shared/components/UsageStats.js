@@ -209,9 +209,13 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
   // Fetch connected providers once, deduplicate by provider type
   // Always include noAuth free providers (e.g. opencode) regardless of connections
   useEffect(() => {
-    fetch("/api/providers")
+    let active = true;
+    const controller = new AbortController();
+
+    fetch("/api/providers", { signal: controller.signal })
       .then((r) => r.ok ? r.json() : null)
       .then((d) => {
+        if (!active) return;
         const seen = new Set();
         const unique = (d?.connections || []).filter((c) => {
           if (c.isActive === false) return false;
@@ -225,7 +229,14 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
           .map((p) => ({ provider: p.id, name: p.name }));
         setProviders([...unique, ...noAuthProviders]);
       })
-      .catch(() => {});
+      .catch((e) => {
+        if (e?.name !== "AbortError") return;
+      });
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
   }, []);
 
   // Fetch filtered stats via REST when period changes
@@ -234,16 +245,28 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
     if (!stats) setLoading(true);
     else setFetching(true);
 
-    fetch(`/api/usage/stats?period=${period}`)
+    let active = true;
+    const controller = new AbortController();
+
+    fetch(`/api/usage/stats?period=${period}`, { signal: controller.signal })
       .then((r) => r.ok ? r.json() : null)
       .then((data) => {
+        if (!active) return;
         if (data) setStats((prev) => ({ ...prev, ...data }));
       })
-      .catch(() => {})
+      .catch((e) => {
+        if (e?.name !== "AbortError") return;
+      })
       .finally(() => {
+        if (!active) return;
         setLoading(false);
         setFetching(false);
       });
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
   }, [period]);
 
   // SSE connection - real-time updates for activeRequests + recentRequests only

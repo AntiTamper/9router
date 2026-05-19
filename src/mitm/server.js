@@ -32,19 +32,40 @@ const handlers = {
 
 // ── SSL / SNI ─────────────────────────────────────────────────
 
+const CERT_CACHE_MAX = 128;
+const TARGET_IP_CACHE_MAX = 64;
 const certCache = new Map();
 let rootCAPem;
 
+function getCachedMapValue(map, key) {
+  if (!map.has(key)) return null;
+  const value = map.get(key);
+  map.delete(key);
+  map.set(key, value);
+  return value;
+}
+
+function setCachedMapValue(map, key, value, maxEntries) {
+  map.set(key, value);
+  while (map.size > maxEntries) {
+    const oldestKey = map.keys().next().value;
+    map.delete(oldestKey);
+  }
+}
+
 function sniCallback(servername, cb) {
   try {
-    if (certCache.has(servername)) return cb(null, certCache.get(servername));
-    const certData = getCertForDomain(servername);
-    if (!certData) return cb(new Error(`Failed to generate cert for ${servername}`));
+    const normalizedServername = String(servername || "").trim().toLowerCase();
+    if (!normalizedServername) return cb(new Error("Missing SNI servername"));
+    const cached = getCachedMapValue(certCache, normalizedServername);
+    if (cached) return cb(null, cached);
+    const certData = getCertForDomain(normalizedServername);
+    if (!certData) return cb(new Error(`Failed to generate cert for ${normalizedServername}`));
     const ctx = require("tls").createSecureContext({
       key: certData.key,
       cert: `${certData.cert}\n${rootCAPem}`
     });
-    certCache.set(servername, ctx);
+    setCachedMapValue(certCache, normalizedServername, ctx, CERT_CACHE_MAX);
     cb(null, ctx);
   } catch (e) {
     err(`SNI error for ${servername}: ${e.message}`);
@@ -65,18 +86,19 @@ try {
 
 // ── Helpers ───────────────────────────────────────────────────
 
-const cachedTargetIPs = {};
+const cachedTargetIPs = new Map();
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
 async function resolveTargetIP(hostname) {
-  const cached = cachedTargetIPs[hostname];
+  const cached = getCachedMapValue(cachedTargetIPs, hostname);
   if (cached && Date.now() - cached.ts < CACHE_TTL_MS) return cached.ip;
   const resolver = new dns.Resolver();
   resolver.setServers(["8.8.8.8"]);
   const resolve4 = promisify(resolver.resolve4.bind(resolver));
   const addresses = await resolve4(hostname);
-  cachedTargetIPs[hostname] = { ip: addresses[0], ts: Date.now() };
-  return cachedTargetIPs[hostname].ip;
+  const next = { ip: addresses[0], ts: Date.now() };
+  setCachedMapValue(cachedTargetIPs, hostname, next, TARGET_IP_CACHE_MAX);
+  return next.ip;
 }
 
 function collectBodyRaw(req) {
