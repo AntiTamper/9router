@@ -124,7 +124,9 @@ async function canAccessPublicLlmApi(request) {
 }
 
 async function canAccessLocalOnlyRoute(request) {
-  return await hasValidCliToken(request);
+  if (await hasValidCliToken(request)) return true;
+  if (!isLocalRequest(request)) return false;
+  return await hasValidToken(request);
 }
 
 async function hasValidToken(request) {

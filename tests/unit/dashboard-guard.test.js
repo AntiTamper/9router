@@ -1,12 +1,13 @@
 ﻿import { describe, it, expect } from "vitest";
 import { proxy, __test__ } from "../../src/dashboardGuard.js";
+import { createDashboardAuthToken } from "../../src/lib/auth/dashboardSession.js";
 
-function request(pathname, headers = {}) {
+function request(pathname, headers = {}, cookies = {}) {
   const normalizedHeaders = new Headers(headers);
   return {
     nextUrl: { pathname },
     headers: normalizedHeaders,
-    cookies: { get: () => undefined },
+    cookies: { get: (name) => cookies[name] ? { value: cookies[name] } : undefined },
     url: `http://localhost${pathname}`,
   };
 }
@@ -61,6 +62,26 @@ describe("dashboard guard proxy behavior", () => {
     expect(res.status).toBe(403);
     const body = await res.json();
     expect(body.error).toBe("Local only: CLI token required");
+  });
+
+  it("allows local-only route from loopback with dashboard auth token", async () => {
+    const token = await createDashboardAuthToken();
+    const res = await proxy(request(
+      "/api/cli-tools/antigravity-mitm",
+      { host: "127.0.0.1:20128", origin: "http://127.0.0.1:20128" },
+      { auth_token: token },
+    ));
+    expect(res.status).not.toBe(403);
+  });
+
+  it("blocks local-only route from remote host even with dashboard auth token", async () => {
+    const token = await createDashboardAuthToken();
+    const res = await proxy(request(
+      "/api/cli-tools/antigravity-mitm",
+      { host: "router.example.com", origin: "https://router.example.com" },
+      { auth_token: token },
+    ));
+    expect(res.status).toBe(403);
   });
 
   it("allows /api/health without auth", async () => {
