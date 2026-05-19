@@ -26,6 +26,43 @@ function withCodexReviewModels(models) {
   });
 }
 
+function withKiroVariants(models) {
+  return models.flatMap((model) => {
+    const base = {
+      ...model,
+      capabilities: { ...(model.capabilities || {}), thinking: false, agentic: false },
+    };
+    const thinking = {
+      ...model,
+      id: `${model.id}-thinking`,
+      name: `${model.name} (Thinking)`,
+      upstreamModelId: model.id,
+      capabilities: { ...(model.capabilities || {}), thinking: true, agentic: false },
+    };
+    if (model.id === "auto") {
+      return [base, thinking];
+    }
+    return [
+      base,
+      thinking,
+      {
+        ...model,
+        id: `${model.id}-agentic`,
+        name: `${model.name} (Agentic)`,
+        upstreamModelId: model.id,
+        capabilities: { ...(model.capabilities || {}), thinking: false, agentic: true },
+      },
+      {
+        ...model,
+        id: `${model.id}-thinking-agentic`,
+        name: `${model.name} (Thinking + Agentic)`,
+        upstreamModelId: model.id,
+        capabilities: { ...(model.capabilities || {}), thinking: true, agentic: true },
+      },
+    ];
+  });
+}
+
 export const PROVIDER_MODELS = {
   // OAuth Providers (using alias)
   cc: [  // Claude Code
@@ -131,26 +168,21 @@ export const PROVIDER_MODELS = {
     { id: "text-embedding-3-small", name: "Text Embedding 3 Small (GitHub)", type: "embedding" },
     { id: "text-embedding-3-large", name: "Text Embedding 3 Large (GitHub)", type: "embedding" },
   ],
-  kr: [  // Kiro AI
-    // --- Base Claude variants ---
-    // { id: "claude-opus-4.5", name: "Claude Opus 4.5" },
+  kr: withKiroVariants([  // Kiro AI; live per-account catalog overrides this when available.
+    { id: "auto", name: "Kiro Auto" },
+    { id: "claude-opus-4.7", name: "Claude Opus 4.7" },
+    { id: "claude-opus-4.6", name: "Claude Opus 4.6" },
+    { id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6" },
+    { id: "claude-opus-4.5", name: "Claude Opus 4.5" },
     { id: "claude-sonnet-4.5", name: "Claude Sonnet 4.5" },
+    { id: "claude-sonnet-4", name: "Claude Sonnet 4" },
     { id: "claude-haiku-4.5", name: "Claude Haiku 4.5" },
     { id: "deepseek-3.2", name: "DeepSeek 3.2", strip: ["image", "audio"] },
-    { id: "qwen3-coder-next", name: "Qwen3 Coder Next", strip: ["image", "audio"] },
+    { id: "minimax-m2.5", name: "MiniMax M2.5" },
+    { id: "minimax-m2.1", name: "MiniMax M2.1" },
     { id: "glm-5", name: "GLM 5" },
-    { id: "MiniMax-M2.5", name: "MiniMax M2.5" },
-    // --- Thinking variants (alias to base; thinking is enabled at request time
-    //     via <thinking_mode>enabled</thinking_mode> system-prompt injection) ---
-    { id: "claude-sonnet-4.5-thinking", name: "Claude Sonnet 4.5 (Thinking)" },
-    { id: "claude-haiku-4.5-thinking", name: "Claude Haiku 4.5 (Thinking)" },
-    // --- Agentic variants (synthetic; same upstream model + chunked-write
-    //     system prompt to dodge Kiro's 2-3 min server timeout on big writes) ---
-    { id: "claude-sonnet-4.5-agentic", name: "Claude Sonnet 4.5 (Agentic)" },
-    { id: "claude-haiku-4.5-agentic", name: "Claude Haiku 4.5 (Agentic)" },
-    { id: "claude-sonnet-4.5-thinking-agentic", name: "Claude Sonnet 4.5 (Thinking + Agentic)" },
-    { id: "claude-haiku-4.5-thinking-agentic", name: "Claude Haiku 4.5 (Thinking + Agentic)" },
-  ],
+    { id: "qwen3-coder-next", name: "Qwen3 Coder Next", strip: ["image", "audio"] },
+  ]),
   cu: [  // Cursor IDE
     { id: "default", name: "Auto (Server Picks)" },
     { id: "claude-4.5-opus-high-thinking", name: "Claude 4.5 Opus High Thinking" },

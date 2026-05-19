@@ -36,6 +36,7 @@ const DEFAULT_SETTINGS = {
   mitmRouterBaseUrl: DEFAULT_MITM_ROUTER_BASE,
   dnsToolEnabled: {},
   rtkEnabled: true,
+  toonEnabled: false,
   cavemanEnabled: false,
   cavemanLevel: "full",
   quotaAutoToggleEnabled: true,

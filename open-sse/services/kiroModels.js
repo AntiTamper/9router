@@ -32,6 +32,7 @@ const KIRO_VERSION = "0.10.32";
 const DEFAULT_REGION = "us-east-1";
 const FETCH_TIMEOUT_MS = 30_000;
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes per credential
+const CACHE_MAX_ENTRIES = 64;
 
 /** @type {Map<string, { expiresAt: number, models: any[] }>} */
 const catalogCache = new Map();
@@ -171,9 +172,11 @@ async function fetchKiroCatalogRaw(credentials, signal) {
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort("timeout"), FETCH_TIMEOUT_MS);
+  let abortForwarder = null;
   // Forward outer cancellation if any.
   if (signal && typeof signal.addEventListener === "function") {
-    signal.addEventListener("abort", () => controller.abort(signal.reason));
+    abortForwarder = () => controller.abort(signal.reason);
+    signal.addEventListener("abort", abortForwarder, { once: true });
   }
 
   let response;
@@ -185,6 +188,9 @@ async function fetchKiroCatalogRaw(credentials, signal) {
     });
   } finally {
     clearTimeout(timer);
+    if (signal && abortForwarder && typeof signal.removeEventListener === "function") {
+      signal.removeEventListener("abort", abortForwarder);
+    }
   }
 
   if (!response.ok) {
@@ -311,8 +317,20 @@ export async function resolveKiroModels(credentials, options = {}) {
     models: expanded,
     rawModels: raw
   });
+  pruneCatalogCache(now);
 
   return { models: expanded, rawModels: raw };
+}
+
+function pruneCatalogCache(now = Date.now()) {
+  for (const [entryKey, entry] of catalogCache.entries()) {
+    if (!entry || entry.expiresAt <= now) catalogCache.delete(entryKey);
+  }
+  while (catalogCache.size > CACHE_MAX_ENTRIES) {
+    const oldestKey = catalogCache.keys().next().value;
+    if (!oldestKey) break;
+    catalogCache.delete(oldestKey);
+  }
 }
 
 /**

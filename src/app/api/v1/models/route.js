@@ -10,6 +10,7 @@ import { getProviderConnections, getCombos, getCustomModels, getModelAliases } f
 import { getDisabledModels } from "@/lib/disabledModelsDb";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
 import { guardedFetch } from "@/lib/security/urlGuard";
+import { updateProviderCredentials } from "@/sse/services/tokenRefresh";
 
 // Per-provider live model resolvers. Each receives a connection record and
 // returns { models: [{ id, name? }, ...] } | null on failure.
@@ -20,7 +21,17 @@ const LIVE_MODEL_RESOLVERS = {
       accessToken: conn.accessToken,
       refreshToken: conn.refreshToken,
       providerSpecificData: conn.providerSpecificData || {}
-    }, { log: console });
+    }, {
+      log: console,
+      onCredentialsRefreshed: async (refreshed) => {
+        if (!refreshed?.accessToken) return;
+        await updateProviderCredentials(conn.id, {
+          accessToken: refreshed.accessToken,
+          refreshToken: refreshed.refreshToken || conn.refreshToken,
+          expiresIn: refreshed.expiresIn,
+        });
+      },
+    });
     return result?.models?.length ? { models: result.models } : null;
   }
 };
