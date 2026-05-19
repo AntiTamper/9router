@@ -18,3 +18,5 @@ if (!fs.existsSync(standaloneDir)) {
 
 copyDir(path.join(root, "public"), path.join(standaloneDir, "public"));
 copyDir(path.join(distDir, "static"), path.join(standaloneDir, path.basename(distDir), "static"));
+copyDir(path.join(root, "src", "mitm"), path.join(standaloneDir, "src", "mitm"));
+copyDir(path.join(root, "src", "shared", "constants"), path.join(standaloneDir, "src", "shared", "constants"));
