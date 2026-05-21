@@ -66,6 +66,7 @@ export default function APIPageClient({ machineId }) {
   const [hasPassword, setHasPassword] = useState(true);
   const [tunnelDashboardAccess, setTunnelDashboardAccess] = useState(false);
   const [rtkEnabled, setRtkEnabledState] = useState(true);
+  const [toonEnabled, setToonEnabled] = useState(false);
   const [cavemanEnabled, setCavemanEnabled] = useState(false);
   const [cavemanLevel, setCavemanLevel] = useState("full");
 
@@ -237,6 +238,7 @@ export default function APIPageClient({ machineId }) {
         setHasPassword(data.hasPassword || false);
         setTunnelDashboardAccess(data.tunnelDashboardAccess || false);
         setRtkEnabledState(data.rtkEnabled !== false);
+        setToonEnabled(!!data.toonEnabled);
         setCavemanEnabled(!!data.cavemanEnabled);
         setCavemanLevel(data.cavemanLevel || "full");
       }
@@ -316,6 +318,11 @@ export default function APIPageClient({ machineId }) {
   const handleCavemanEnabled = (value) => {
     setCavemanEnabled(value);
     patchSetting({ cavemanEnabled: value });
+  };
+
+  const handleToonEnabled = (value) => {
+    setToonEnabled(value);
+    patchSetting({ toonEnabled: value });
   };
 
   const handleCavemanLevel = (level) => {
@@ -1046,6 +1053,28 @@ export default function APIPageClient({ machineId }) {
           <Toggle
             checked={rtkEnabled}
             onChange={() => handleRtkEnabled(!rtkEnabled)}
+          />
+        </div>
+        <div className="flex items-center justify-between py-4 border-b border-border gap-4">
+          <div className="min-w-0 flex-1">
+            <p className="font-medium">
+              Compress JSON tool output{" "}
+              <a
+                href="https://github.com/toon-format/toon"
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs font-normal text-primary underline hover:opacity-80"
+              >
+                (TOON)
+              </a>
+            </p>
+            <p className="text-sm text-text-muted">
+              Lossless JSON → compact table notation before dispatch
+            </p>
+          </div>
+          <Toggle
+            checked={toonEnabled}
+            onChange={() => handleToonEnabled(!toonEnabled)}
           />
         </div>
         <div className="flex items-center justify-between pt-4 gap-4 flex-wrap">
