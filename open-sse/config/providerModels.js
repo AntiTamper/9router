@@ -909,6 +909,29 @@ function stripSyntheticModelSuffixes(modelId) {
   return out;
 }
 
+// Family defaults: per-alias contextWindow used when neither the per-model
+// row nor a live catalog provides a value. Numbers are conservative upstream
+// limits; Claude 1M context is opt-in via beta header so the safe default is 200000.
+const FAMILY_CONTEXT_WINDOW = {
+  cc: 200000, claude: 200000, anthropic: 200000,
+  cx: 400000, codex: 400000, openai: 128000,
+  gc: 1048576, gemini: 1048576, "gemini-cli": 1048576, vertex: 1048576,
+  qw: 256000, qwen: 256000,
+  if: 128000, iflow: 128000,
+  ag: 1048576, antigravity: 1048576,
+  gh: 128000, copilot: 128000, github: 128000,
+  kr: 200000, kiro: 200000,
+  kimi: 262144, "kimi-api": 262144, "kimi-coding": 262144, kmc: 262144,
+  glm: 128000, deepseek: 128000, minimax: 256000,
+  grok: 128000, openrouter: 128000, kc: 200000,
+};
+
+export function getFamilyContextWindow(aliasOrId) {
+  if (!aliasOrId) return null;
+  const v = FAMILY_CONTEXT_WINDOW[aliasOrId];
+  return Number.isFinite(v) && v > 0 ? v : null;
+}
+
 /**
  * Resolve the static context-window for a (alias, modelId).
  * Returns the per-model contextWindow if present in PROVIDER_MODELS,

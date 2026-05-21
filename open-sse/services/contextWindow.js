@@ -10,7 +10,7 @@
 // All callers that need a number can post-fall-back themselves; we never
 // guess a value here so misconfigured static entries do not mask real bugs.
 
-import { getStaticContextWindow, getStaticMaxOutputTokens } from "../config/providerModels.js";
+import { getStaticContextWindow, getStaticMaxOutputTokens, getFamilyContextWindow } from "../config/providerModels.js";
 import { resolveKimiModels } from "./kimiModels.js";
 
 const KIMI_PROVIDER_KEYS = new Set(["kimi", "kimi-api", "kimi-coding", "kmc"]);
@@ -73,6 +73,13 @@ export function resolveModelContextWindow({ alias, providerId, modelId, live, cu
   const staticOut = getStaticMaxOutputTokens(alias, modelId) ?? getStaticMaxOutputTokens(providerId, modelId);
   if (staticCtx) {
     return { contextWindow: staticCtx, maxOutputTokens: staticOut, source: "static" };
+  }
+
+  // Last resort: per-family default (e.g. cc -> 200000, gc -> 1048576). Lets
+  // Codex/Kiro see *some* context window for models that lack explicit metadata.
+  const familyCtx = getFamilyContextWindow(alias) ?? getFamilyContextWindow(providerId);
+  if (familyCtx) {
+    return { contextWindow: familyCtx, maxOutputTokens: staticOut, source: "family" };
   }
 
   return {
