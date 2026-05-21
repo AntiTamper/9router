@@ -12,6 +12,12 @@ export function injectCaveman(body, format, level) {
   const prompt = CAVEMAN_PROMPTS[level];
   if (!body || !prompt) return;
 
+  // Kiro format: body.conversationState wraps system message in conversationState.systemMessage.text
+  if (body.conversationState) {
+    injectKiroSystem(body, prompt);
+    return;
+  }
+
   switch (format) {
     case FORMATS.CLAUDE:
       injectClaudeSystem(body, prompt);
@@ -105,6 +111,18 @@ function injectGeminiSystem(body, prompt) {
     return;
   }
   target[key] = { parts: [{ text: prompt }] };
+}
+
+function injectKiroSystem(body, prompt) {
+  const state = body.conversationState;
+  if (!state) return;
+  const sys = state.systemMessage;
+  if (sys && typeof sys.text === "string") {
+    sys.text = stripExistingPromptText(sys.text);
+    sys.text = sys.text ? `${sys.text}${SEP}${prompt}` : prompt;
+    return;
+  }
+  state.systemMessage = { text: prompt };
 }
 
 function stripExistingPromptText(value) {

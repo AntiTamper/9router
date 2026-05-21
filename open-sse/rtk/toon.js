@@ -25,6 +25,12 @@ export function tryToon(text) {
 
 export function applyToon(body, enabled) {
   if (!enabled || !body) return null;
+
+  // Kiro format: conversationState.history + conversationState.currentMessage
+  if (body.conversationState) {
+    return applyToonKiroFormat(body);
+  }
+
   const items = Array.isArray(body.messages)
     ? body.messages
     : Array.isArray(body.input)
@@ -105,6 +111,32 @@ function compressTextToon(text, stats, shape) {
 
   stats.bytesAfter += bytesIn;
   return text;
+}
+
+function applyToonKiroFormat(body) {
+  const stats = { bytesBefore: 0, bytesAfter: 0, hits: [] };
+  try {
+    const state = body.conversationState;
+    const allMessages = [...(Array.isArray(state?.history) ? state.history : [])];
+    if (state?.currentMessage) allMessages.push(state.currentMessage);
+    for (const msg of allMessages) {
+      const toolResults = msg?.userInputMessage?.userInputMessageContext?.toolResults;
+      if (!Array.isArray(toolResults)) continue;
+      for (const tr of toolResults) {
+        if (tr.status === "error") continue;
+        if (!Array.isArray(tr.content)) continue;
+        for (const part of tr.content) {
+          if (part && typeof part.text === "string") {
+            part.text = compressTextToon(part.text, stats, "kiro-tool-result");
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.warn("[TOON] applyToonKiroFormat error:", error?.message || error);
+    return null;
+  }
+  return stats;
 }
 
 export function formatToonLog(stats) {
