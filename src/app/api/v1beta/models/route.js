@@ -1,5 +1,6 @@
 ﻿import { PROVIDER_MODELS } from "@/shared/constants/models";
 import { corsOptionsResponse, getCorsHeaders } from "@/lib/cors.js";
+import { getStaticContextWindow, getStaticMaxOutputTokens } from "open-sse/config/providerModels.js";
 
 /**
  * Handle CORS preflight
@@ -19,13 +20,15 @@ export async function GET(request) {
     
     for (const [provider, providerModels] of Object.entries(PROVIDER_MODELS)) {
       for (const model of providerModels) {
+        const ctxWindow = Number(model.contextWindow) || getStaticContextWindow(provider, model.id) || 128000;
+        const maxOut = Number(model.maxOutputTokens) || getStaticMaxOutputTokens(provider, model.id) || 8192;
         models.push({
           name: `models/${provider}/${model.id}`,
           displayName: model.name || model.id,
           description: `${provider} model: ${model.name || model.id}`,
           supportedGenerationMethods: ["generateContent"],
-          inputTokenLimit: 128000,
-          outputTokenLimit: 8192,
+          inputTokenLimit: ctxWindow,
+          outputTokenLimit: maxOut,
         });
       }
     }

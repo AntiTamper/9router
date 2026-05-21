@@ -200,8 +200,8 @@ export const PROVIDER_MODELS = {
     { id: "gpt-5.3-codex", name: "GPT 5.3 Codex" },
   ],
   kmc: [  // Kimi Coding
-    { id: "kimi-for-coding", name: "Kimi for Coding" },
-    { id: "kimi-k2.6", name: "Kimi K2.6", upstreamModelId: "kimi-for-coding" },
+    { id: "kimi-for-coding", name: "Kimi for Coding", contextWindow: 262144, targetFormat: "claude" },
+    { id: "kimi-k2.6", name: "Kimi K2.6", upstreamModelId: "kimi-for-coding", contextWindow: 262144, targetFormat: "claude" },
     { id: "kimi-k2.5", name: "Kimi K2.5" },
     { id: "kimi-k2.5-thinking", name: "Kimi K2.5 Thinking" },
     { id: "kimi-latest", name: "Kimi Latest" },
@@ -356,13 +356,13 @@ export const PROVIDER_MODELS = {
     { id: "glm-4.5-air", name: "GLM-4.5-Air" },
   ],
   kimi: [
-    { id: "kimi-k2.6", name: "Kimi K2.6 (Kimi Code)", upstreamModelId: "kimi-for-coding" },
+    { id: "kimi-k2.6", name: "Kimi K2.6 (Kimi Code)", upstreamModelId: "kimi-for-coding", contextWindow: 262144 },
   ],
   "kimi-api": [
-    { id: "kimi-k2.6", name: "Kimi K2.6" },
-    { id: "kimi-k2.5", name: "Kimi K2.5" },
-    { id: "kimi-k2.5-thinking", name: "Kimi K2.5 Thinking" },
-    { id: "kimi-latest", name: "Kimi Latest" },
+    { id: "kimi-k2.6", name: "Kimi K2.6", contextWindow: 262144 },
+    { id: "kimi-k2.5", name: "Kimi K2.5", contextWindow: 262144 },
+    { id: "kimi-k2.5-thinking", name: "Kimi K2.5 Thinking", contextWindow: 262144 },
+    { id: "kimi-latest", name: "Kimi Latest", contextWindow: 262144 },
   ],
   minimax: [
     { id: "MiniMax-M2.7", name: "MiniMax M2.7" },
@@ -897,6 +897,45 @@ export function getModelQuotaFamily(aliasOrId, modelId) {
   const models = PROVIDER_MODELS[aliasOrId];
   const found = models?.find(m => m.id === modelId);
   return found?.quotaFamily || "normal";
+}
+
+// Strip 9router synthetic suffixes (-thinking, -agentic, -review, etc.) for context-window lookups.
+function stripSyntheticModelSuffixes(modelId) {
+  if (typeof modelId !== "string") return modelId;
+  let out = modelId;
+  for (const sfx of ["-thinking-agentic", "-thinking", "-agentic", "-review", "-xhigh", "-high", "-low", "-none", "-spark"]) {
+    if (out.endsWith(sfx)) { out = out.slice(0, -sfx.length); break; }
+  }
+  return out;
+}
+
+/**
+ * Resolve the static context-window for a (alias, modelId).
+ * Returns the per-model contextWindow if present in PROVIDER_MODELS,
+ * otherwise null. Live overrides (Kiro/Kimi catalogs) merge on top via
+ * services/contextWindow.js.
+ */
+export function getStaticContextWindow(aliasOrId, modelId) {
+  const list = PROVIDER_MODELS[aliasOrId];
+  if (!Array.isArray(list)) return null;
+  const id = stripSyntheticModelSuffixes(modelId);
+  const found = list.find(m => m.id === modelId) || list.find(m => m.id === id);
+  if (!found) return null;
+  const ctx = Number(found.contextWindow);
+  return Number.isFinite(ctx) && ctx > 0 ? ctx : null;
+}
+
+/**
+ * Resolve the static max-output tokens for a (alias, modelId), if present.
+ */
+export function getStaticMaxOutputTokens(aliasOrId, modelId) {
+  const list = PROVIDER_MODELS[aliasOrId];
+  if (!Array.isArray(list)) return null;
+  const id = stripSyntheticModelSuffixes(modelId);
+  const found = list.find(m => m.id === modelId) || list.find(m => m.id === id);
+  if (!found) return null;
+  const max = Number(found.maxOutputTokens);
+  return Number.isFinite(max) && max > 0 ? max : null;
 }
 
 // OAuth providers that use short aliases (everything else: alias = id)

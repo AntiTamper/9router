@@ -39,6 +39,30 @@ export {
 export { parseModel, resolveModelAliasFromMap, getModelInfoCore } from "./services/model.js";
 
 export {
+  normalizeFormat,
+  resolveProviderTranslation,
+  translateProviderRequest,
+  translateProviderResponse
+} from "./services/translation.js";
+
+export {
+  resolveModelContextWindow,
+  fetchKimiLiveCatalog,
+  isContextLimitError
+} from "./services/contextWindow.js";
+
+export {
+  resolveKimiModels,
+  invalidateKimiCatalog,
+  clearKimiCatalogCache
+} from "./services/kimiModels.js";
+
+export {
+  getStaticContextWindow,
+  getStaticMaxOutputTokens
+} from "./config/providerModels.js";
+
+export {
   checkFallbackError,
   isAccountUnavailable,
   getUnavailableUntil,
