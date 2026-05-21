@@ -46,6 +46,16 @@ const CLAUDE_CLI_SPOOF_HEADERS = {
 
 // Shared baseUrls
 const KIMI_CODING_BASE_URL = "https://api.kimi.com/coding/v1/messages";
+const KIMI_CODING_OPENAI_BASE_URL = "https://api.kimi.com/coding/v1/chat/completions";
+const KIMI_CODING_MODELS_URL = "https://api.kimi.com/coding/v1/models";
+const KIMI_API_BASE_URLS = [
+  "https://api.moonshot.ai/v1/chat/completions",
+  "https://api.moonshot.cn/v1/chat/completions",
+];
+const KIMI_API_MODELS_URLS = [
+  "https://api.moonshot.ai/v1/models",
+  "https://api.moonshot.cn/v1/models",
+];
 
 export const PROVIDERS = {
   claude: {
@@ -139,9 +149,22 @@ export const PROVIDERS = {
     headers: {}
   },
   kimi: {
-    baseUrl: KIMI_CODING_BASE_URL,
-    format: "claude",
-    headers: { ...CLAUDE_API_HEADERS }
+    baseUrls: [KIMI_CODING_OPENAI_BASE_URL],
+    baseUrl: KIMI_CODING_OPENAI_BASE_URL,
+    openaiBaseUrl: KIMI_CODING_OPENAI_BASE_URL,
+    anthropicBaseUrl: KIMI_CODING_BASE_URL,
+    modelsUrl: KIMI_CODING_MODELS_URL,
+    modelsUrls: [KIMI_CODING_MODELS_URL],
+    format: "openai",
+    headers: {}
+  },
+  "kimi-api": {
+    baseUrls: KIMI_API_BASE_URLS,
+    baseUrl: KIMI_API_BASE_URLS[0],
+    modelsUrls: KIMI_API_MODELS_URLS,
+    modelsUrl: KIMI_API_MODELS_URLS[0],
+    format: "openai",
+    headers: {}
   },
   minimax: {
     baseUrl: "https://api.minimax.io/anthropic/v1/messages",
@@ -272,7 +295,11 @@ export const PROVIDERS = {
   },
   xai: {
     baseUrl: "https://api.x.ai/v1/chat/completions",
-    format: "openai"
+    responsesUrl: "https://api.x.ai/v1/responses",
+    format: "openai",
+    clientId: "b1a00492-073a-47ea-816f-4c329264a828",
+    tokenUrl: "https://auth.x.ai/oauth2/token",
+    refreshUrl: "https://auth.x.ai/oauth2/token"
   },
   mistral: {
     baseUrl: "https://api.mistral.ai/v1/chat/completions",
@@ -395,6 +422,8 @@ export const PROVIDERS = {
     baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1/chat/completions",
     format: "openai"
   },
+  // Region map for Xiaomi MiMo Token Plan (keys are cluster-specific)
+  // Used by resolveXiaomiTokenplanBaseUrl below
   // === Free-tier providers (synced from OmniRoute) ===
   // Claude-format with Claude CLI header spoofing (auth: x-api-key)
   agentrouter: { baseUrl: "https://agentrouter.org/v1/messages", format: "claude", headers: { ...CLAUDE_CLI_SPOOF_HEADERS } },
@@ -436,4 +465,16 @@ export const OLLAMA_LOCAL_DEFAULT_HOST = "http://localhost:11434";
 export function resolveOllamaLocalHost(credentials) {
   const raw = credentials?.providerSpecificData?.baseUrl?.trim();
   return (raw || OLLAMA_LOCAL_DEFAULT_HOST).replace(/\/$/, "");
+}
+
+export const XIAOMI_TOKENPLAN_REGIONS = {
+  sgp: "https://token-plan-sgp.xiaomimimo.com/v1",
+  cn: "https://token-plan-cn.xiaomimimo.com/v1",
+  ams: "https://token-plan-ams.xiaomimimo.com/v1"
+};
+export const XIAOMI_TOKENPLAN_DEFAULT_REGION = "sgp";
+
+export function resolveXiaomiTokenplanBaseUrl(credentials) {
+  const region = credentials?.providerSpecificData?.region;
+  return XIAOMI_TOKENPLAN_REGIONS[region] || XIAOMI_TOKENPLAN_REGIONS[XIAOMI_TOKENPLAN_DEFAULT_REGION];
 }

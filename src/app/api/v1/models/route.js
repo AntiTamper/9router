@@ -1,3 +1,4 @@
+﻿import { corsOptionsResponse, getCorsHeaders } from "@/lib/cors.js";
 import { PROVIDER_MODELS, PROVIDER_ID_TO_ALIAS } from "@/shared/constants/models";
 import {
   AI_PROVIDERS,
@@ -8,6 +9,10 @@ import {
 import { getProviderConnections, getCombos, getCustomModels, getModelAliases } from "@/lib/localDb";
 import { getDisabledModels } from "@/lib/disabledModelsDb";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
+import { resolveModelContextWindow } from "open-sse/services/contextWindow.js";
+import { getStaticContextWindow } from "open-sse/config/providerModels.js";
+import { guardedFetch } from "@/lib/security/urlGuard";
+import { updateProviderCredentials } from "@/sse/services/tokenRefresh";
 
 // Per-provider live model resolvers. Each receives a connection record and
 // returns { models: [{ id, name? }, ...] } | null on failure.
@@ -18,7 +23,17 @@ const LIVE_MODEL_RESOLVERS = {
       accessToken: conn.accessToken,
       refreshToken: conn.refreshToken,
       providerSpecificData: conn.providerSpecificData || {}
-    }, { log: console });
+    }, {
+      log: console,
+      onCredentialsRefreshed: async (refreshed) => {
+        if (!refreshed?.accessToken) return;
+        await updateProviderCredentials(conn.id, {
+          accessToken: refreshed.accessToken,
+          refreshToken: refreshed.refreshToken || conn.refreshToken,
+          expiresIn: refreshed.expiresIn,
+        });
+      },
+    });
     return result?.models?.length ? { models: result.models } : null;
   }
 };
@@ -27,6 +42,26 @@ const parseOpenAIStyleModels = (data) => {
   if (Array.isArray(data)) return data;
   return data?.data || data?.models || data?.results || [];
 };
+
+// Build a {alias|providerId|modelId -> contextWindow} map from PROVIDER_MODELS,
+// custom models, and live catalogs (Kiro/Kimi). Used to enrich /v1/models
+// entries with `context_window` so OpenAI-style clients (Codex, Kiro, Cursor)
+// can detect token limits and auto-compact instead of erroring at 400.
+function enrichWithContext(entry, alias, providerId, modelId, ctx) {
+  const resolved = resolveModelContextWindow({
+    alias, providerId, modelId,
+    customModels: ctx.customModels,
+    live: ctx.live,
+  });
+  if (resolved.contextWindow) {
+    entry.context_window = resolved.contextWindow;
+    entry.contextWindow = resolved.contextWindow;
+  }
+  if (resolved.maxOutputTokens) {
+    entry.max_output_tokens = resolved.maxOutputTokens;
+  }
+  return entry;
+}
 
 // Matches provider IDs that are upstream/cross-instance connections (contain a UUID suffix)
 const UPSTREAM_CONNECTION_RE = /[-_][0-9a-f]{8,}$/i;
@@ -91,11 +126,14 @@ async function fetchCompatibleModelIds(connection) {
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000);
-    const response = await fetch(url, {
+    const response = await guardedFetch(url, {
       method: "GET",
       headers,
       cache: "no-store",
       signal: controller.signal,
+    }, {
+      protocols: ["http:", "https:"],
+      timeoutMs: 5000,
     });
     clearTimeout(timeoutId);
 
@@ -138,6 +176,8 @@ function comboMatchesKinds(combo, kindFilter) {
  * @param {string[]} kindFilter - List of service kinds to include (e.g. ["llm"], ["webSearch","webFetch"]).
  */
 export async function buildModelsList(kindFilter) {
+  // Aggregated live catalogs keyed by alias/providerId; populated below per provider.
+  const liveCatalogs = {};
   let connections = [];
   try {
     connections = await getProviderConnections();
@@ -183,8 +223,11 @@ export async function buildModelsList(kindFilter) {
   }
 
   const models = [];
+  const comboModels = [];
 
-  // Combos first (filtered by kind). Web combos expose `kind` so AI knows search vs fetch.
+  // Keep combos after concrete provider models. Many clients auto-select
+  // the first /v1/models entry; exposing a combo first makes that combo the
+  // implicit default.
   for (const combo of combos) {
     if (!comboMatchesKinds(combo, kindFilter)) continue;
     const entry = {
@@ -195,7 +238,7 @@ export async function buildModelsList(kindFilter) {
     if (combo.kind === "webSearch" || combo.kind === "webFetch") {
       entry.kind = combo.kind;
     }
-    models.push(entry);
+    comboModels.push(entry);
   }
 
   if (connections.length === 0) {
@@ -209,11 +252,11 @@ export async function buildModelsList(kindFilter) {
       for (const model of providerModels) {
         if (!kindFilter.includes(modelKind(model))) continue;
         if (isDisabled(alias, model.id)) continue;
-        models.push({
+        models.push(enrichWithContext({
           id: `${alias}/${model.id}`,
           object: "model",
           owned_by: alias,
-        });
+        }, alias, providerId, model.id, { customModels, live: liveCatalogs }));
       }
     }
 
@@ -227,11 +270,11 @@ export async function buildModelsList(kindFilter) {
       const modelId = String(customModel.id).trim();
       if (!modelId) continue;
 
-      models.push({
+      models.push(enrichWithContext({
         id: `${providerAlias}/${modelId}`,
         object: "model",
         owned_by: providerAlias,
-      });
+      }, providerAlias, providerAlias, modelId, { customModels, live: liveCatalogs }));
     }
   } else {
     for (const [providerId, conn] of activeConnectionByProvider.entries()) {
@@ -273,11 +316,17 @@ export async function buildModelsList(kindFilter) {
       // -thinking/-agentic variants per account). On failure, fall back to
       // whatever rawModelIds already holds.
       const liveResolver = LIVE_MODEL_RESOLVERS[providerId];
+      // Capture full live entries for downstream contextWindow enrichment.
+      let liveEntries = null;
       if (liveResolver && !hasExplicitEnabledModels) {
         try {
           const live = await liveResolver(conn);
           if (live?.models?.length) {
             rawModelIds = live.models.map((m) => m.id);
+            liveEntries = live.models;
+            liveCatalogs[providerId] = live.models;
+            liveCatalogs[outputAlias] = live.models;
+            liveCatalogs[staticAlias] = live.models;
           }
         } catch (err) {
           console.log(`Live model fetch failed for ${providerId}: ${err?.message || err}`);
@@ -339,11 +388,11 @@ export async function buildModelsList(kindFilter) {
         if (!kindFilter.includes(kind)) continue;
         if (isDisabled(outputAlias, modelId) || isDisabled(staticAlias, modelId)) continue;
 
-        models.push({
+        models.push(enrichWithContext({
           id: `${outputAlias}/${modelId}`,
           object: "model",
           owned_by: outputAlias,
-        });
+        }, outputAlias, providerId, modelId, { customModels, live: liveCatalogs }));
       }
 
       // Merge sub-config models (TTS / embedding) that live on AI_PROVIDERS, not PROVIDER_MODELS
@@ -361,11 +410,11 @@ export async function buildModelsList(kindFilter) {
       }
       for (const subId of subConfigModels) {
         if (isDisabled(outputAlias, subId) || isDisabled(staticAlias, subId)) continue;
-        models.push({
+        models.push(enrichWithContext({
           id: `${outputAlias}/${subId}`,
           object: "model",
           owned_by: outputAlias,
-        });
+        }, outputAlias, providerId, subId, { customModels, live: liveCatalogs }));
       }
 
       // Web search/fetch — provider IS the model, expose as {alias}/search and/or {alias}/fetch with explicit kind
@@ -390,7 +439,7 @@ export async function buildModelsList(kindFilter) {
 
   const dedupedModels = [];
   const seenModelIds = new Set();
-  for (const model of models) {
+  for (const model of [...models, ...comboModels]) {
     if (!model?.id || seenModelIds.has(model.id)) continue;
     seenModelIds.add(model.id);
     dedupedModels.push(model);
@@ -402,26 +451,18 @@ export async function buildModelsList(kindFilter) {
 /**
  * Handle CORS preflight
  */
-export async function OPTIONS() {
-  return new Response(null, {
-    headers: {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, OPTIONS",
-      "Access-Control-Allow-Headers": "*",
-    },
-  });
+export async function OPTIONS(request) {
+  return corsOptionsResponse(request);
 }
 
 /**
  * GET /v1/models - OpenAI compatible models list (LLM/chat models only by default).
  * For other capabilities use /v1/models/{kind} (image, tts, stt, embedding, image-to-text, web).
  */
-export async function GET() {
+export async function GET(request) {
   try {
     const data = await buildModelsList([LLM_KIND]);
-    return Response.json({ object: "list", data }, {
-      headers: { "Access-Control-Allow-Origin": "*" },
-    });
+    return Response.json({ object: "list", data }, { headers: getCorsHeaders(request) });
   } catch (error) {
     console.log("Error fetching models:", error);
     return Response.json(

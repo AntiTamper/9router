@@ -5,6 +5,7 @@ import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/sha
 import { PROVIDER_ENDPOINTS } from "@/shared/constants/config";
 import { getDefaultModel } from "open-sse/config/providerModels.js";
 import { resolveOllamaLocalHost } from "open-sse/config/providers.js";
+import { validatePublicUrl } from "@/lib/security/urlGuard";
 import {
   GEMINI_CONFIG,
   ANTIGRAVITY_CONFIG,
@@ -16,6 +17,8 @@ import {
   KILOCODE_CONFIG,
 } from "@/lib/oauth/constants/oauth";
 import { buildClineHeaders } from "@/shared/utils/clineAuth";
+
+const USER_PROVIDER_URL_GUARD = { protocols: ["http:", "https:"] };
 
 // OAuth provider test endpoints
 const OAUTH_TEST_CONFIG = {
@@ -341,6 +344,7 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
     const modelsBase = connection.providerSpecificData?.baseUrl;
     if (!modelsBase) return { valid: false, error: "Missing base URL" };
     try {
+      await validatePublicUrl(modelsBase, USER_PROVIDER_URL_GUARD);
       const res = await fetchWithConnectionProxy(`${modelsBase.replace(/\/$/, "")}/models`, {
         headers: { "Authorization": `Bearer ${connection.apiKey}` },
       }, effectiveProxy);
@@ -354,6 +358,7 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
     let modelsBase = connection.providerSpecificData?.baseUrl;
     if (!modelsBase) return { valid: false, error: "Missing base URL" };
     try {
+      await validatePublicUrl(modelsBase, USER_PROVIDER_URL_GUARD);
       modelsBase = modelsBase.replace(/\/$/, "");
       if (modelsBase.endsWith("/messages")) modelsBase = modelsBase.slice(0, -9);
       const res = await fetchWithConnectionProxy(`${modelsBase}/models`, {
@@ -383,6 +388,8 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
       case "azure": {
         const psd = connection.providerSpecificData || {};
         const endpoint = (psd.azureEndpoint || "").replace(/\/$/, "");
+        if (!endpoint) return { valid: false, error: "Missing Azure endpoint" };
+        await validatePublicUrl(endpoint, { protocols: ["https:"] });
         const deployment = psd.deployment || "gpt-4";
         const apiVersion = psd.apiVersion || "2024-10-01-preview";
         const url = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`;
@@ -450,13 +457,27 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
         return { valid, error: valid ? null : "Invalid API key" };
       }
       case "kimi": {
-        const res = await fetchWithConnectionProxy("https://api.kimi.com/coding/v1/messages", {
-          method: "POST",
-          headers: { "x-api-key": connection.apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-          body: JSON.stringify({ model: "kimi-latest", max_tokens: 1, messages: [{ role: "user", content: "test" }] }),
-        }, effectiveProxy);
-        const valid = res.status !== 401 && res.status !== 403;
-        return { valid, error: valid ? null : "Invalid API key" };
+        return { valid: true, error: null, deferred: true };
+      }
+      case "kimi-api": {
+        const endpoints = [
+          PROVIDER_ENDPOINTS["kimi-api"],
+          "https://api.moonshot.cn/v1/chat/completions",
+        ];
+        for (const endpoint of endpoints) {
+          const res = await fetchWithConnectionProxy(endpoint, {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${connection.apiKey}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ model: getDefaultModel("kimi-api"), max_tokens: 1, messages: [{ role: "user", content: "test" }] }),
+          }, effectiveProxy);
+          if (res.status !== 401 && res.status !== 403) {
+            return { valid: true, error: null };
+          }
+        }
+        return { valid: false, error: "Invalid API key" };
       }
       case "alicode":
       case "alicode-intl": {

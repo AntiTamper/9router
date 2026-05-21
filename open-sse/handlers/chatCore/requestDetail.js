@@ -78,7 +78,8 @@ export function saveUsageStats({ provider, model, tokens, connectionId, apiKey, 
   const inTokens = tokens.input_tokens ?? tokens.prompt_tokens ?? 0;
   const outTokens = tokens.output_tokens ?? tokens.completion_tokens ?? 0;
 
-  if (inTokens === 0 && outTokens === 0) return;
+  // Keep zero-token rows: tool-only sub-agent turns often emit no usage chunk
+  // but should still appear in Recent Requests.
 
   const time = new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
   const accountSuffix = connectionId ? ` | account=${connectionId.slice(0, 8)}...` : "";

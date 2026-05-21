@@ -20,7 +20,7 @@ export async function POST(request) {
       apiKey = keys.find((k) => k.isActive !== false)?.key || null;
     } catch {}
 
-    const headers = { "Content-Type": "application/json" };
+    const headers = { "Content-Type": "application/json", "Accept": "application/json" };
     if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
     // Bypass dashboardGuard for internal self-call via CLI token (machineId-based)
     headers["x-9r-cli-token"] = await getConsistentMachineId(CLI_TOKEN_SALT);

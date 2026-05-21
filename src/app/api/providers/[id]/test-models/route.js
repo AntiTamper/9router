@@ -4,6 +4,7 @@ import { getProviderModels, PROVIDER_ID_TO_ALIAS } from "open-sse/config/provide
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
 import { UPDATER_CONFIG } from "@/shared/constants/config";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
+import { resolveKiroModels } from "open-sse/services/kiroModels.js";
 
 const CLI_TOKEN_SALT = "9r-cli-auth";
 
@@ -13,6 +14,18 @@ const CLI_TOKEN_SALT = "9r-cli-auth";
 async function getInternalApiKey() {
   const keys = await getApiKeys();
   return keys.find((k) => k.isActive !== false)?.key || null;
+}
+
+async function resolveDynamicKiroModels(connection) {
+  const result = await resolveKiroModels({
+    accessToken: connection.accessToken,
+    refreshToken: connection.refreshToken,
+    providerSpecificData: connection.providerSpecificData || {},
+  }, { log: console });
+  return (result?.models || []).map((model) => ({
+    id: model.id,
+    name: model.name || model.id,
+  }));
 }
 
 /**
@@ -70,6 +83,15 @@ export async function POST(request, { params }) {
     let models = getProviderModels(alias);
 
     const baseUrl = `http://127.0.0.1:${process.env.PORT || UPDATER_CONFIG.appPort}`;
+
+    if (providerId === "kiro") {
+      try {
+        const liveModels = await resolveDynamicKiroModels(connection);
+        if (liveModels.length > 0) models = liveModels;
+      } catch (error) {
+        console.log("Kiro live model test list failed, falling back to static:", error?.message || error);
+      }
+    }
 
     // Compatible providers: fetch live model list
     if (isCompatible && models.length === 0) {

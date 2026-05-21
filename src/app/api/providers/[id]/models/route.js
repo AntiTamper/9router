@@ -5,8 +5,10 @@ import { GEMINI_CONFIG } from "@/lib/oauth/constants/oauth";
 import { refreshGoogleToken, updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { resolveOllamaLocalHost } from "open-sse/config/providers.js";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
+import { guardedFetch, toUrlGuardResponse, UrlGuardError } from "@/lib/security/urlGuard";
 
 const GEMINI_CLI_MODELS_URL = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
+const PROVIDER_URL_GUARD = { protocols: ["http:", "https:"], timeoutMs: 10000 };
 
 const parseOpenAIStyleModels = (data) => {
   if (Array.isArray(data)) return data;
@@ -65,6 +67,36 @@ const createOpenAIModelsConfig = (url) => ({
   authPrefix: "Bearer ",
   parseResponse: parseOpenAIStyleModels
 });
+
+const createFallbackOpenAIModelsResolver = (urls) => async (connection) => {
+  const token = connection.apiKey || connection.accessToken;
+  if (!token) return { error: "No valid token found", status: 401 };
+
+  let lastStatus = 500;
+  let lastError = "";
+  for (const url of urls) {
+    try {
+      const response = await fetch(url, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+        },
+      });
+      if (response.ok) {
+        const data = await response.json();
+        return { models: parseOpenAIStyleModels(data) };
+      }
+      lastStatus = response.status;
+      lastError = await response.text();
+    } catch (error) {
+      lastError = error.message;
+    }
+  }
+
+  console.log("Error fetching Kimi models:", lastError);
+  return { error: `Failed to fetch models: ${lastStatus}`, status: lastStatus };
+};
 
 const resolveQwenModelsUrl = (connection) => {
   const fallback = "https://portal.qwen.ai/v1/models";
@@ -189,6 +221,17 @@ const PROVIDER_MODELS_CONFIG = {
     }
   },
   openai: createOpenAIModelsConfig("https://api.openai.com/v1/models"),
+  kimi: {
+    customResolver: createFallbackOpenAIModelsResolver([
+      "https://api.kimi.com/coding/v1/models",
+    ])
+  },
+  "kimi-api": {
+    customResolver: createFallbackOpenAIModelsResolver([
+      "https://api.moonshot.ai/v1/models",
+      "https://api.moonshot.cn/v1/models",
+    ])
+  },
   openrouter: createOpenAIModelsConfig("https://openrouter.ai/api/v1/models"),
   anthropic: {
     url: "https://api.anthropic.com/v1/models",
@@ -343,13 +386,13 @@ export async function GET(request, { params }) {
         return NextResponse.json({ error: "No base URL configured for OpenAI compatible provider" }, { status: 400 });
       }
       const url = `${baseUrl.replace(/\/$/, "")}/models`;
-      const response = await fetch(url, {
+      const response = await guardedFetch(url, {
         method: "GET",
         headers: {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${connection.apiKey}`,
         },
-      });
+      }, PROVIDER_URL_GUARD);
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -382,7 +425,7 @@ export async function GET(request, { params }) {
       }
 
       const url = `${baseUrl}/models`;
-      const response = await fetch(url, {
+      const response = await guardedFetch(url, {
         method: "GET",
         headers: {
           "Content-Type": "application/json",
@@ -390,7 +433,7 @@ export async function GET(request, { params }) {
           "anthropic-version": "2023-06-01",
           "Authorization": `Bearer ${connection.apiKey}`
         },
-      });
+      }, PROVIDER_URL_GUARD);
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -464,7 +507,9 @@ export async function GET(request, { params }) {
       fetchOptions.body = JSON.stringify(config.body);
     }
 
-    const response = await fetch(url, fetchOptions);
+    const response = connection.provider === "qwen"
+      ? await guardedFetch(url, fetchOptions, PROVIDER_URL_GUARD)
+      : await fetch(url, fetchOptions);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -484,6 +529,9 @@ export async function GET(request, { params }) {
       models
     });
   } catch (error) {
+    if (error instanceof UrlGuardError) {
+      return NextResponse.json(toUrlGuardResponse(error), { status: 400 });
+    }
     console.log("Error fetching provider models:", error);
     return NextResponse.json({ error: "Failed to fetch models" }, { status: 500 });
   }

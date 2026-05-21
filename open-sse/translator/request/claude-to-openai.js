@@ -1,4 +1,4 @@
-import { register } from "../index.js";
+import { register } from "../registry.js";
 import { FORMATS } from "../formats.js";
 import { adjustMaxTokens } from "../helpers/maxTokensHelper.js";
 
@@ -109,6 +109,14 @@ function fixMissingToolResponses(messages) {
   }
 }
 
+function normalizeOpenAIContentParts(parts) {
+  if (!parts.length) return "";
+  if (parts.every((part) => part.type === "text")) {
+    return parts.map((part) => part.text || "").join("\n");
+  }
+  return parts;
+}
+
 // Convert single Claude message - returns single message or array of messages
 function convertClaudeMessage(msg) {
   const role = msg.role === "user" || msg.role === "tool" ? "user" : "assistant";
@@ -177,10 +185,7 @@ function convertClaudeMessage(msg) {
     // If has tool results, return array of tool messages
     if (toolResults.length > 0) {
       if (parts.length > 0) {
-        const textContent = parts.length === 1 && parts[0].type === "text" 
-          ? parts[0].text 
-          : parts;
-        return [...toolResults, { role: "user", content: textContent }];
+        return [...toolResults, { role: "user", content: normalizeOpenAIContentParts(parts) }];
       }
       return toolResults;
     }
@@ -189,9 +194,7 @@ function convertClaudeMessage(msg) {
     if (toolCalls.length > 0) {
       const result = { role: "assistant" };
       if (parts.length > 0) {
-        result.content = parts.length === 1 && parts[0].type === "text" 
-          ? parts[0].text 
-          : parts;
+        result.content = normalizeOpenAIContentParts(parts);
       }
       result.tool_calls = toolCalls;
       return result;
@@ -201,7 +204,7 @@ function convertClaudeMessage(msg) {
     if (parts.length > 0) {
       return {
         role,
-        content: parts.length === 1 && parts[0].type === "text" ? parts[0].text : parts
+        content: normalizeOpenAIContentParts(parts)
       };
     }
     

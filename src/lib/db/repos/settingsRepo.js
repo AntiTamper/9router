@@ -1,5 +1,6 @@
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { normalizeAccountRoutingMode } from "../../../shared/utils/accountRouting.js";
 
 const DEFAULT_MITM_ROUTER_BASE = "http://localhost:20128";
 
@@ -10,6 +11,7 @@ const DEFAULT_SETTINGS = {
   tunnelProvider: "cloudflare",
   tailscaleEnabled: false,
   tailscaleUrl: "",
+  fallbackStrategy: "default",
   stickyRoundRobinLimit: 3,
   providerStrategies: {},
   comboStrategy: "fallback",
@@ -34,8 +36,11 @@ const DEFAULT_SETTINGS = {
   mitmRouterBaseUrl: DEFAULT_MITM_ROUTER_BASE,
   dnsToolEnabled: {},
   rtkEnabled: true,
+  toonEnabled: false,
   cavemanEnabled: false,
   cavemanLevel: "full",
+  quotaAutoToggleEnabled: true,
+  quotaRefreshIntervalMs: null,
 };
 
 async function readRaw() {
@@ -59,6 +64,23 @@ function mergeWithDefaults(raw) {
         merged[key] = defVal;
       }
     }
+  }
+  merged.fallbackStrategy = normalizeAccountRoutingMode(merged.fallbackStrategy);
+  if (merged.providerStrategies && typeof merged.providerStrategies === "object") {
+    merged.providerStrategies = Object.fromEntries(
+      Object.entries(merged.providerStrategies).map(([providerId, override]) => {
+        if (!override || typeof override !== "object") return [providerId, override];
+        return [
+          providerId,
+          {
+            ...override,
+            ...(override.fallbackStrategy
+              ? { fallbackStrategy: normalizeAccountRoutingMode(override.fallbackStrategy) }
+              : {}),
+          },
+        ];
+      }),
+    );
   }
   return merged;
 }

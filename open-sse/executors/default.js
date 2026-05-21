@@ -1,21 +1,67 @@
 import { BaseExecutor } from "./base.js";
-import { PROVIDERS } from "../config/providers.js";
+import { PROVIDERS, resolveXiaomiTokenplanBaseUrl } from "../config/providers.js";
 import { OAUTH_ENDPOINTS, buildKimiHeaders } from "../config/appConstants.js";
+import { getModelUpstreamId } from "../config/providerModels.js";
 import { buildClineHeaders } from "../../src/shared/utils/clineAuth.js";
 import { getCachedClaudeHeaders } from "../utils/claudeHeaderCache.js";
+import { buildKimiOpenAICompatibilityHeaders } from "../utils/kimiCodingAgentHeaders.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
+
+const KIMI_CODING_SYSTEM_PROMPT = "You are Claude Code, Anthropic's official CLI for Claude.";
+
+function hasKimiCodingSystemPrompt(messages = []) {
+  return messages.some((message) => {
+    if (message?.role !== "system") return false;
+    if (typeof message.content === "string") return message.content.includes(KIMI_CODING_SYSTEM_PROMPT);
+    if (!Array.isArray(message.content)) return false;
+    return message.content.some((part) => part?.type === "text" && String(part.text || "").includes(KIMI_CODING_SYSTEM_PROMPT));
+  });
+}
+
+function injectKimiCodingSystemPrompt(body) {
+  if (!Array.isArray(body?.messages) || hasKimiCodingSystemPrompt(body.messages)) return body;
+  return {
+    ...body,
+    messages: [
+      { role: "system", content: KIMI_CODING_SYSTEM_PROMPT },
+      ...body.messages,
+    ],
+  };
+}
 
 export class DefaultExecutor extends BaseExecutor {
   constructor(provider) {
     super(provider, PROVIDERS[provider] || PROVIDERS.openai);
   }
 
-  transformRequest(model, body) {
-    return injectReasoningContent({ provider: this.provider, model, body });
+  transformRequest(model, body, stream = true, credentials = null, requestContext = null) {
+    let transformed = injectReasoningContent({ provider: this.provider, model, body });
+    if (this.provider === "kimi" || this.provider === "kimi-coding") {
+      if (this.provider === "kimi" && requestContext?.targetFormat !== "claude") {
+        transformed = injectKimiCodingSystemPrompt(transformed);
+      }
+      const alias = this.provider === "kimi-coding" ? "kmc" : "kimi";
+      const upstreamModel = getModelUpstreamId(alias, transformed?.model || model);
+      if (upstreamModel && upstreamModel !== transformed?.model) {
+        return { ...transformed, model: upstreamModel };
+      }
+    }
+    return transformed;
   }
 
-  buildUrl(model, stream, urlIndex = 0, credentials = null) {
+  shouldRetry(status, urlIndex) {
+    if (
+      (this.provider === "kimi" || this.provider === "kimi-api") &&
+      (status === 401 || status === 403) &&
+      urlIndex + 1 < this.getFallbackCount()
+    ) {
+      return true;
+    }
+    return super.shouldRetry(status, urlIndex);
+  }
+
+  buildUrl(model, stream, urlIndex = 0, credentials = null, requestContext = null) {
     if (this.provider?.startsWith?.("openai-compatible-")) {
       const baseUrl = credentials?.providerSpecificData?.baseUrl || "https://api.openai.com/v1";
       const normalized = baseUrl.replace(/\/$/, "");
@@ -30,15 +76,24 @@ export class DefaultExecutor extends BaseExecutor {
     switch (this.provider) {
       case "claude":
       case "glm":
-      case "kimi":
       case "minimax":
       case "minimax-cn":
         return `${this.config.baseUrl}?beta=true`;
+      case "kimi":
+        if (requestContext?.targetFormat === "claude") {
+          return this.config.anthropicBaseUrl || this.config.baseUrl;
+        }
+        return this.getBaseUrls()[urlIndex] || this.config.baseUrl;
+      case "kimi-api":
+        return this.getBaseUrls()[urlIndex] || this.config.baseUrl;
       case "kimi-coding":
         return `${this.config.baseUrl}?beta=true`;
       case "gemini":
         return `${this.config.baseUrl}/${model}:${stream ? "streamGenerateContent?alt=sse" : "generateContent"}`;
       default: {
+        if (this.provider === "xiaomi-tokenplan") {
+          return `${resolveXiaomiTokenplanBaseUrl(credentials)}/chat/completions`;
+        }
         const url = this.config.baseUrl;
         if (url?.includes("{accountId}")) {
           const accountId = credentials?.providerSpecificData?.accountId;
@@ -50,7 +105,7 @@ export class DefaultExecutor extends BaseExecutor {
     }
   }
 
-  buildHeaders(credentials, stream = true) {
+  buildHeaders(credentials, stream = true, requestContext = null) {
     const headers = { "Content-Type": "application/json", ...this.config.headers };
 
     switch (this.provider) {
@@ -93,13 +148,24 @@ export class DefaultExecutor extends BaseExecutor {
         break;
       }
       case "glm":
-      case "kimi":
       case "minimax":
       case "minimax-cn":
       case "kimi-coding":
         headers["x-api-key"] = credentials.apiKey || credentials.accessToken;
         if (this.provider === "kimi-coding") Object.assign(headers, buildKimiHeaders());
         break;
+      case "kimi": {
+        const token = credentials.apiKey || credentials.accessToken;
+        headers["Authorization"] = `Bearer ${token}`;
+        const agentHeaders = buildKimiOpenAICompatibilityHeaders(requestContext?.clientRawRequest?.headers || {});
+        Object.assign(headers, agentHeaders.headers);
+        break;
+      }
+      case "kimi-api": {
+        const token = credentials.apiKey || credentials.accessToken;
+        headers["Authorization"] = `Bearer ${token}`;
+        break;
+      }
       default:
         if (this.provider?.startsWith?.("anthropic-compatible-")) {
           if (credentials.apiKey) {

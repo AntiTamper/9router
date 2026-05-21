@@ -26,6 +26,43 @@ function withCodexReviewModels(models) {
   });
 }
 
+function withKiroVariants(models) {
+  return models.flatMap((model) => {
+    const base = {
+      ...model,
+      capabilities: { ...(model.capabilities || {}), thinking: false, agentic: false },
+    };
+    const thinking = {
+      ...model,
+      id: `${model.id}-thinking`,
+      name: `${model.name} (Thinking)`,
+      upstreamModelId: model.id,
+      capabilities: { ...(model.capabilities || {}), thinking: true, agentic: false },
+    };
+    if (model.id === "auto") {
+      return [base, thinking];
+    }
+    return [
+      base,
+      thinking,
+      {
+        ...model,
+        id: `${model.id}-agentic`,
+        name: `${model.name} (Agentic)`,
+        upstreamModelId: model.id,
+        capabilities: { ...(model.capabilities || {}), thinking: false, agentic: true },
+      },
+      {
+        ...model,
+        id: `${model.id}-thinking-agentic`,
+        name: `${model.name} (Thinking + Agentic)`,
+        upstreamModelId: model.id,
+        capabilities: { ...(model.capabilities || {}), thinking: true, agentic: true },
+      },
+    ];
+  });
+}
+
 export const PROVIDER_MODELS = {
   // OAuth Providers (using alias)
   cc: [  // Claude Code
@@ -131,26 +168,21 @@ export const PROVIDER_MODELS = {
     { id: "text-embedding-3-small", name: "Text Embedding 3 Small (GitHub)", type: "embedding" },
     { id: "text-embedding-3-large", name: "Text Embedding 3 Large (GitHub)", type: "embedding" },
   ],
-  kr: [  // Kiro AI
-    // --- Base Claude variants ---
-    // { id: "claude-opus-4.5", name: "Claude Opus 4.5" },
+  kr: withKiroVariants([  // Kiro AI; live per-account catalog overrides this when available.
+    { id: "auto", name: "Kiro Auto" },
+    { id: "claude-opus-4.7", name: "Claude Opus 4.7" },
+    { id: "claude-opus-4.6", name: "Claude Opus 4.6" },
+    { id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6" },
+    { id: "claude-opus-4.5", name: "Claude Opus 4.5" },
     { id: "claude-sonnet-4.5", name: "Claude Sonnet 4.5" },
+    { id: "claude-sonnet-4", name: "Claude Sonnet 4" },
     { id: "claude-haiku-4.5", name: "Claude Haiku 4.5" },
     { id: "deepseek-3.2", name: "DeepSeek 3.2", strip: ["image", "audio"] },
-    { id: "qwen3-coder-next", name: "Qwen3 Coder Next", strip: ["image", "audio"] },
+    { id: "minimax-m2.5", name: "MiniMax M2.5" },
+    { id: "minimax-m2.1", name: "MiniMax M2.1" },
     { id: "glm-5", name: "GLM 5" },
-    { id: "MiniMax-M2.5", name: "MiniMax M2.5" },
-    // --- Thinking variants (alias to base; thinking is enabled at request time
-    //     via <thinking_mode>enabled</thinking_mode> system-prompt injection) ---
-    { id: "claude-sonnet-4.5-thinking", name: "Claude Sonnet 4.5 (Thinking)" },
-    { id: "claude-haiku-4.5-thinking", name: "Claude Haiku 4.5 (Thinking)" },
-    // --- Agentic variants (synthetic; same upstream model + chunked-write
-    //     system prompt to dodge Kiro's 2-3 min server timeout on big writes) ---
-    { id: "claude-sonnet-4.5-agentic", name: "Claude Sonnet 4.5 (Agentic)" },
-    { id: "claude-haiku-4.5-agentic", name: "Claude Haiku 4.5 (Agentic)" },
-    { id: "claude-sonnet-4.5-thinking-agentic", name: "Claude Sonnet 4.5 (Thinking + Agentic)" },
-    { id: "claude-haiku-4.5-thinking-agentic", name: "Claude Haiku 4.5 (Thinking + Agentic)" },
-  ],
+    { id: "qwen3-coder-next", name: "Qwen3 Coder Next", strip: ["image", "audio"] },
+  ]),
   cu: [  // Cursor IDE
     { id: "default", name: "Auto (Server Picks)" },
     { id: "claude-4.5-opus-high-thinking", name: "Claude 4.5 Opus High Thinking" },
@@ -168,7 +200,8 @@ export const PROVIDER_MODELS = {
     { id: "gpt-5.3-codex", name: "GPT 5.3 Codex" },
   ],
   kmc: [  // Kimi Coding
-    { id: "kimi-k2.6", name: "Kimi K2.6" },
+    { id: "kimi-for-coding", name: "Kimi for Coding", contextWindow: 262144 },
+    { id: "kimi-k2.6", name: "Kimi K2.6", upstreamModelId: "kimi-for-coding", contextWindow: 262144 },
     { id: "kimi-k2.5", name: "Kimi K2.5" },
     { id: "kimi-k2.5-thinking", name: "Kimi K2.5 Thinking" },
     { id: "kimi-latest", name: "Kimi Latest" },
@@ -323,10 +356,13 @@ export const PROVIDER_MODELS = {
     { id: "glm-4.5-air", name: "GLM-4.5-Air" },
   ],
   kimi: [
-    { id: "kimi-k2.6", name: "Kimi K2.6" },
-    { id: "kimi-k2.5", name: "Kimi K2.5" },
-    { id: "kimi-k2.5-thinking", name: "Kimi K2.5 Thinking" },
-    { id: "kimi-latest", name: "Kimi Latest" },
+    { id: "kimi-k2.6", name: "Kimi for Coding", upstreamModelId: "kimi-for-coding", contextWindow: 262144 },
+  ],
+  "kimi-api": [
+    { id: "kimi-k2.6", name: "Kimi K2.6", contextWindow: 262144 },
+    { id: "kimi-k2.5", name: "Kimi K2.5", contextWindow: 262144 },
+    { id: "kimi-k2.5-thinking", name: "Kimi K2.5 Thinking", contextWindow: 262144 },
+    { id: "kimi-latest", name: "Kimi Latest", contextWindow: 262144 },
   ],
   minimax: [
     { id: "MiniMax-M2.7", name: "MiniMax M2.7" },
@@ -462,6 +498,7 @@ export const PROVIDER_MODELS = {
     { id: "grok-4-fast-reasoning", name: "Grok 4 Fast Reasoning" },
     { id: "grok-code-fast-1", name: "Grok Code Fast" },
     { id: "grok-3", name: "Grok 3" },
+    { id: "grok-2-image-1212", name: "Grok 2 Image", type: "image", params: ["n", "response_format"] },
   ],
   mistral: [
     { id: "mistral-large-latest", name: "Mistral Large 3" },
@@ -861,6 +898,68 @@ export function getModelQuotaFamily(aliasOrId, modelId) {
   const models = PROVIDER_MODELS[aliasOrId];
   const found = models?.find(m => m.id === modelId);
   return found?.quotaFamily || "normal";
+}
+
+// Strip 9router synthetic suffixes (-thinking, -agentic, -review, etc.) for context-window lookups.
+function stripSyntheticModelSuffixes(modelId) {
+  if (typeof modelId !== "string") return modelId;
+  let out = modelId;
+  for (const sfx of ["-thinking-agentic", "-thinking", "-agentic", "-review", "-xhigh", "-high", "-low", "-none", "-spark"]) {
+    if (out.endsWith(sfx)) { out = out.slice(0, -sfx.length); break; }
+  }
+  return out;
+}
+
+// Family defaults: per-alias contextWindow used when neither the per-model
+// row nor a live catalog provides a value. Numbers are conservative upstream
+// limits; Claude 1M context is opt-in via beta header so the safe default is 200000.
+const FAMILY_CONTEXT_WINDOW = {
+  cc: 200000, claude: 200000, anthropic: 200000,
+  cx: 400000, codex: 400000, openai: 128000,
+  gc: 1048576, gemini: 1048576, "gemini-cli": 1048576, vertex: 1048576,
+  qw: 256000, qwen: 256000,
+  if: 128000, iflow: 128000,
+  ag: 1048576, antigravity: 1048576,
+  gh: 128000, copilot: 128000, github: 128000,
+  kr: 200000, kiro: 200000,
+  kimi: 262144, "kimi-api": 262144, "kimi-coding": 262144, kmc: 262144,
+  glm: 128000, deepseek: 128000, minimax: 256000,
+  grok: 128000, openrouter: 128000, kc: 200000,
+};
+
+export function getFamilyContextWindow(aliasOrId) {
+  if (!aliasOrId) return null;
+  const v = FAMILY_CONTEXT_WINDOW[aliasOrId];
+  return Number.isFinite(v) && v > 0 ? v : null;
+}
+
+/**
+ * Resolve the static context-window for a (alias, modelId).
+ * Returns the per-model contextWindow if present in PROVIDER_MODELS,
+ * otherwise null. Live overrides (Kiro/Kimi catalogs) merge on top via
+ * services/contextWindow.js.
+ */
+export function getStaticContextWindow(aliasOrId, modelId) {
+  const list = PROVIDER_MODELS[aliasOrId];
+  if (!Array.isArray(list)) return null;
+  const id = stripSyntheticModelSuffixes(modelId);
+  const found = list.find(m => m.id === modelId) || list.find(m => m.id === id);
+  if (!found) return null;
+  const ctx = Number(found.contextWindow);
+  return Number.isFinite(ctx) && ctx > 0 ? ctx : null;
+}
+
+/**
+ * Resolve the static max-output tokens for a (alias, modelId), if present.
+ */
+export function getStaticMaxOutputTokens(aliasOrId, modelId) {
+  const list = PROVIDER_MODELS[aliasOrId];
+  if (!Array.isArray(list)) return null;
+  const id = stripSyntheticModelSuffixes(modelId);
+  const found = list.find(m => m.id === modelId) || list.find(m => m.id === id);
+  if (!found) return null;
+  const max = Number(found.maxOutputTokens);
+  return Number.isFinite(max) && max > 0 ? max : null;
 }
 
 // OAuth providers that use short aliases (everything else: alias = id)

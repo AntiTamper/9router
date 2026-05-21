@@ -33,6 +33,13 @@ const nextConfig = {
         path: false,
       };
     }
+    config.ignoreWarnings = [
+      ...(config.ignoreWarnings || []),
+      {
+        module: /browserslist[\\/]node\.js/,
+        message: /Critical dependency: require function is used/,
+      },
+    ];
     // Exclude logs, .next, gitbook subapp from watcher
     config.watchOptions = { ...config.watchOptions, ignored: /[\\/](logs|\.next|gitbook|cli)[\\/]/ };
     return config;

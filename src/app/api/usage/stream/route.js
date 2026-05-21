@@ -2,9 +2,19 @@ import { getUsageStats, statsEmitter, getActiveRequests } from "@/lib/usageDb";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request) {
   const encoder = new TextEncoder();
   const state = { closed: false, keepalive: null, send: null, sendPending: null, cachedStats: null };
+
+  const cleanup = () => {
+    if (state.closed) return;
+    state.closed = true;
+    if (state.send) statsEmitter.off("update", state.send);
+    if (state.sendPending) statsEmitter.off("pending", state.sendPending);
+    if (state.keepalive) clearInterval(state.keepalive);
+  };
+
+  request.signal.addEventListener("abort", cleanup, { once: true });
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -21,12 +31,10 @@ export async function GET() {
           // Then do full recalc and update cache
           const stats = await getUsageStats();
           state.cachedStats = stats;
+          if (state.closed) return;
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(stats)}\n\n`));
         } catch {
-          state.closed = true;
-          statsEmitter.off("update", state.send);
-          statsEmitter.off("pending", state.sendPending);
-          clearInterval(state.keepalive);
+          cleanup();
         }
       };
 
@@ -36,16 +44,15 @@ export async function GET() {
         try {
           const { activeRequests, recentRequests, errorProvider } = await getActiveRequests();
           const stats = { ...state.cachedStats, activeRequests, recentRequests, errorProvider };
+          if (state.closed) return;
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(stats)}\n\n`));
         } catch {
-          state.closed = true;
-          statsEmitter.off("update", state.send);
-          statsEmitter.off("pending", state.sendPending);
-          clearInterval(state.keepalive);
+          cleanup();
         }
       };
 
       await state.send();
+      if (state.closed) return;
 
       statsEmitter.on("update", state.send);
       statsEmitter.on("pending", state.sendPending);
@@ -55,17 +62,13 @@ export async function GET() {
         try {
           controller.enqueue(encoder.encode(": ping\n\n"));
         } catch {
-          state.closed = true;
-          clearInterval(state.keepalive);
+          cleanup();
         }
       }, 25000);
     },
 
     cancel() {
-      state.closed = true;
-      statsEmitter.off("update", state.send);
-      statsEmitter.off("pending", state.sendPending);
-      clearInterval(state.keepalive);
+      cleanup();
     },
   });
 

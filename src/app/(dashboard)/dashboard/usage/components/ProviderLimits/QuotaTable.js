@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { formatResetTime, calculatePercentage } from "./utils";
 
@@ -40,7 +40,7 @@ function formatResetTimeDisplay(resetTime) {
  * Get color classes based on remaining percentage
  */
 function getColorClasses(remainingPercentage) {
-  if (remainingPercentage > 70) {
+  if (remainingPercentage >= 60) {
     return {
       text: "text-green-600 dark:text-green-400",
       bg: "bg-green-500",
@@ -49,7 +49,7 @@ function getColorClasses(remainingPercentage) {
     };
   }
   
-  if (remainingPercentage >= 30) {
+  if (remainingPercentage > 20) {
     return {
       text: "text-yellow-600 dark:text-yellow-400",
       bg: "bg-yellow-500",
@@ -58,7 +58,6 @@ function getColorClasses(remainingPercentage) {
     };
   }
   
-  // 0-29% including 0% (out of quota) - show red
   return {
     text: "text-red-600 dark:text-red-400",
     bg: "bg-red-500",

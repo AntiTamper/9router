@@ -20,12 +20,59 @@ import {
   WEB_COOKIE_PROVIDERS,
   OPENAI_COMPATIBLE_PREFIX,
   ANTHROPIC_COMPATIBLE_PREFIX,
+  USAGE_SUPPORTED_PROVIDERS,
+  USAGE_APIKEY_PROVIDERS,
 } from "@/shared/constants/providers";
 import Link from "next/link";
 import { getErrorCode, getRelativeTime } from "@/shared/utils";
 import { useNotificationStore } from "@/store/notificationStore";
 import { useHeaderSearchStore } from "@/store/headerSearchStore";
 import ModelAvailabilityBadge from "./components/ModelAvailabilityBadge";
+import { buildProviderQuotaAverages } from "../usage/components/ProviderLimits/utils";
+import {
+  fetchQuotaWithCache,
+  getCachedQuotaDataForConnections,
+} from "../usage/components/ProviderLimits/quotaCache";
+
+function isUsageEligibleConnection(conn) {
+  return (
+    USAGE_SUPPORTED_PROVIDERS.includes(conn.provider) &&
+    (conn.authType === "oauth" || USAGE_APIKEY_PROVIDERS.includes(conn.provider))
+  );
+}
+
+function quotaBarColor(percentage) {
+  if (percentage >= 60) return "bg-green-500";
+  if (percentage > 20) return "bg-yellow-500";
+  return "bg-red-500";
+}
+
+function AverageQuotaBar({ percentage, loading = false }) {
+  if (loading) {
+    return (
+      <div
+        className="relative h-4 overflow-hidden rounded-full bg-black/5 dark:bg-white/10"
+        title="Quota loading"
+        aria-label="Quota loading"
+      >
+        <div className="h-full w-full animate-pulse bg-gradient-to-r from-black/5 via-black/20 to-black/5 dark:from-white/5 dark:via-white/25 dark:to-white/5" />
+      </div>
+    );
+  }
+  if (percentage === null || percentage === undefined) return null;
+  const value = Math.max(0, Math.min(100, Math.round(Number(percentage) || 0)));
+  return (
+    <div className="relative h-4 overflow-hidden rounded-full bg-black/5 dark:bg-white/10">
+      <div
+        className={`h-full ${quotaBarColor(value)}`}
+        style={{ width: `${value}%` }}
+      />
+      <span className="absolute inset-0 flex items-center justify-center text-[10px] font-semibold leading-none text-white drop-shadow">
+        {value}%
+      </span>
+    </div>
+  );
+}
 
 function getStatusDisplay(connected, error, errorCode) {
   const parts = [];
@@ -96,10 +143,17 @@ function getConnectionErrorTag(connection) {
 
 const APIKEY_INITIAL_VISIBLE = 20;
 
+function isPageVisible() {
+  return typeof document === "undefined" || document.visibilityState === "visible";
+}
+
 export default function ProvidersPage() {
   const [connections, setConnections] = useState([]);
   const [providerNodes, setProviderNodes] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [quotaData, setQuotaData] = useState({});
+  const [quotaLoading, setQuotaLoading] = useState({});
+  const [quotaCompleted, setQuotaCompleted] = useState({});
   const [showAllApikey, setShowAllApikey] = useState(false);
   const [showAddCompatibleModal, setShowAddCompatibleModal] = useState(false);
   const [showAddAnthropicCompatibleModal, setShowAddAnthropicCompatibleModal] =
@@ -141,30 +195,131 @@ export default function ProvidersPage() {
     });
 
   useEffect(() => {
+    let cancelled = false;
+    let requestSeq = 0;
+    let activeController = null;
+
+    const fetchQuotaData = async (connectionList, seq) => {
+      const eligibleConnections = connectionList.filter(isUsageEligibleConnection);
+      if (eligibleConnections.length === 0) {
+        if (!cancelled && seq === requestSeq) {
+          setQuotaData({});
+          setQuotaLoading({});
+          setQuotaCompleted({});
+        }
+        return;
+      }
+
+      const cachedQuotaData =
+        getCachedQuotaDataForConnections(eligibleConnections);
+      const cachedIds = new Set(Object.keys(cachedQuotaData));
+      const pendingConnections = eligibleConnections.filter(
+        (conn) => !cachedIds.has(conn.id),
+      );
+      const visible = isPageVisible();
+      const initialLoading = Object.fromEntries(
+        eligibleConnections.map((conn) => [conn.id, visible && !cachedIds.has(conn.id)]),
+      );
+      const initialCompleted = Object.fromEntries(
+        eligibleConnections.map((conn) => [conn.id, cachedIds.has(conn.id)]),
+      );
+      if (!cancelled && seq === requestSeq) {
+        setQuotaData(cachedQuotaData);
+        setQuotaLoading(initialLoading);
+        setQuotaCompleted(initialCompleted);
+      }
+
+      if (!visible) return;
+
+      const nextQuotaData = { ...cachedQuotaData };
+      for (let i = 0; i < pendingConnections.length; i += 6) {
+        const batch = pendingConnections.slice(i, i + 6);
+        await Promise.all(
+          batch.map(async (conn) => {
+            try {
+              const { entry } = await fetchQuotaWithCache(conn);
+              if (entry) nextQuotaData[conn.id] = entry;
+              else delete nextQuotaData[conn.id];
+              if (!cancelled && seq === requestSeq) {
+                setQuotaData((prev) => {
+                  const next = { ...prev };
+                  if (entry) next[conn.id] = entry;
+                  else delete next[conn.id];
+                  return next;
+                });
+              }
+            } catch (error) {
+              console.log(`Error fetching quota for ${conn.provider}:`, error);
+            } finally {
+              if (!cancelled && seq === requestSeq) {
+                setQuotaLoading((prev) => ({ ...prev, [conn.id]: false }));
+                setQuotaCompleted((prev) => ({ ...prev, [conn.id]: true }));
+              }
+            }
+          }),
+        );
+        if (cancelled || seq !== requestSeq) return;
+        if (!isPageVisible()) return;
+      }
+
+      if (!cancelled && seq === requestSeq) {
+        const eligibleIds = new Set(eligibleConnections.map((conn) => conn.id));
+        setQuotaData(
+          Object.fromEntries(
+            Object.entries(nextQuotaData).filter(([id]) => eligibleIds.has(id)),
+          ),
+        );
+      }
+    };
+
     const fetchData = async () => {
+      const seq = ++requestSeq;
+      if (activeController) activeController.abort();
+      activeController = new AbortController();
       try {
         const [connectionsRes, nodesRes] = await Promise.all([
-          fetch("/api/providers"),
-          fetch("/api/provider-nodes"),
+          fetch("/api/providers", { cache: "no-store", signal: activeController.signal }),
+          fetch("/api/provider-nodes", { cache: "no-store", signal: activeController.signal }),
         ]);
         const connectionsData = await connectionsRes.json();
         const nodesData = await nodesRes.json();
-        if (connectionsRes.ok)
-          setConnections(connectionsData.connections || []);
+        if (cancelled || seq !== requestSeq) return;
+        if (connectionsRes.ok) {
+          const connectionList = connectionsData.connections || [];
+          setConnections(connectionList);
+          fetchQuotaData(connectionList, seq);
+        }
         if (nodesRes.ok) setProviderNodes(nodesData.nodes || []);
       } catch (error) {
+        if (error?.name === "AbortError") return;
         console.log("Error fetching data:", error);
       } finally {
+        if (cancelled || seq !== requestSeq) return;
         setLoading(false);
       }
     };
     fetchData();
+    const handleVisibilityChange = () => {
+      if (!document.hidden) fetchData();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      cancelled = true;
+      if (activeController) activeController.abort();
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, []);
 
   const getProviderStats = (providerId, authType) => {
     const providerConnections = connections.filter(
       (c) => c.provider === providerId && c.authType === authType,
     );
+    const averageQuotaStats = buildProviderQuotaAverages(
+      providerConnections.filter(isUsageEligibleConnection),
+      quotaData,
+      { loadingById: quotaLoading, completedById: quotaCompleted },
+    )[0];
+    const averageQuota = averageQuotaStats?.averageRemaining ?? null;
 
     const getEffectiveStatus = (conn) => {
       const isCooldown = Object.entries(conn).some(
@@ -201,7 +356,16 @@ export default function ProvidersPage() {
       ? getRelativeTime(latestError.lastErrorAt)
       : null;
 
-    return { connected, error, total, errorCode, errorTime, allDisabled };
+    return {
+      connected,
+      error,
+      total,
+      errorCode,
+      errorTime,
+      allDisabled,
+      averageQuota,
+      averageQuotaLoading: averageQuotaStats?.isLoading === true,
+    };
   };
 
   // Toggle all connections for a provider on/off
@@ -593,7 +757,15 @@ export default function ProvidersPage() {
 }
 
 function ProviderCard({ providerId, provider, stats, authType, onToggle }) {
-  const { connected, error, errorCode, errorTime, allDisabled } = stats;
+  const {
+    connected,
+    error,
+    errorCode,
+    errorTime,
+    allDisabled,
+    averageQuota,
+    averageQuotaLoading,
+  } = stats;
   const isNoAuth = !!provider.noAuth;
 
   const dotColors = {
@@ -615,69 +787,77 @@ function ProviderCard({ providerId, provider, stats, authType, onToggle }) {
         padding="xs"
         className={`h-full hover:bg-black/[0.01] dark:hover:bg-white/[0.01] transition-colors cursor-pointer ${allDisabled ? "opacity-50" : ""}`}
       >
-        <div className="flex min-w-0 items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-3">
-            <div
-              className="size-8 shrink-0 rounded-lg flex items-center justify-center"
-              style={{
-                backgroundColor: `${provider.color?.length > 7 ? provider.color : provider.color + "15"}`,
-              }}
-            >
-              <ProviderIcon
-                src={`/providers/${provider.id}.png`}
-                alt={provider.name}
-                size={30}
-                className="object-contain rounded-lg max-w-[32px] max-h-[32px]"
-                fallbackText={
-                  provider.textIcon || provider.id.slice(0, 2).toUpperCase()
-                }
-                fallbackColor={provider.color}
-              />
-            </div>
-            <div className="min-w-0">
-              <h3 className="truncate font-semibold">{provider.name}</h3>
-              <div className="flex min-w-0 items-center gap-1.5 text-xs flex-wrap">
-                {allDisabled ? (
-                  <Badge variant="default" size="sm">
-                    <span className="flex items-center gap-1">
-                      <span className="material-symbols-outlined text-[12px]">
-                        pause_circle
-                      </span>
-                      Disabled
-                    </span>
-                  </Badge>
-                ) : isNoAuth ? (
-                  <Badge variant="success" size="sm" dot>Ready</Badge>
-                ) : (
-                  <>
-                    {getStatusDisplay(connected, error, errorCode)}
-                    {errorTime && (
-                      <span className="text-text-muted">{errorTime}</span>
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            {stats.total > 0 && (
+        <div className="flex min-w-0 flex-col gap-2">
+          <div className="flex min-w-0 items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-3">
               <div
-                className="opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100"
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onToggle(!allDisabled ? false : true);
+                className="size-8 shrink-0 rounded-lg flex items-center justify-center"
+                style={{
+                  backgroundColor: `${provider.color?.length > 7 ? provider.color : provider.color + "15"}`,
                 }}
               >
-                <Toggle
-                  size="sm"
-                  checked={!allDisabled}
-                  onChange={() => {}}
-                  title={allDisabled ? "Enable provider" : "Disable provider"}
+                <ProviderIcon
+                  src={`/providers/${provider.id}.png`}
+                  alt={provider.name}
+                  size={30}
+                  className="object-contain rounded-lg max-w-[32px] max-h-[32px]"
+                  fallbackText={
+                    provider.textIcon || provider.id.slice(0, 2).toUpperCase()
+                  }
+                  fallbackColor={provider.color}
                 />
               </div>
-            )}
+              <div className="min-w-0">
+                <h3 className="truncate font-semibold">{provider.name}</h3>
+                <div className="flex min-w-0 items-center gap-1.5 text-xs flex-wrap">
+                  {allDisabled ? (
+                    <Badge variant="default" size="sm">
+                      <span className="flex items-center gap-1">
+                        <span className="material-symbols-outlined text-[12px]">
+                          pause_circle
+                        </span>
+                        Disabled
+                      </span>
+                    </Badge>
+                  ) : isNoAuth ? (
+                    <Badge variant="success" size="sm" dot>Ready</Badge>
+                  ) : (
+                    <>
+                      {getStatusDisplay(connected, error, errorCode)}
+                      {errorTime && (
+                        <span className="text-text-muted">{errorTime}</span>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {stats.total > 0 && (
+                <div
+                  className="opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onToggle(!allDisabled ? false : true);
+                  }}
+                >
+                  <Toggle
+                    size="sm"
+                    checked={!allDisabled}
+                    onChange={() => {}}
+                    title={allDisabled ? "Enable provider" : "Disable provider"}
+                  />
+                </div>
+              )}
+            </div>
           </div>
+          {stats.total > 0 && (
+            <AverageQuotaBar
+              percentage={averageQuota}
+              loading={averageQuotaLoading}
+            />
+          )}
         </div>
       </Card>
     </Link>
@@ -697,6 +877,9 @@ ProviderCard.propTypes = {
     error: PropTypes.number,
     errorCode: PropTypes.string,
     errorTime: PropTypes.string,
+    total: PropTypes.number,
+    averageQuota: PropTypes.number,
+    averageQuotaLoading: PropTypes.bool,
   }).isRequired,
   authType: PropTypes.string,
   onToggle: PropTypes.func,
@@ -709,7 +892,15 @@ function ApiKeyProviderCard({
   authType,
   onToggle,
 }) {
-  const { connected, error, errorCode, errorTime, allDisabled } = stats;
+  const {
+    connected,
+    error,
+    errorCode,
+    errorTime,
+    allDisabled,
+    averageQuota,
+    averageQuotaLoading,
+  } = stats;
   const isCompatible = providerId.startsWith(OPENAI_COMPATIBLE_PREFIX);
   const isAnthropicCompatible = providerId.startsWith(
     ANTHROPIC_COMPATIBLE_PREFIX,
@@ -743,79 +934,87 @@ function ApiKeyProviderCard({
         padding="xs"
         className={`h-full hover:bg-black/[0.01] dark:hover:bg-white/[0.01] transition-colors cursor-pointer ${allDisabled ? "opacity-50" : ""}`}
       >
-        <div className="flex min-w-0 items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-3">
-            <div
-              className="size-8 shrink-0 rounded-lg flex items-center justify-center"
-              style={{
-                backgroundColor: `${provider.color?.length > 7 ? provider.color : provider.color + "15"}`,
-              }}
-            >
-              <ProviderIcon
-                src={getIconPath()}
-                alt={provider.name}
-                size={30}
-                className="object-contain rounded-lg max-w-[30px] max-h-[30px]"
-                fallbackText={
-                  provider.textIcon || provider.id.slice(0, 2).toUpperCase()
-                }
-                fallbackColor={provider.color}
-              />
-            </div>
-            <div className="min-w-0">
-              <h3 className="truncate font-semibold">{provider.name}</h3>
-              <div className="flex min-w-0 items-center gap-1.5 text-xs flex-wrap">
-                {allDisabled ? (
-                  <Badge variant="default" size="sm">
-                    <span className="flex items-center gap-1">
-                      <span className="material-symbols-outlined text-[12px]">
-                        pause_circle
-                      </span>
-                      Disabled
-                    </span>
-                  </Badge>
-                ) : (
-                  <>
-                    {getStatusDisplay(connected, error, errorCode)}
-                    {isCompatible && (
-                      <Badge variant="default" size="sm">
-                        {provider.apiType === "responses"
-                          ? "Responses"
-                          : "Chat"}
-                      </Badge>
-                    )}
-                    {isAnthropicCompatible && (
-                      <Badge variant="default" size="sm">
-                        Messages
-                      </Badge>
-                    )}
-                    {errorTime && (
-                      <span className="text-text-muted">{errorTime}</span>
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            {stats.total > 0 && (
+        <div className="flex min-w-0 flex-col gap-2">
+          <div className="flex min-w-0 items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-3">
               <div
-                className="opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100"
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onToggle(!allDisabled ? false : true);
+                className="size-8 shrink-0 rounded-lg flex items-center justify-center"
+                style={{
+                  backgroundColor: `${provider.color?.length > 7 ? provider.color : provider.color + "15"}`,
                 }}
               >
-                <Toggle
-                  size="sm"
-                  checked={!allDisabled}
-                  onChange={() => {}}
-                  title={allDisabled ? "Enable provider" : "Disable provider"}
+                <ProviderIcon
+                  src={getIconPath()}
+                  alt={provider.name}
+                  size={30}
+                  className="object-contain rounded-lg max-w-[30px] max-h-[30px]"
+                  fallbackText={
+                    provider.textIcon || provider.id.slice(0, 2).toUpperCase()
+                  }
+                  fallbackColor={provider.color}
                 />
               </div>
-            )}
+              <div className="min-w-0">
+                <h3 className="truncate font-semibold">{provider.name}</h3>
+                <div className="flex min-w-0 items-center gap-1.5 text-xs flex-wrap">
+                  {allDisabled ? (
+                    <Badge variant="default" size="sm">
+                      <span className="flex items-center gap-1">
+                        <span className="material-symbols-outlined text-[12px]">
+                          pause_circle
+                        </span>
+                        Disabled
+                      </span>
+                    </Badge>
+                  ) : (
+                    <>
+                      {getStatusDisplay(connected, error, errorCode)}
+                      {isCompatible && (
+                        <Badge variant="default" size="sm">
+                          {provider.apiType === "responses"
+                            ? "Responses"
+                            : "Chat"}
+                        </Badge>
+                      )}
+                      {isAnthropicCompatible && (
+                        <Badge variant="default" size="sm">
+                          Messages
+                        </Badge>
+                      )}
+                      {errorTime && (
+                        <span className="text-text-muted">{errorTime}</span>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {stats.total > 0 && (
+                <div
+                  className="opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onToggle(!allDisabled ? false : true);
+                  }}
+                >
+                  <Toggle
+                    size="sm"
+                    checked={!allDisabled}
+                    onChange={() => {}}
+                    title={allDisabled ? "Enable provider" : "Disable provider"}
+                  />
+                </div>
+              )}
+            </div>
           </div>
+          {stats.total > 0 && (
+            <AverageQuotaBar
+              percentage={averageQuota}
+              loading={averageQuotaLoading}
+            />
+          )}
         </div>
       </Card>
     </Link>
@@ -836,6 +1035,9 @@ ApiKeyProviderCard.propTypes = {
     error: PropTypes.number,
     errorCode: PropTypes.string,
     errorTime: PropTypes.string,
+    total: PropTypes.number,
+    averageQuota: PropTypes.number,
+    averageQuotaLoading: PropTypes.bool,
   }).isRequired,
   authType: PropTypes.string,
   onToggle: PropTypes.func,

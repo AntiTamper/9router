@@ -30,14 +30,28 @@ export async function getCustomModels() {
 }
 
 // Atomic check-then-insert inside transaction to prevent duplicate races
-export async function addCustomModel({ providerAlias, id, type = "llm", name }) {
+function normalizeTokenLimit(v) {
+  if (v === undefined || v === null || v === "") return null;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0 || n > 2_000_000) return null;
+  return Math.floor(n);
+}
+
+export async function addCustomModel({ providerAlias, id, type = "llm", name, maxInputTokens, maxOutputTokens, contextWindow }) {
   const k = customKey(providerAlias, id, type);
   const db = await getAdapter();
   let added = false;
+  const mInput = normalizeTokenLimit(maxInputTokens);
+  const mOutput = normalizeTokenLimit(maxOutputTokens);
+  const ctx = normalizeTokenLimit(contextWindow) ?? mInput;
+  const payload = { providerAlias, id, type, name: name || id };
+  if (mInput) payload.maxInputTokens = mInput;
+  if (mOutput) payload.maxOutputTokens = mOutput;
+  if (ctx) payload.contextWindow = ctx;
   db.transaction(() => {
     const row = db.get(`SELECT 1 FROM kv WHERE scope = 'customModels' AND key = ?`, [k]);
     if (row) return;
-    const value = stringifyJson({ providerAlias, id, type, name: name || id });
+    const value = stringifyJson(payload);
     db.run(`INSERT INTO kv(scope, key, value) VALUES('customModels', ?, ?)`, [k, value]);
     added = true;
   });

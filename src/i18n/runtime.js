@@ -5,6 +5,7 @@ import { DEFAULT_LOCALE, LOCALE_COOKIE, normalizeLocale } from "./config";
 let translationMap = {};
 let currentLocale = DEFAULT_LOCALE;
 let reloadCallbacks = [];
+let activeObserver = null;
 
 // Read locale from cookie
 function getLocaleFromCookie() {
@@ -81,18 +82,31 @@ function processTextNode(node) {
   ];
   
   if (skipTags.includes(tagName)) return;
-  
-  // Store original text if not already stored
-  if (!node._originalText) {
-    node._originalText = node.nodeValue;
+
+  const current = node.nodeValue;
+
+  if (currentLocale === DEFAULT_LOCALE) {
+    if (node._i18nTranslatedText && current === node._i18nTranslatedText && node._i18nOriginalText) {
+      node.nodeValue = node._i18nOriginalText;
+    }
+    delete node._originalText;
+    delete node._i18nOriginalText;
+    delete node._i18nTranslatedText;
+    return;
   }
-  
-  // Use original text for translation
-  const original = node._originalText;
+
+  const original =
+    node._i18nTranslatedText && current === node._i18nTranslatedText && node._i18nOriginalText
+      ? node._i18nOriginalText
+      : current;
+
   const translated = translate(original);
+  node._i18nOriginalText = original;
+  node._i18nTranslatedText = translated;
+  delete node._originalText;
   
   // Only update if different to avoid unnecessary DOM mutations
-  if (translated !== node.nodeValue) {
+  if (translated !== current) {
     node.nodeValue = translated;
   }
 }
@@ -131,8 +145,14 @@ export async function initRuntimeI18n() {
   processElement(document.body);
   
   // Watch for new nodes
-  const observer = new MutationObserver((mutations) => {
+  if (activeObserver) activeObserver.disconnect();
+
+  activeObserver = new MutationObserver((mutations) => {
     mutations.forEach((mutation) => {
+      if (mutation.type === "characterData") {
+        processTextNode(mutation.target);
+        return;
+      }
       mutation.addedNodes.forEach((node) => {
         if (node.nodeType === Node.ELEMENT_NODE) {
           processElement(node);
@@ -143,9 +163,10 @@ export async function initRuntimeI18n() {
     });
   });
   
-  observer.observe(document.body, {
+  activeObserver.observe(document.body, {
     childList: true,
     subtree: true,
+    characterData: true,
   });
 }
 
@@ -159,4 +180,21 @@ export async function reloadTranslations() {
   
   // Re-process entire DOM (will use stored original text)
   processElement(document.body);
+}
+
+export function __setRuntimeI18nForTests(locale, map = {}) {
+  currentLocale = normalizeLocale(locale);
+  translationMap = map;
+}
+
+export function __processTextNodeForTests(node) {
+  processTextNode(node);
+}
+
+export function __resetRuntimeI18nForTests() {
+  translationMap = {};
+  currentLocale = DEFAULT_LOCALE;
+  reloadCallbacks = [];
+  if (activeObserver) activeObserver.disconnect();
+  activeObserver = null;
 }

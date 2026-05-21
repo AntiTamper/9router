@@ -15,6 +15,7 @@ const { installCert, uninstallCert } = require("./cert/install");
 const { isCertExpired } = require("./cert/rootCA");
 const { DATA_DIR, MITM_DIR } = require("./paths");
 const { log, err } = require("./logger");
+const { LSOF_BIN } = require("./config");
 
 const DEFAULT_MITM_ROUTER_BASE = "http://localhost:20128";
 
@@ -60,30 +61,124 @@ function resolveBundledServerPath() {
   return fromCwd;
 }
 
-// Copy bundled server.js into DATA_DIR so MITM doesn't lock node_modules
-// (prevents EBUSY on `npm i -g 9router@latest` while MITM is running).
+function copyFileIfChanged(src, dest) {
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  try {
+    if (fs.existsSync(dest)) {
+      const a = fs.statSync(src);
+      const b = fs.statSync(dest);
+      if (a.size === b.size && Math.floor(a.mtimeMs) === Math.floor(b.mtimeMs)) return;
+    }
+  } catch { /* recopy */ }
+  fs.copyFileSync(src, dest);
+  try {
+    const stat = fs.statSync(src);
+    fs.utimesSync(dest, stat.atime, stat.mtime);
+  } catch { /* best effort */ }
+}
+
+function copyDirFresh(src, dest) {
+  if (!fs.existsSync(src)) return;
+  const root = path.resolve(src);
+  fs.rmSync(dest, { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.cpSync(src, dest, {
+    recursive: true,
+    filter: (p) => !path.relative(root, p).split(path.sep).includes("node_modules"),
+  });
+}
+
+function copiedTreeComplete(src, dest) {
+  if (!fs.existsSync(src) || !fs.existsSync(dest)) return false;
+  const root = path.resolve(src);
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === "node_modules") continue;
+      const sourcePath = path.join(dir, entry.name);
+      const relativePath = path.relative(root, sourcePath);
+      const targetPath = path.join(dest, relativePath);
+      if (entry.isDirectory()) {
+        if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) return false;
+        if (!walk(sourcePath)) return false;
+      } else if (entry.isFile() && !fs.existsSync(targetPath)) {
+        return false;
+      }
+    }
+    return true;
+  };
+  return walk(root);
+}
+
+function hashRuntimeSource(mitmDir, extraFiles = []) {
+  const h = crypto.createHash("sha256");
+  const addFile = (file, base) => {
+    const stat = fs.statSync(file);
+    h.update(path.relative(base, file));
+    h.update(String(stat.size));
+    h.update(String(Math.floor(stat.mtimeMs)));
+  };
+  const walk = (dir, base) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === "node_modules") continue;
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(p, base);
+      else if (entry.isFile()) addFile(p, base);
+    }
+  };
+  walk(mitmDir, path.dirname(mitmDir));
+  for (const file of extraFiles) {
+    if (fs.existsSync(file)) addFile(file, path.dirname(path.dirname(file)));
+  }
+  return h.digest("hex").slice(0, 16);
+}
+
+function findPackageNodePaths(fromPath) {
+  const found = [];
+  let dir = path.dirname(fromPath);
+  while (dir && dir !== path.dirname(dir)) {
+    const localNodeModules = path.join(dir, "node_modules");
+    if (fs.existsSync(localNodeModules)) found.push(localNodeModules);
+
+    if (path.basename(dir) === "node_modules") found.push(dir);
+    dir = path.dirname(dir);
+  }
+
+  if (process.env.NODE_PATH) {
+    found.push(...process.env.NODE_PATH.split(path.delimiter).filter(Boolean));
+  }
+  return [...new Set(found)].join(path.delimiter);
+}
+
+// Copy bundled MITM source into DATA_DIR so the child process does not lock
+// package source files during updates. Keep the src/ layout so relative requires
+// such as ../../shared/constants/mitmToolHosts.js still resolve.
 function ensureRuntimeServer(bundledPath) {
   try {
     if (!bundledPath || !fs.existsSync(bundledPath)) return bundledPath;
 
-    // Dev mode: source file has relative requires (./logger, ./config...),
-    // only the bundled file inside node_modules is self-contained + safe to copy.
     if (!bundledPath.includes(`${path.sep}node_modules${path.sep}`)) {
       return bundledPath;
     }
 
-    const runtimeDir = path.join(DATA_DIR, "runtime", "mitm");
-    const runtimeServer = path.join(runtimeDir, "server.js");
-
-    // Skip copy if sizes match (bundle unchanged since last run)
-    if (fs.existsSync(runtimeServer)) {
-      try {
-        if (fs.statSync(bundledPath).size === fs.statSync(runtimeServer).size) return runtimeServer;
-      } catch { /* recopy */ }
+    const sourceMitmDir = path.dirname(bundledPath);
+    const sourceSrcDir = path.dirname(sourceMitmDir);
+    const sourceHostsFile = path.join(sourceSrcDir, "shared", "constants", "mitmToolHosts.js");
+    const runtimeHash = hashRuntimeSource(sourceMitmDir, [sourceHostsFile]);
+    const runtimeSrcDir = path.join(DATA_DIR, "runtime", `mitm-src-${runtimeHash}`, "src");
+    const runtimeMitmDir = path.join(runtimeSrcDir, "mitm");
+    const runtimeServer = path.join(runtimeMitmDir, "server.js");
+    const runtimeHostsFile = path.join(runtimeSrcDir, "shared", "constants", "mitmToolHosts.js");
+    if (
+      fs.existsSync(runtimeServer) &&
+      copiedTreeComplete(sourceMitmDir, runtimeMitmDir) &&
+      (!fs.existsSync(sourceHostsFile) || fs.existsSync(runtimeHostsFile))
+    ) {
+      return runtimeServer;
     }
 
-    fs.mkdirSync(runtimeDir, { recursive: true });
-    fs.copyFileSync(bundledPath, runtimeServer);
+    copyDirFresh(sourceMitmDir, runtimeMitmDir);
+    if (fs.existsSync(sourceHostsFile)) copyFileIfChanged(sourceHostsFile, runtimeHostsFile);
+
     return runtimeServer;
   } catch (e) {
     try { log(`[MITM] runtime copy failed: ${e.message}`); } catch { /* ignore */ }
@@ -91,7 +186,9 @@ function ensureRuntimeServer(bundledPath) {
   }
 }
 
-const SERVER_PATH = ensureRuntimeServer(resolveBundledServerPath());
+const BUNDLED_SERVER_PATH = resolveBundledServerPath();
+const SERVER_PATH = ensureRuntimeServer(BUNDLED_SERVER_PATH);
+const MITM_NODE_PATH = findPackageNodePaths(BUNDLED_SERVER_PATH);
 const ENCRYPT_ALGO = "aes-256-gcm";
 const ENCRYPT_SALT = "9router-mitm-pwd";
 
@@ -108,7 +205,7 @@ function getProcessUsingPort443() {
         if (processMatch) return processMatch[1].replace(".exe", "");
       }
     } else {
-      const result = execSync("lsof -i :443", { encoding: "utf8", windowsHide: true });
+      const result = execSync(`${LSOF_BIN} -i :443`, { encoding: "utf8", windowsHide: true });
       const lines = result.trim().split("\n");
       if (lines.length > 1) return lines[1].split(/\s+/)[0];
     }
@@ -257,6 +354,21 @@ async function restoreToolDNS(sudoPassword) {
   }
 }
 
+async function enableAllToolDNS(sudoPassword) {
+  const password = sudoPassword || getCachedPassword() || await loadEncryptedPassword();
+  const dnsErrors = {};
+  for (const tool of Object.keys(TOOL_HOSTS)) {
+    try {
+      await addDNSEntry(tool, password);
+      await saveDnsToolState(tool, true);
+    } catch (e) {
+      dnsErrors[tool] = e.message || "Failed to add DNS entry";
+      err(`DNS ${tool}: auto-enable failed — ${dnsErrors[tool]}`);
+    }
+  }
+  return { dnsStatus: checkAllDNSStatus(), dnsErrors };
+}
+
 /**
  * Check if user has privilege to mutate hosts file.
  * Win: needs admin. Mac/Linux: root OR cached/encrypted sudo password.
@@ -298,7 +410,7 @@ function getPort443Owner(sudoPassword) {
       });
     } else {
       // Only find process actually LISTENING on TCP port 443
-      exec("lsof -nP -iTCP:443 -sTCP:LISTEN -t", { windowsHide: true }, (err, stdout) => {
+      exec(`${LSOF_BIN} -nP -iTCP:443 -sTCP:LISTEN -t`, { windowsHide: true }, (err, stdout) => {
         if (err || !stdout?.trim()) return resolve(null);
         const pid = parseInt(stdout.trim().split("\n")[0], 10);
         if (!pid || isNaN(pid)) return resolve(null);
@@ -442,7 +554,7 @@ async function scheduleMitmRestart(apiKey) {
 }
 
 /**
- * Start MITM server only (cert + server, no DNS)
+ * Start MITM server, then auto-add hosts entries for all supported tools.
  */
 async function killPort443Owner(owner, sudoPassword) {
   if (!owner || !owner.pid) return;
@@ -473,7 +585,8 @@ async function startServer(apiKey, sudoPassword, forceKillPort443 = false) {
           log(`♻️ Reusing existing process (PID: ${savedPid})`);
           await saveMitmSettings(true, sudoPassword);
           if (sudoPassword) setCachedPassword(sudoPassword);
-          return { running: true, pid: savedPid };
+          const autoDns = await enableAllToolDNS(sudoPassword);
+          return { running: true, pid: savedPid, ...autoDns };
         } else {
           fs.unlinkSync(PID_FILE);
         }
@@ -590,6 +703,7 @@ async function startServer(apiKey, sudoPassword, forceKillPort443 = false) {
           ROUTER_API_KEY: apiKey,
           NODE_ENV: "production",
           MITM_ROUTER_BASE: mitmRouterBase,
+          ...(MITM_NODE_PATH ? { NODE_PATH: MITM_NODE_PATH } : {}),
         },
       }
     );
@@ -602,6 +716,7 @@ async function startServer(apiKey, sudoPassword, forceKillPort443 = false) {
       `HOME=${shellQuoteSingle(os.homedir())}`,
       `ROUTER_API_KEY=${shellQuoteSingle(apiKey)}`,
       `MITM_ROUTER_BASE=${shellQuoteSingle(mitmRouterBase)}`,
+      ...(MITM_NODE_PATH ? [`NODE_PATH=${shellQuoteSingle(MITM_NODE_PATH)}`] : []),
       "NODE_ENV=production",
       shellQuoteSingle(process.execPath),
       shellQuoteSingle(effectiveServerPath),
@@ -624,6 +739,7 @@ async function startServer(apiKey, sudoPassword, forceKillPort443 = false) {
         ROUTER_API_KEY: apiKey,
         NODE_ENV: "production",
         MITM_ROUTER_BASE: mitmRouterBase,
+        ...(MITM_NODE_PATH ? { NODE_PATH: MITM_NODE_PATH } : {}),
       },
     });
   }
@@ -634,7 +750,7 @@ async function startServer(apiKey, sudoPassword, forceKillPort443 = false) {
     mitmLastStartTime = Date.now();
   }
 
-  let startError = null;
+  let startError = "";
   if (serverProcess) {
     serverProcess.stdout.on("data", (data) => {
       // server.js already formats its own logs — print as-is
@@ -645,7 +761,7 @@ async function startServer(apiKey, sudoPassword, forceKillPort443 = false) {
       // Mac/Linux: filter sudo password prompt noise
       if (msg && (IS_WIN || (!msg.includes("Password:") && !msg.includes("password for")))) {
         err(msg);
-        startError = msg;
+        startError = `${startError}\n${msg}`.trim();
       }
       // Detect wrong/missing password — clear cache and stop retry loop
       if (!IS_WIN && (msg.includes("incorrect password") || msg.includes("no password was provided"))) {
@@ -669,7 +785,7 @@ async function startServer(apiKey, sudoPassword, forceKillPort443 = false) {
     if (serverProcess && !serverProcess.killed) { try { serverProcess.kill(); } catch { /* ignore */ } serverProcess = null; }
     const processUsing443 = getProcessUsingPort443();
     const portInfo = processUsing443 ? ` Port 443 already in use by ${processUsing443}.` : "";
-    const reason = startError || `Check sudo password or port 443 access.${portInfo}`;
+    const reason = startError.split(/\r?\n/).slice(-8).join("\n") || `Check sudo password or port 443 access.${portInfo}`;
     throw new Error(`MITM server failed to start. ${reason}`);
   }
 
@@ -677,8 +793,13 @@ async function startServer(apiKey, sudoPassword, forceKillPort443 = false) {
 
   log(`✅ Server healthy (PID: ${serverPid || health.pid})`);
 
+  const autoDns = await enableAllToolDNS(sudoPassword);
+  if (Object.keys(autoDns.dnsErrors).length) {
+    log(`🌐 DNS auto-enable completed with ${Object.keys(autoDns.dnsErrors).length} warning(s)`);
+  }
+
   // Log DNS status per tool
-  const dnsStatus = checkAllDNSStatus();
+  const dnsStatus = autoDns.dnsStatus;
   for (const [tool, active] of Object.entries(dnsStatus)) {
     log(`🌐 DNS ${tool}: ${active ? "✅ active" : "❌ inactive"}`);
   }
@@ -686,7 +807,7 @@ async function startServer(apiKey, sudoPassword, forceKillPort443 = false) {
   await saveMitmSettings(true, sudoPassword);
   if (sudoPassword) setCachedPassword(sudoPassword);
 
-  return { running: true, pid: serverPid };
+  return { running: true, pid: serverPid || health.pid, ...autoDns };
 }
 
 /**
@@ -815,4 +936,8 @@ module.exports = {
   restoreToolDNS,
   hasDnsPrivilege,
   removeAllDNSEntriesSync,
+  _test: {
+    ensureRuntimeServer,
+    findPackageNodePaths,
+  },
 };

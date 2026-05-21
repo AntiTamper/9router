@@ -1,4 +1,4 @@
-import { register } from "../index.js";
+import { register } from "../registry.js";
 import { FORMATS } from "../formats.js";
 import { CLAUDE_SYSTEM_PROMPT } from "../../config/appConstants.js";
 import { adjustMaxTokens } from "../helpers/maxTokensHelper.js";
@@ -294,12 +294,22 @@ function getContentBlocksFromMessage(msg, toolNameMap = new Map()) {
 // Convert OpenAI tool choice to Claude format
 function convertOpenAIToolChoice(choice) {
   if (!choice) return { type: "auto" };
-  if (typeof choice === "object" && choice.type) return choice;
-  if (choice === "auto" || choice === "none") return { type: "auto" };
-  if (choice === "required") return { type: "any" };
-  if (typeof choice === "object" && choice.function) {
+  if (typeof choice === "object" && choice.function?.name) {
     return { type: "tool", name: choice.function.name };
   }
+  if (typeof choice === "object" && choice.type === "function" && choice.function?.name) {
+    return { type: "tool", name: choice.function.name };
+  }
+  if (typeof choice === "object" && ["auto", "any", "none"].includes(choice.type)) {
+    const { type, disable_parallel_tool_use } = choice;
+    return {
+      type,
+      ...(disable_parallel_tool_use !== undefined ? { disable_parallel_tool_use } : {})
+    };
+  }
+  if (typeof choice === "object" && choice.type === "tool" && choice.name) return choice;
+  if (choice === "auto" || choice === "none") return { type: choice };
+  if (choice === "required") return { type: "any" };
   return { type: "auto" };
 }
 

@@ -6,8 +6,7 @@ import { Card, Button, Badge, Input } from "@/shared/components";
 const DEFAULT_MITM_ROUTER_BASE = "http://localhost:20128";
 
 /**
- * Shared MITM infrastructure card — manages SSL cert + server start/stop.
- * DNS per-tool is handled separately in MitmToolCard.
+ * Shared MITM infrastructure card — manages SSL cert, server, and automatic hosts entries.
  */
 export default function MitmServerCard({ apiKeys, cloudEnabled, onStatusChange }) {
   const [status, setStatus] = useState(null);
@@ -94,8 +93,8 @@ export default function MitmServerCard({ apiKeys, cloudEnabled, onStatusChange }
           body: JSON.stringify({ sudoPassword: password }),
         });
       }
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
         if (data.code === "PORT_443_BUSY" && data.portOwner) {
           setShowPasswordModal(false);
           setPort443Conflict({ owner: data.portOwner, password });
@@ -107,6 +106,9 @@ export default function MitmServerCard({ apiKeys, cloudEnabled, onStatusChange }
       setShowPasswordModal(false);
       setSudoPassword("");
       setPort443Conflict(null);
+      if (action === "start" && data.dnsErrors && Object.keys(data.dnsErrors).length > 0) {
+        setActionError(`MITM started, but hosts entries failed for ${Object.keys(data.dnsErrors).join(", ")}`);
+      }
       await fetchStatus();
     } catch (e) {
       setActionError(e.message || "Network error");
@@ -242,7 +244,7 @@ export default function MitmServerCard({ apiKeys, cloudEnabled, onStatusChange }
               </button>
             )}
             {isRunning && (
-              <p className="text-xs text-text-muted">Enable DNS per tool below to activate interception</p>
+              <p className="text-xs text-text-muted">Hosts entries are added automatically; per-tool toggles remain below.</p>
             )}
           </div>
 
@@ -271,7 +273,7 @@ export default function MitmServerCard({ apiKeys, cloudEnabled, onStatusChange }
             <h3 className="font-semibold text-text-main">Sudo Password Required</h3>
             <div className="flex items-start gap-3 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
               <span className="material-symbols-outlined text-yellow-500 text-[20px]">warning</span>
-              <p className="text-xs text-text-muted">Required for SSL certificate and server startup</p>
+              <p className="text-xs text-text-muted">Required for SSL certificate, server startup, and hosts entries</p>
             </div>
             <Input
               type="password"

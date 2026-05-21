@@ -1,5 +1,6 @@
 import { HTTP_STATUS, RETRY_CONFIG, DEFAULT_RETRY_CONFIG, resolveRetryEntry } from "../config/runtimeConfig.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
+import { detectKimiCodingAgent } from "../utils/kimiCodingAgentHeaders.js";
 
 /**
  * BaseExecutor - Base class for provider executors
@@ -23,7 +24,7 @@ export class BaseExecutor {
     return this.getBaseUrls().length || 1;
   }
 
-  buildUrl(model, stream, urlIndex = 0, credentials = null) {
+  buildUrl(model, stream, urlIndex = 0, credentials = null, requestContext = null) {
     if (this.provider?.startsWith?.("openai-compatible-")) {
       const baseUrl = credentials?.providerSpecificData?.baseUrl || "https://api.openai.com/v1";
       const normalized = baseUrl.replace(/\/$/, "");
@@ -72,7 +73,7 @@ export class BaseExecutor {
   }
 
   // Override in subclass for provider-specific transformations
-  transformRequest(model, body, stream, credentials) {
+  transformRequest(model, body, stream, credentials, requestContext = null) {
     return body;
   }
 
@@ -95,7 +96,7 @@ export class BaseExecutor {
     return { status: response.status, message: bodyText || `HTTP ${response.status}` };
   }
 
-  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
+  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, clientRawRequest = null, sourceFormat = null, targetFormat = null }) {
     const fallbackCount = this.getFallbackCount();
     let lastError = null;
     let lastStatus = 0;
@@ -115,9 +116,19 @@ export class BaseExecutor {
     };
 
     for (let urlIndex = 0; urlIndex < fallbackCount; urlIndex++) {
-      const url = this.buildUrl(model, stream, urlIndex, credentials);
-      const transformedBody = this.transformRequest(model, body, stream, credentials);
-      const headers = this.buildHeaders(credentials, stream);
+      const requestContext = { clientRawRequest, model, sourceFormat, targetFormat };
+      const transformedBody = this.transformRequest(model, body, stream, credentials, requestContext);
+      requestContext.body = transformedBody;
+      const url = this.buildUrl(model, stream, urlIndex, credentials, requestContext);
+      const headers = this.buildHeaders(credentials, stream, requestContext);
+
+      if (this.provider === "kimi") {
+        const upstreamModel = transformedBody?.model || model;
+        const modelPart = upstreamModel !== model ? `${model}→${upstreamModel}` : model;
+        const clientAgent = detectKimiCodingAgent(clientRawRequest?.headers || {});
+        const agentPart = clientAgent ? `agent=forwarded:${clientAgent}` : "agent=openai-compat";
+        log?.debug?.("KIMI", `${modelPart} | ${agentPart} | ${url}`);
+      }
 
       if (!retryAttemptsByUrl[urlIndex]) retryAttemptsByUrl[urlIndex] = 0;
 

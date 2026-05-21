@@ -232,6 +232,16 @@ if (fs.existsSync(mitmSrc)) {
   console.log("⏭️  No MITM files found\n");
 }
 
+console.log("7️⃣ a Copying MITM shared constants...");
+const mitmSharedConstantsSrc = path.join(appDir, "src", "shared", "constants");
+const mitmSharedConstantsDest = path.join(cliAppDir, "src", "shared", "constants");
+if (fs.existsSync(mitmSharedConstantsSrc)) {
+  copyRecursive(mitmSharedConstantsSrc, mitmSharedConstantsDest);
+  console.log("✅ Copied MITM shared constants\n");
+} else {
+  console.log("⏭️  No MITM shared constants found\n");
+}
+
 // Step 7b: Copy standalone updater (headless Node process for install progress)
 console.log("7️⃣ b Copying updater files...");
 const updaterSrc = path.join(appDir, "src", "lib", "updater");
