@@ -8,28 +8,6 @@ import { buildKimiOpenAICompatibilityHeaders } from "../utils/kimiCodingAgentHea
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 
-const KIMI_CODING_SYSTEM_PROMPT = "You are Claude Code, Anthropic's official CLI for Claude.";
-
-function hasKimiCodingSystemPrompt(messages = []) {
-  return messages.some((message) => {
-    if (message?.role !== "system") return false;
-    if (typeof message.content === "string") return message.content.includes(KIMI_CODING_SYSTEM_PROMPT);
-    if (!Array.isArray(message.content)) return false;
-    return message.content.some((part) => part?.type === "text" && String(part.text || "").includes(KIMI_CODING_SYSTEM_PROMPT));
-  });
-}
-
-function injectKimiCodingSystemPrompt(body) {
-  if (!Array.isArray(body?.messages) || hasKimiCodingSystemPrompt(body.messages)) return body;
-  return {
-    ...body,
-    messages: [
-      { role: "system", content: KIMI_CODING_SYSTEM_PROMPT },
-      ...body.messages,
-    ],
-  };
-}
-
 export class DefaultExecutor extends BaseExecutor {
   constructor(provider) {
     super(provider, PROVIDERS[provider] || PROVIDERS.openai);
@@ -38,9 +16,6 @@ export class DefaultExecutor extends BaseExecutor {
   transformRequest(model, body, stream = true, credentials = null, requestContext = null) {
     let transformed = injectReasoningContent({ provider: this.provider, model, body });
     if (this.provider === "kimi" || this.provider === "kimi-coding") {
-      if (this.provider === "kimi" && requestContext?.targetFormat !== "claude") {
-        transformed = injectKimiCodingSystemPrompt(transformed);
-      }
       const alias = this.provider === "kimi-coding" ? "kmc" : "kimi";
       const upstreamModel = getModelUpstreamId(alias, transformed?.model || model);
       if (upstreamModel && upstreamModel !== transformed?.model) {

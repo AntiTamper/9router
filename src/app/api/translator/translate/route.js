@@ -1,14 +1,49 @@
 import { NextResponse } from "next/server";
 import { detectFormat, getTargetFormat } from "open-sse/services/provider.js";
-import { translateRequest } from "open-sse/translator/index.js";
 import { FORMATS } from "open-sse/translator/formats.js";
 import { parseModel } from "open-sse/services/model.js";
 import { getProviderConnections } from "@/lib/localDb.js";
 import { getExecutor } from "open-sse/executors/index.js";
+import { resolveProviderTranslation, translateProviderRequest } from "open-sse/services/translation.js";
+
+function stripInternalFields(body) {
+  if (body && typeof body === "object") delete body._toolNameMap;
+  return body;
+}
 
 export async function POST(request) {
   try {
-    const { step, body } = await request.json();
+    const payload = await request.json();
+    const { step, body } = payload;
+
+    if (payload.action === "translate-request") {
+      const clientBody = body?.body || body;
+      if (!clientBody) {
+        return NextResponse.json({ success: false, error: "body required" }, { status: 400 });
+      }
+
+      const parsed = parseModel(clientBody.model || payload.model);
+      const translated = translateProviderRequest({
+        body: clientBody,
+        provider: payload.provider || parsed.provider,
+        model: payload.model || parsed.model,
+        sourceFormat: payload.sourceFormat,
+        targetFormat: payload.targetFormat,
+        stream: payload.stream ?? clientBody.stream !== false,
+      });
+
+      return NextResponse.json({
+        success: true,
+        result: {
+          provider: translated.provider,
+          model: translated.model,
+          sourceFormat: translated.sourceFormat,
+          targetFormat: translated.targetFormat,
+          translated: translated.translated,
+          body: stripInternalFields(translated.body),
+        },
+      });
+    }
 
     if (!step || !body) {
       return NextResponse.json({ success: false, error: "Step and body required" }, { status: 400 });
@@ -20,7 +55,7 @@ export async function POST(request) {
         const clientBody = body.body || body;
         const { provider, model } = parseModel(clientBody.model);
         const sourceFormat = detectFormat(clientBody);
-        const targetFormat = getTargetFormat(provider);
+        const { targetFormat } = resolveProviderTranslation({ body: clientBody, provider, model, sourceFormat });
         return NextResponse.json({ success: true, result: { provider, model, sourceFormat, targetFormat } });
       }
 
@@ -33,10 +68,16 @@ export async function POST(request) {
         const stream = clientBody.stream !== false;
 
         // translateRequest(source, OPENAI) = only the first half
-        const result = translateRequest(sourceFormat, FORMATS.OPENAI, model, clientBody, stream, null, provider);
-        delete result._toolNameMap;
+        const result = translateProviderRequest({
+          body: clientBody,
+          provider,
+          model,
+          sourceFormat,
+          targetFormat: FORMATS.OPENAI,
+          stream,
+        }).body;
 
-        return NextResponse.json({ success: true, result: { body: result } });
+        return NextResponse.json({ success: true, result: { body: stripInternalFields(result) } });
       }
 
       case 3: {
@@ -53,8 +94,14 @@ export async function POST(request) {
         const stream = openaiBody.stream !== false;
 
         // translateRequest(OPENAI, target) = second half of pipeline
-        const translated = translateRequest(FORMATS.OPENAI, targetFormat, model, openaiBody, stream, null, provider);
-        delete translated._toolNameMap;
+        const translated = translateProviderRequest({
+          body: openaiBody,
+          provider,
+          model,
+          sourceFormat: FORMATS.OPENAI,
+          targetFormat,
+          stream,
+        }).body;
 
         // Build URL + headers via executor (same as chatCore → executor.execute)
         const connections = await getProviderConnections({ provider });
@@ -75,7 +122,7 @@ export async function POST(request) {
         const executor = getExecutor(provider);
         const url = executor.buildUrl(model, stream, 0, credentials);
         const headers = executor.buildHeaders(credentials, stream);
-        const finalBody = executor.transformRequest(model, translated, stream, credentials);
+        const finalBody = executor.transformRequest(model, stripInternalFields(translated), stream, credentials);
 
         return NextResponse.json({ success: true, result: { url, headers, body: finalBody } });
       }

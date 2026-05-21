@@ -47,10 +47,7 @@ describe("Kimi Code API key provider", () => {
     });
 
     expect(transformed.model).toBe("kimi-for-coding");
-    expect(transformed.messages[0]).toEqual({
-      role: "system",
-      content: "You are Claude Code, Anthropic's official CLI for Claude.",
-    });
+    expect(transformed.messages).toEqual([{ role: "user", content: "hi" }]);
   });
 
   it("preserves Claude-format Kimi requests on the Anthropic-style endpoint", () => {

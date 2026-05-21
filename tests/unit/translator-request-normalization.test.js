@@ -5,6 +5,11 @@ import { translateRequest } from "../../open-sse/translator/index.js";
 import { claudeToOpenAIRequest } from "../../open-sse/translator/request/claude-to-openai.js";
 import { filterToOpenAIFormat } from "../../open-sse/translator/helpers/openaiHelper.js";
 import { parseSSELine } from "../../open-sse/utils/streamHelpers.js";
+import {
+  normalizeFormat,
+  resolveProviderTranslation,
+  translateProviderRequest,
+} from "../../open-sse/services/translation.js";
 
 describe("request normalization", () => {
   it("claudeToOpenAIRequest flattens text-only content arrays into string", () => {
@@ -182,5 +187,67 @@ describe("request normalization", () => {
   it("parseSSELine still supports SSE data lines", () => {
     const parsed = parseSSELine('data: {"choices":[{"delta":{"content":"hi"}}]}');
     expect(parsed.choices[0].delta.content).toBe("hi");
+  });
+
+  it("normalizeFormat exposes Anthropic/OpenAI aliases for reusable translation", () => {
+    expect(normalizeFormat("anthropic")).toBe(FORMATS.CLAUDE);
+    expect(normalizeFormat("chat-completions")).toBe(FORMATS.OPENAI);
+    expect(normalizeFormat("responses")).toBe(FORMATS.OPENAI_RESPONSES);
+  });
+
+  it("translateProviderRequest translates Claude messages to OpenAI for any OpenAI-compatible service", () => {
+    const result = translateProviderRequest({
+      provider: "openai-compatible-local",
+      model: "gpt-4.1",
+      sourceFormat: "anthropic",
+      targetFormat: "openai",
+      stream: false,
+      body: {
+        system: "Be direct.",
+        max_tokens: 64,
+        messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+      },
+    });
+
+    expect(result.sourceFormat).toBe(FORMATS.CLAUDE);
+    expect(result.targetFormat).toBe(FORMATS.OPENAI);
+    expect(result.translated).toBe(true);
+    expect(result.body.messages).toEqual([
+      { role: "system", content: "Be direct." },
+      { role: "user", content: "hello" },
+    ]);
+  });
+
+  it("translateProviderRequest translates OpenAI chat to Anthropic messages without injecting Claude Code", () => {
+    const result = translateProviderRequest({
+      provider: "anthropic-compatible-local",
+      model: "claude-sonnet-4.5",
+      sourceFormat: "openai",
+      targetFormat: "anthropic",
+      stream: false,
+      body: {
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 64,
+      },
+    });
+
+    expect(result.sourceFormat).toBe(FORMATS.OPENAI);
+    expect(result.targetFormat).toBe(FORMATS.CLAUDE);
+    expect(result.body.system).toBeUndefined();
+    expect(result.body.messages).toEqual([
+      { role: "user", content: [{ type: "text", text: "hello" }] },
+    ]);
+  });
+
+  it("resolveProviderTranslation keeps Kimi Claude clients on the Anthropic Kimi Code path", () => {
+    const result = resolveProviderTranslation({
+      provider: "kimi",
+      model: "kimi-k2.6",
+      sourceFormat: "anthropic",
+      body: { messages: [] },
+    });
+
+    expect(result.sourceFormat).toBe(FORMATS.CLAUDE);
+    expect(result.targetFormat).toBe(FORMATS.CLAUDE);
   });
 });

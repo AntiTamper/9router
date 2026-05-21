@@ -47,6 +47,7 @@ describe("openaiToClaudeRequest", () => {
       expect(systemText).toContain("\"answer\"");
       expect(systemText).toContain("\"explanation\"");
       expect(systemText).toContain("Respond ONLY with the JSON object");
+      expect(systemText).not.toContain("You are Claude Code");
     });
 
     it("should inject basic JSON instructions for json_object type", () => {
@@ -79,16 +80,7 @@ describe("openaiToClaudeRequest", () => {
 
       const result = openaiToClaudeRequest("claude-sonnet-4.5", body, false);
 
-      // Should have system but without JSON instructions
-      expect(result.system).toBeDefined();
-      
-      const systemText = result.system
-        .filter(s => s.type === "text")
-        .map(s => s.text)
-        .join("\n");
-      
-      // Should NOT contain JSON-specific instructions
-      expect(systemText).not.toContain("You must respond with valid JSON");
+      expect(result.system).toBeUndefined();
     });
 
     it("should preserve existing system messages when adding response_format", () => {
@@ -120,6 +112,7 @@ describe("openaiToClaudeRequest", () => {
       
       expect(systemText).toContain("You are a helpful math tutor");
       expect(systemText).toContain("You must respond with valid JSON");
+      expect(systemText).not.toContain("You are Claude Code");
     });
   });
 
