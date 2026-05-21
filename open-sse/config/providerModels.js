@@ -356,7 +356,7 @@ export const PROVIDER_MODELS = {
     { id: "glm-4.5-air", name: "GLM-4.5-Air" },
   ],
   kimi: [
-    { id: "kimi-k2.6", name: "Kimi K2.6 (Kimi Code)", upstreamModelId: "kimi-for-coding", contextWindow: 262144 },
+    { id: "kimi-k2.6", name: "Kimi for Coding", upstreamModelId: "kimi-for-coding", contextWindow: 262144 },
   ],
   "kimi-api": [
     { id: "kimi-k2.6", name: "Kimi K2.6", contextWindow: 262144 },
