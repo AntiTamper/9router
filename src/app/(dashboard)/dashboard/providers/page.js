@@ -196,13 +196,11 @@ export default function ProvidersPage() {
 
   useEffect(() => {
     let cancelled = false;
-    let requestSeq = 0;
-    let activeController = null;
 
-    const fetchQuotaData = async (connectionList, seq) => {
+    const fetchQuotaData = async (connectionList) => {
       const eligibleConnections = connectionList.filter(isUsageEligibleConnection);
       if (eligibleConnections.length === 0) {
-        if (!cancelled && seq === requestSeq) {
+        if (!cancelled) {
           setQuotaData({});
           setQuotaLoading({});
           setQuotaCompleted({});
@@ -223,7 +221,7 @@ export default function ProvidersPage() {
       const initialCompleted = Object.fromEntries(
         eligibleConnections.map((conn) => [conn.id, cachedIds.has(conn.id)]),
       );
-      if (!cancelled && seq === requestSeq) {
+      if (!cancelled) {
         setQuotaData(cachedQuotaData);
         setQuotaLoading(initialLoading);
         setQuotaCompleted(initialCompleted);
@@ -240,7 +238,7 @@ export default function ProvidersPage() {
               const { entry } = await fetchQuotaWithCache(conn);
               if (entry) nextQuotaData[conn.id] = entry;
               else delete nextQuotaData[conn.id];
-              if (!cancelled && seq === requestSeq) {
+              if (!cancelled) {
                 setQuotaData((prev) => {
                   const next = { ...prev };
                   if (entry) next[conn.id] = entry;
@@ -251,18 +249,18 @@ export default function ProvidersPage() {
             } catch (error) {
               console.log(`Error fetching quota for ${conn.provider}:`, error);
             } finally {
-              if (!cancelled && seq === requestSeq) {
+              if (!cancelled) {
                 setQuotaLoading((prev) => ({ ...prev, [conn.id]: false }));
                 setQuotaCompleted((prev) => ({ ...prev, [conn.id]: true }));
               }
             }
           }),
         );
-        if (cancelled || seq !== requestSeq) return;
+        if (cancelled) return;
         if (!isPageVisible()) return;
       }
 
-      if (!cancelled && seq === requestSeq) {
+      if (!cancelled) {
         const eligibleIds = new Set(eligibleConnections.map((conn) => conn.id));
         setQuotaData(
           Object.fromEntries(
@@ -273,28 +271,22 @@ export default function ProvidersPage() {
     };
 
     const fetchData = async () => {
-      const seq = ++requestSeq;
-      if (activeController) activeController.abort();
-      activeController = new AbortController();
       try {
         const [connectionsRes, nodesRes] = await Promise.all([
-          fetch("/api/providers", { cache: "no-store", signal: activeController.signal }),
-          fetch("/api/provider-nodes", { cache: "no-store", signal: activeController.signal }),
+          fetch("/api/providers", { cache: "no-store" }),
+          fetch("/api/provider-nodes", { cache: "no-store" }),
         ]);
         const connectionsData = await connectionsRes.json();
         const nodesData = await nodesRes.json();
-        if (cancelled || seq !== requestSeq) return;
         if (connectionsRes.ok) {
           const connectionList = connectionsData.connections || [];
           setConnections(connectionList);
-          fetchQuotaData(connectionList, seq);
+          fetchQuotaData(connectionList);
         }
         if (nodesRes.ok) setProviderNodes(nodesData.nodes || []);
       } catch (error) {
-        if (error?.name === "AbortError") return;
         console.log("Error fetching data:", error);
       } finally {
-        if (cancelled || seq !== requestSeq) return;
         setLoading(false);
       }
     };
@@ -305,7 +297,6 @@ export default function ProvidersPage() {
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       cancelled = true;
-      if (activeController) activeController.abort();
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);

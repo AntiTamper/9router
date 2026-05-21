@@ -69,20 +69,11 @@ ModelRow.propTypes = {
 // ── AddCustomModelModal ────────────────────────────────────────
 function AddCustomModelModal({ isOpen, onSave, onClose }) {
   const [modelId, setModelId] = useState("");
-  const [maxInputTokens, setMaxInputTokens] = useState("");
-  const [maxOutputTokens, setMaxOutputTokens] = useState("");
 
   const handleSave = () => {
     if (!modelId.trim()) return;
-    const opts = {};
-    const mi = Number(maxInputTokens);
-    const mo = Number(maxOutputTokens);
-    if (Number.isFinite(mi) && mi > 0) opts.maxInputTokens = Math.floor(mi);
-    if (Number.isFinite(mo) && mo > 0) opts.maxOutputTokens = Math.floor(mo);
-    onSave(modelId.trim(), opts);
+    onSave(modelId.trim());
     setModelId("");
-    setMaxInputTokens("");
-    setMaxOutputTokens("");
   };
 
   return (
@@ -98,32 +89,6 @@ function AddCustomModelModal({ isOpen, onSave, onClose }) {
             placeholder="e.g. tts-1-hd"
             autoFocus
           />
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="text-xs text-text-muted mb-1 block">Max input tokens (optional)</label>
-            <input
-              type="number"
-              min="1"
-              max="2000000"
-              className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
-              value={maxInputTokens}
-              onChange={(e) => setMaxInputTokens(e.target.value)}
-              placeholder="e.g. 200000"
-            />
-          </div>
-          <div>
-            <label className="text-xs text-text-muted mb-1 block">Max output tokens (optional)</label>
-            <input
-              type="number"
-              min="1"
-              max="2000000"
-              className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
-              value={maxOutputTokens}
-              onChange={(e) => setMaxOutputTokens(e.target.value)}
-              placeholder="e.g. 8192"
-            />
-          </div>
         </div>
         <div className="flex gap-2">
           <Button onClick={handleSave} fullWidth disabled={!modelId.trim()}>Add</Button>
@@ -193,15 +158,12 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
     } catch (e) { console.log("delete alias error:", e); }
   };
 
-  const handleAddCustomModel = async (modelId, opts = {}) => {
+  const handleAddCustomModel = async (modelId) => {
     try {
-      const payload = { providerAlias, id: modelId, type: effectiveType };
-      if (opts.maxInputTokens) payload.maxInputTokens = opts.maxInputTokens;
-      if (opts.maxOutputTokens) payload.maxOutputTokens = opts.maxOutputTokens;
       const res = await fetch("/api/models/custom", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ providerAlias, id: modelId, type: effectiveType }),
       });
       if (res.ok) {
         await fetchData();

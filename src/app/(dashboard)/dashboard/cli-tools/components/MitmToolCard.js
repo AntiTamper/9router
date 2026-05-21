@@ -9,7 +9,7 @@ import Image from "next/image";
  * Per-tool MITM card — shows DNS status + model mappings.
  * - Auto-saves model mapping on blur or modal select
  * - Skips sudo modal if password is already cached
- * - Model mappings can only be edited when hosts entries are active
+ * - Model mappings can only be edited when DNS is active
  */
 export default function MitmToolCard({
   tool,
@@ -115,9 +115,7 @@ export default function MitmToolCard({
       setShowPasswordModal(false);
       setSudoPassword("");
       onDnsChange?.(data);
-    } catch (e) {
-      setWarning(e.message || "Failed to update hosts entries");
-    } finally {
+    } catch { /* ignore */ } finally {
       setLoading(false);
       setPendingDnsAction(null);
     }
@@ -172,7 +170,7 @@ export default function MitmToolCard({
             {mitmHosts.length > 0 && (
               <div className="mt-2 rounded-md border border-border bg-surface/50 px-2 py-1.5">
                 <p className="text-[10px] font-medium tracking-wide text-text-main/80 mb-1">
-                  Managed automatically in your hosts file:
+                  Edit hosts file manually to add the following entries:
                 </p>
                 <ul className="list-none space-y-0.5 font-mono text-[10px] text-text-muted break-all">
                   {mitmHosts.map((h) => (
@@ -183,10 +181,10 @@ export default function MitmToolCard({
             )}
             {/* Info */}
             <div className="flex flex-col gap-0.5 text-[11px] text-text-muted px-1">
-              <p>Hosts entries redirect {tool.name} traffic through 9Router via MITM.</p>
+              <p>Toggle DNS to redirect {tool.name} traffic through 9Router via MITM.</p>
               {!dnsActive && (
                 <p className="text-amber-600 text-[10px] mt-1">
-                  Enable hosts entries to edit model mappings
+                  ⚠️ Enable DNS to edit model mappings
                 </p>
               )}
             </div>
