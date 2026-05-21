@@ -1,12 +1,13 @@
-import { detectFormat, getTargetFormat } from "../services/provider.js";
-import { translateRequest } from "../translator/index.js";
+import { detectFormat } from "../services/provider.js";
 import { FORMATS } from "../translator/formats.js";
 import { COLORS } from "../utils/stream.js";
 import { createStreamController } from "../utils/streamHandler.js";
 import { refreshWithRetry } from "../services/tokenRefresh.js";
 import { createRequestLogger } from "../utils/requestLogger.js";
-import { getModelTargetFormat, getModelStrip, PROVIDER_ID_TO_ALIAS } from "../config/providerModels.js";
+import { translateProviderRequest, resolveProviderTranslation } from "../services/translation.js";
 import { createErrorResult, parseUpstreamError, formatProviderError } from "../utils/error.js";
+import { isContextLimitError } from "../services/contextWindow.js";
+import { invalidateKimiCatalog } from "../services/kimiModels.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
 import { handleBypassRequest } from "../utils/bypassHandler.js";
 import { trackPendingRequest, appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
@@ -38,12 +39,8 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   const bypassResponse = handleBypassRequest(body, model, userAgent, ccFilterNaming);
   if (bypassResponse) return bypassResponse;
 
-  const alias = PROVIDER_ID_TO_ALIAS[provider] || provider;
-  const modelTargetFormat = getModelTargetFormat(alias, model);
-  const targetFormat = provider === "kimi" && sourceFormat === FORMATS.CLAUDE
-    ? FORMATS.CLAUDE
-    : (modelTargetFormat || getTargetFormat(provider));
-  const stripList = getModelStrip(alias, model);
+  const translation = resolveProviderTranslation({ body, modelInfo, sourceFormat });
+  const targetFormat = translation.targetFormat;
 
   // Inject provider-level thinking config override (only if client hasn't set)
   // on/off → extended type (body.thinking), none/low/medium/high → effort type (body.reasoning_effort)
@@ -94,7 +91,18 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     log?.debug?.("PASSTHROUGH", `${clientTool} → ${provider} | native lossless`);
     translatedBody = { ...body, model };
   } else {
-    translatedBody = translateRequest(sourceFormat, targetFormat, model, body, stream, credentials, provider, reqLogger, stripList, connectionId, clientTool);
+    const translated = translateProviderRequest({
+      body,
+      modelInfo,
+      sourceFormat,
+      targetFormat,
+      stream,
+      credentials,
+      reqLogger,
+      connectionId,
+      clientTool,
+    });
+    translatedBody = translated.body;
     if (!translatedBody) {
       trackPendingRequest(model, provider, connectionId, false, true);
       return createErrorResult(HTTP_STATUS.BAD_REQUEST, `Failed to translate request for ${sourceFormat} → ${targetFormat}`);
@@ -249,6 +257,18 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       status: "error"
     })).catch(() => { });
 
+    // Context-limit error: surface dedicated status + invalidate live catalog so
+    // next probe re-reads the upstream limit. Client (Codex/Kiro) can then auto-compact.
+    if (isContextLimitError(statusCode, message)) {
+      try {
+        if (provider === "kimi" || provider === "kimi-api" || provider === "kimi-coding") {
+          invalidateKimiCatalog(provider, credentials);
+        }
+      } catch { /* non-fatal */ }
+      log?.warn?.("CONTEXT", `${provider.toUpperCase()} | ${model} | upstream context-limit hit (${statusCode}) — client should compact`);
+      const headerHint = `[CONTEXT_LIMIT] ${message}`;
+      return createErrorResult(statusCode, headerHint, resetsAtMs);
+    }
     const errMsg = formatProviderError(new Error(message), provider, model, statusCode);
     console.log(`${COLORS.red}[ERROR] ${errMsg}${COLORS.reset}`);
     reqLogger.logError(new Error(message), finalBody || translatedBody);
