@@ -9,6 +9,7 @@ import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS,
 import { getModelsByProviderId } from "@/shared/constants/models";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { fetchSuggestedModels } from "@/shared/utils/providerModelsFetcher";
+import { ACCOUNT_ROUTING_MODE_OPTIONS, normalizeAccountRoutingMode } from "@/shared/utils/accountRouting";
 import ModelRow from "./ModelRow";
 import PassthroughModelsSection from "./PassthroughModelsSection";
 import CompatibleModelsSection from "./CompatibleModelsSection";
@@ -51,7 +52,6 @@ export default function ProviderDetailPage() {
     setHeaderImgError(false);
   }, [providerId]);
   const [providerStrategy, setProviderStrategy] = useState(null);
-  const [providerStickyLimit, setProviderStickyLimit] = useState("");
   const [thinkingMode, setThinkingMode] = useState("auto");
   const [suggestedModels, setSuggestedModels] = useState([]);
   const [kiloFreeModels, setKiloFreeModels] = useState([]);
@@ -190,8 +190,7 @@ export default function ProviderDetailPage() {
       }
       // Load per-provider strategy override
       const override = (settingsData.providerStrategies || {})[providerId] || {};
-      setProviderStrategy(override.fallbackStrategy || null);
-      setProviderStickyLimit(override.stickyRoundRobinLimit != null ? String(override.stickyRoundRobinLimit) : "1");
+      setProviderStrategy(override.fallbackStrategy ? normalizeAccountRoutingMode(override.fallbackStrategy) : null);
       // Load per-provider thinking config
       const thinkingCfg = (settingsData.providerThinking || {})[providerId] || {};
       setThinkingMode(thinkingCfg.mode || "auto");
@@ -238,7 +237,7 @@ export default function ProviderDetailPage() {
     }
   };
 
-  const saveProviderStrategy = async (strategy, stickyLimit) => {
+  const saveProviderStrategy = async (strategy) => {
     try {
       const settingsRes = await fetch("/api/settings", { cache: "no-store" });
       const settingsData = settingsRes.ok ? await settingsRes.json() : {};
@@ -247,9 +246,6 @@ export default function ProviderDetailPage() {
       // Build override: null strategy means remove override, use global
       const override = {};
       if (strategy) override.fallbackStrategy = strategy;
-      if (strategy === "round-robin" && stickyLimit !== "") {
-        override.stickyRoundRobinLimit = Number(stickyLimit) || 3;
-      }
 
       const updated = { ...current };
       if (Object.keys(override).length === 0) {
@@ -270,15 +266,8 @@ export default function ProviderDetailPage() {
 
   const handleProviderStrategyChange = (value) => {
     const strategy = value === "global" ? null : value;
-    const sticky = strategy === "round-robin" ? (providerStickyLimit || "1") : providerStickyLimit;
-    if (strategy === "round-robin" && !providerStickyLimit) setProviderStickyLimit("1");
     setProviderStrategy(strategy);
-    saveProviderStrategy(strategy, sticky);
-  };
-
-  const handleStickyLimitChange = (value) => {
-    setProviderStickyLimit(value);
-    saveProviderStrategy("round-robin", value);
+    saveProviderStrategy(strategy);
   };
 
   const saveThinkingConfig = async (mode) => {
@@ -1071,23 +1060,10 @@ export default function ProviderDetailPage() {
                   className="h-8 rounded-lg border border-border bg-background px-2 text-xs text-text-primary focus:outline-none focus:border-primary"
                 >
                   <option value="global">Global</option>
-                  <option value="fill-first">Fill first</option>
-                  <option value="round-robin">Round robin</option>
-                  <option value="highest-session-quota">Highest session quota</option>
+                  {ACCOUNT_ROUTING_MODE_OPTIONS.map((option) => (
+                    <option key={option.id} value={option.id}>{option.label}</option>
+                  ))}
                 </select>
-                {providerStrategy === "round-robin" && (
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs text-text-muted">Sticky:</span>
-                    <input
-                      type="number"
-                      min={1}
-                      value={providerStickyLimit}
-                      onChange={(e) => handleStickyLimitChange(e.target.value)}
-                      placeholder="1"
-                      className="w-14 px-2 py-1 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary"
-                    />
-                  </div>
-                )}
               </div>
             </div>
           </div>
