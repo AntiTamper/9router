@@ -4,16 +4,13 @@ const fs = require("fs");
 
 const IS_DEV = process.env.NODE_ENV === "development";
 
-// Packaged apps / sudo secure_path may strip /usr/sbin from PATH.
+// Resolve lsof absolute path — packaged apps / sudo secure_path may strip /usr/sbin from PATH
 const LSOF_BIN = (() => {
   if (process.platform === "win32") return null;
   for (const p of ["/usr/sbin/lsof", "/usr/bin/lsof", "/sbin/lsof"]) {
-    try {
-      fs.accessSync(p, fs.constants.X_OK);
-      return p;
-    } catch { /* try next */ }
+    try { fs.accessSync(p, fs.constants.X_OK); return p; } catch { /* try next */ }
   }
-  return "lsof";
+  return "lsof"; // last-resort fallback (depends on PATH)
 })();
 
 const TARGET_HOSTS = [
