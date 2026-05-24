@@ -323,17 +323,35 @@ function closeToolCall(state, emit, idx) {
 function sendCompleted(state, emit) {
   if (!state.completedSent) {
     state.completedSent = true;
-    emit("response.completed", {
-      type: "response.completed",
-      response: {
-        id: state.responseId,
-        object: "response",
-        created_at: state.created,
-        status: "completed",
-        background: false,
-        error: null
-      }
-    });
+    const responsePayload = {
+      id: state.responseId,
+      object: "response",
+      created_at: state.created,
+      status: "completed",
+      background: false,
+      error: null
+    };
+    // Forward usage to Codex CLI so context-used gauge updates and auto-compact triggers.
+    if (state.usage && typeof state.usage === "object") {
+      const u = state.usage;
+      const inputTokens = u.input_tokens ?? u.prompt_tokens ?? 0;
+      const outputTokens = u.output_tokens ?? u.completion_tokens ?? 0;
+      const cachedTokens = u.input_tokens_details?.cached_tokens
+        ?? u.prompt_tokens_details?.cached_tokens
+        ?? u.cache_read_input_tokens
+        ?? 0;
+      const reasoningTokens = u.output_tokens_details?.reasoning_tokens
+        ?? u.completion_tokens_details?.reasoning_tokens
+        ?? 0;
+      responsePayload.usage = {
+        input_tokens: inputTokens,
+        input_tokens_details: { cached_tokens: cachedTokens },
+        output_tokens: outputTokens,
+        output_tokens_details: { reasoning_tokens: reasoningTokens },
+        total_tokens: u.total_tokens ?? (inputTokens + outputTokens),
+      };
+    }
+    emit("response.completed", { type: "response.completed", response: responsePayload });
   }
 }
 

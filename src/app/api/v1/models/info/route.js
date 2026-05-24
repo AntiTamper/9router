@@ -29,8 +29,15 @@ function buildInfo({ alias, providerId, model, kind, providerInfo }) {
   if (model.capabilities) out.capabilities = model.capabilities;
   if (model.options) out.options = model.options;
   if (model.dimensions) out.dimensions = model.dimensions;
-  if (model.contextWindow) out.contextWindow = model.contextWindow;
-  if (model.maxOutputTokens) out.maxOutputTokens = model.maxOutputTokens;
+  if (model.contextWindow) {
+    out.contextWindow = model.contextWindow;
+    out.context_window = model.contextWindow;
+    out.max_input_tokens = model.contextWindow;
+  }
+  if (model.maxOutputTokens) {
+    out.maxOutputTokens = model.maxOutputTokens;
+    out.max_output_tokens = model.maxOutputTokens;
+  }
   if (kind === "tts" && TTS_VOICES_API.has(providerId)) {
     out.voicesUrl = `/v1/audio/voices?provider=${providerId}`;
   }

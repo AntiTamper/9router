@@ -56,6 +56,8 @@ function enrichWithContext(entry, alias, providerId, modelId, ctx) {
   if (resolved.contextWindow) {
     entry.context_window = resolved.contextWindow;
     entry.contextWindow = resolved.contextWindow;
+    // Codex CLI reads max_input_tokens for the input-side gauge; mirror context_window.
+    entry.max_input_tokens = resolved.contextWindow;
   }
   if (resolved.maxOutputTokens) {
     entry.max_output_tokens = resolved.maxOutputTokens;
