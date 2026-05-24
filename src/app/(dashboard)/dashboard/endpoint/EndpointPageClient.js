@@ -288,6 +288,7 @@ export default function APIPageClient({ machineId }) {
   const [hasPassword, setHasPassword] = useState(true);
   const [tunnelDashboardAccess, setTunnelDashboardAccess] = useState(false);
   const [rtkEnabled, setRtkEnabledState] = useState(true);
+  const [codexUsageEnabled, setCodexUsageEnabled] = useState(true);
   const [toonEnabled, setToonEnabled] = useState(false);
   const [cavemanEnabled, setCavemanEnabled] = useState(false);
   const [cavemanLevel, setCavemanLevel] = useState("full");
@@ -460,6 +461,7 @@ export default function APIPageClient({ machineId }) {
         setHasPassword(data.hasPassword || false);
         setTunnelDashboardAccess(data.tunnelDashboardAccess || false);
         setRtkEnabledState(data.rtkEnabled !== false);
+        setCodexUsageEnabled(data.codexUsageEnabled !== false);
         setToonEnabled(!!data.toonEnabled);
         setCavemanEnabled(!!data.cavemanEnabled);
         setCavemanLevel(data.cavemanLevel || "full");
@@ -544,6 +546,11 @@ export default function APIPageClient({ machineId }) {
   const handleCavemanEnabled = (value) => {
     setCavemanEnabled(value);
     patchSetting({ cavemanEnabled: value });
+  };
+
+  const handleCodexUsageEnabled = (value) => {
+    setCodexUsageEnabled(value);
+    patchSetting({ codexUsageEnabled: value });
   };
 
   const handleToonEnabled = (value) => {
@@ -1344,6 +1351,18 @@ export default function APIPageClient({ machineId }) {
             <span className="material-symbols-outlined text-primary">bolt</span>
             Token Saver
           </h2>
+        </div>
+        <div className="flex items-center justify-between pt-2 pb-4 border-b border-border gap-4">
+          <div className="min-w-0 flex-1">
+            <p className="font-medium">Forward usage to Codex</p>
+            <p className="text-sm text-text-muted">
+              Show context-used gauge in Codex CLI and trigger auto-compact when full. Works for all custom models.
+            </p>
+          </div>
+          <Toggle
+            checked={codexUsageEnabled}
+            onChange={() => handleCodexUsageEnabled(!codexUsageEnabled)}
+          />
         </div>
         <div className="flex items-center justify-between pt-2 pb-4 border-b border-border gap-4">
           <div className="min-w-0 flex-1">

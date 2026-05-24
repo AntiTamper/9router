@@ -221,6 +221,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       userAgent,
       apiKey,
       ccFilterNaming: !!chatSettings.ccFilterNaming,
+      codexUsageEnabled: chatSettings.codexUsageEnabled !== false,
       rtkEnabled: !!chatSettings.rtkEnabled,
       toonEnabled: !!chatSettings.toonEnabled,
       cavemanEnabled: !!chatSettings.cavemanEnabled,

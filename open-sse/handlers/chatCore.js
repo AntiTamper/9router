@@ -29,7 +29,7 @@ import { applyToon, formatToonLog } from "../rtk/toon.js";
  * @param {object} options.credentials - Provider credentials
  * @param {string} options.sourceFormatOverride - Override detected source format (e.g. "openai-responses")
  */
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, toonEnabled, cavemanEnabled, cavemanLevel, sourceFormatOverride, providerThinking }) {
+export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, codexUsageEnabled, rtkEnabled, toonEnabled, cavemanEnabled, cavemanLevel, sourceFormatOverride, providerThinking }) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
 
@@ -138,6 +138,13 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   if (cavemanEnabled && cavemanLevel) {
     injectCaveman(translatedBody, finalFormat, cavemanLevel);
     log?.debug?.("CAVEMAN", `${cavemanLevel} | ${finalFormat}`);
+  }
+
+  // Codex usage forwarding: inject stream_options.include_usage on streaming
+  // OpenAI-compat requests so upstream emits final usage chunk. Lets Codex CLI
+  // show context-used gauge and trigger auto-compact when context full.
+  if (codexUsageEnabled !== false && stream && translatedBody && Array.isArray(translatedBody.messages) && !translatedBody.stream_options) {
+    translatedBody.stream_options = { include_usage: true };
   }
 
   const executor = getExecutor(provider);

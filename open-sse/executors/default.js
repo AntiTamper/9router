@@ -15,11 +15,6 @@ export class DefaultExecutor extends BaseExecutor {
 
   transformRequest(model, body, stream = true, credentials = null, requestContext = null) {
     let transformed = injectReasoningContent({ provider: this.provider, model, body });
-    // Force upstream to emit usage on streaming OpenAI-compat responses so Codex/Cursor
-    // can show context-used gauge and trigger auto-compact when context is full.
-    if (stream && transformed && transformed.messages && !transformed.stream_options) {
-      transformed = { ...transformed, stream_options: { include_usage: true } };
-    }
     if (this.provider === "kimi" || this.provider === "kimi-coding") {
       const alias = this.provider === "kimi-coding" ? "kmc" : "kimi";
       const upstreamModel = getModelUpstreamId(alias, transformed?.model || model);
