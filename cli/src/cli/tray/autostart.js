@@ -236,6 +236,13 @@ function disableMacOS() {
 
 // ============ Windows ============
 
+function isWindowsElevated() {
+  try {
+    const out = execSync('powershell -NoProfile -Command "[bool](([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))"', { encoding: "utf8", windowsHide: true });
+    return /True/i.test(out);
+  } catch { return false; }
+}
+
 function enableWindows(cliPath) {
   const startupDir = path.join(process.env.APPDATA || "", "Microsoft", "Windows", "Start Menu", "Programs", "Startup");
   const vbsPath = path.join(startupDir, `${APP_NAME}.vbs`);
@@ -246,8 +253,28 @@ function enableWindows(cliPath) {
   const routerScript = getCliJsPath(cliPath);
   if (!routerScript) return false;
 
-  // Run node + cli.js directly, hidden window. Avoids the fragile
-  // `9router.cmd` lookup that depended on the npm prefix path.
+  // If user is currently elevated, register a Scheduled Task that runs at
+  // logon with HIGHEST privileges. Plain VBS in the Startup folder always
+  // launches at medium IL and drops admin rights on next boot. The task
+  // survives reboots and launches the tray with the same UAC level the user
+  // enabled it from.
+  if (isWindowsElevated()) {
+    try {
+      const cmdArgs = `\"${routerScript}\" --tray --skip-update`;
+      const psScript = [
+        `$action = New-ScheduledTaskAction -Execute '${nodePath}' -Argument '${cmdArgs}'`,
+        `$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME`,
+        `$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Hidden -ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable`,
+        `$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -RunLevel Highest -LogonType Interactive`,
+        `Register-ScheduledTask -TaskName '${APP_LABEL}' -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null`,
+      ].join("; ");
+      execSync(`powershell -NoProfile -ExecutionPolicy Bypass -Command "& { ${psScript.replace(/"/g, '\\"')} }"`, { windowsHide: true, stdio: "ignore" });
+      try { if (fs.existsSync(vbsPath)) fs.unlinkSync(vbsPath); } catch { /* ignore */ }
+      return true;
+    } catch { /* fall through to VBS */ }
+  }
+
+  // Non-elevated path: plain VBS in Startup folder, runs at medium IL.
   const vbsContent = `Set WshShell = CreateObject("WScript.Shell")
 WshShell.Run """${nodePath}"" ""${routerScript}"" --tray --skip-update", 0, False
 `;
