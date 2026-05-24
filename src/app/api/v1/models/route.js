@@ -56,8 +56,12 @@ function enrichWithContext(entry, alias, providerId, modelId, ctx) {
   if (resolved.contextWindow) {
     entry.context_window = resolved.contextWindow;
     entry.contextWindow = resolved.contextWindow;
-    // Codex CLI reads max_input_tokens for the input-side gauge; mirror context_window.
-    entry.max_input_tokens = resolved.contextWindow;
+    // Codex CLI reads max_input_tokens for the input-side gauge. Shave 4K
+    // safety margin to account for tokenizer drift between Codex's local
+    // count and the upstream's server-side count (e.g. Kimi rejects requests
+    // 33 tokens over advertised 262144 because tokenizers differ).
+    const SAFETY_MARGIN = 4096;
+    entry.max_input_tokens = Math.max(resolved.contextWindow - SAFETY_MARGIN, Math.floor(resolved.contextWindow * 0.95));
   }
   if (resolved.maxOutputTokens) {
     entry.max_output_tokens = resolved.maxOutputTokens;
@@ -180,41 +184,24 @@ function comboMatchesKinds(combo, kindFilter) {
 export async function buildModelsList(kindFilter) {
   // Aggregated live catalogs keyed by alias/providerId; populated below per provider.
   const liveCatalogs = {};
+  // Parallel DB reads: was 5 sequential awaits (~5x slower).
+  const [connectionsRes, combosRes, customRes, aliasesRes, disabledRes] = await Promise.allSettled([
+    getProviderConnections(),
+    getCombos(),
+    getCustomModels(),
+    getModelAliases(),
+    getDisabledModels(),
+  ]);
   let connections = [];
-  try {
-    connections = await getProviderConnections();
-    connections = connections.filter(c => c.isActive !== false);
-  } catch (e) {
+  if (connectionsRes.status === "fulfilled") {
+    connections = (connectionsRes.value || []).filter(c => c.isActive !== false);
+  } else {
     console.log("Could not fetch providers, returning all models");
   }
-
-  let combos = [];
-  try {
-    combos = await getCombos();
-  } catch (e) {
-    console.log("Could not fetch combos");
-  }
-
-  let customModels = [];
-  try {
-    customModels = await getCustomModels();
-  } catch (e) {
-    console.log("Could not fetch custom models");
-  }
-
-  let modelAliases = {};
-  try {
-    modelAliases = await getModelAliases();
-  } catch (e) {
-    console.log("Could not fetch model aliases");
-  }
-
-  let disabledByAlias = {};
-  try {
-    disabledByAlias = await getDisabledModels();
-  } catch (e) {
-    console.log("Could not fetch disabled models");
-  }
+  const combos = combosRes.status === "fulfilled" ? (combosRes.value || []) : (console.log("Could not fetch combos"), []);
+  const customModels = customRes.status === "fulfilled" ? (customRes.value || []) : (console.log("Could not fetch custom models"), []);
+  const modelAliases = aliasesRes.status === "fulfilled" ? (aliasesRes.value || {}) : (console.log("Could not fetch model aliases"), {});
+  const disabledByAlias = disabledRes.status === "fulfilled" ? (disabledRes.value || {}) : (console.log("Could not fetch disabled models"), {});
   const isDisabled = (alias, modelId) => Array.isArray(disabledByAlias[alias]) && disabledByAlias[alias].includes(modelId);
 
   const activeConnectionByProvider = new Map();

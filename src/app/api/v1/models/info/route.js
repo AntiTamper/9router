@@ -32,7 +32,9 @@ function buildInfo({ alias, providerId, model, kind, providerInfo }) {
   if (model.contextWindow) {
     out.contextWindow = model.contextWindow;
     out.context_window = model.contextWindow;
-    out.max_input_tokens = model.contextWindow;
+    // Shave 4K safety margin to absorb tokenizer drift between client and upstream.
+    const SAFETY_MARGIN = 4096;
+    out.max_input_tokens = Math.max(model.contextWindow - SAFETY_MARGIN, Math.floor(model.contextWindow * 0.95));
   }
   if (model.maxOutputTokens) {
     out.maxOutputTokens = model.maxOutputTokens;
