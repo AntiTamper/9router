@@ -420,6 +420,21 @@ export default function ProfilePage() {
     }
   };
 
+  const updateCodexUsageEnabled = async (enabled) => {
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ codexUsageEnabled: enabled }),
+      });
+      if (res.ok) {
+        setSettings(prev => ({ ...prev, codexUsageEnabled: enabled }));
+      }
+    } catch (err) {
+      console.error("Failed to update codexUsageEnabled:", err);
+    }
+  };
+
   const reloadSettings = async () => {
     try {
       const res = await fetch("/api/settings");
@@ -497,6 +512,8 @@ export default function ProfilePage() {
   };
 
   const observabilityEnabled = settings.enableObservability === true;
+
+  const codexUsageEnabled = settings.codexUsageEnabled !== false;
 
   return (
     <div className="max-w-2xl mx-auto px-4 sm:px-0">
@@ -972,6 +989,29 @@ export default function ProfilePage() {
           </div>
         </Card>
 
+
+        {/* Codex Usage Forwarding */}
+        <Card>
+          <div className="flex items-center gap-3 mb-4">
+            <div className="p-2 rounded-lg bg-blue-500/10 text-blue-500 shrink-0">
+              <span className="material-symbols-outlined text-[20px]">sync</span>
+            </div>
+            <h3 className="text-base sm:text-lg font-semibold">Codex Integration</h3>
+          </div>
+          <div className="flex items-start sm:items-center justify-between gap-4">
+            <div className="flex-1 min-w-0">
+              <p className="font-medium text-sm sm:text-base">Forward usage to Codex</p>
+              <p className="text-xs sm:text-sm text-text-muted">
+                Show context-used gauge in Codex CLI and trigger auto-compact when full. Works for all custom models.
+              </p>
+            </div>
+            <Toggle
+              checked={codexUsageEnabled}
+              onChange={updateCodexUsageEnabled}
+              disabled={loading}
+            />
+          </div>
+        </Card>
         {/* Observability Settings */}
         <Card>
           <div className="flex items-center gap-3 mb-4">

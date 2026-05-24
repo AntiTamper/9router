@@ -140,10 +140,11 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     log?.debug?.("CAVEMAN", `${cavemanLevel} | ${finalFormat}`);
   }
 
-  // Codex usage forwarding: inject stream_options.include_usage on streaming
-  // OpenAI-compat requests so upstream emits final usage chunk. Lets Codex CLI
-  // show context-used gauge and trigger auto-compact when context full.
-  if (codexUsageEnabled !== false && stream && translatedBody && Array.isArray(translatedBody.messages) && !translatedBody.stream_options) {
+  // Codex usage forwarding: inject stream_options.include_usage ONLY when
+  // the client is Codex (sourceFormat=openai-responses). Other CLIs (Claude
+  // Code, Kiro, generic OpenAI clients) are unaffected because some upstream
+  // providers reject unknown stream_options or break on the extra usage chunk.
+  if (codexUsageEnabled !== false && stream && sourceFormat === FORMATS.OPENAI_RESPONSES && translatedBody && Array.isArray(translatedBody.messages) && !translatedBody.stream_options) {
     translatedBody.stream_options = { include_usage: true };
   }
 

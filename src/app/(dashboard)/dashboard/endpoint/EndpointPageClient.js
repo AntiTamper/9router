@@ -1354,18 +1354,6 @@ export default function APIPageClient({ machineId }) {
         </div>
         <div className="flex items-center justify-between pt-2 pb-4 border-b border-border gap-4">
           <div className="min-w-0 flex-1">
-            <p className="font-medium">Forward usage to Codex</p>
-            <p className="text-sm text-text-muted">
-              Show context-used gauge in Codex CLI and trigger auto-compact when full. Works for all custom models.
-            </p>
-          </div>
-          <Toggle
-            checked={codexUsageEnabled}
-            onChange={() => handleCodexUsageEnabled(!codexUsageEnabled)}
-          />
-        </div>
-        <div className="flex items-center justify-between pt-2 pb-4 border-b border-border gap-4">
-          <div className="min-w-0 flex-1">
             <p className="font-medium">
               Compress tool output{" "}
               <a
