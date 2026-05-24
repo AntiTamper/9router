@@ -1110,8 +1110,8 @@ export default function APIPageClient({ machineId }) {
   const currentEndpoint = baseUrl;
   const settingsKey = settingsKeyId ? keys.find((key) => key.id === settingsKeyId) : null;
   const limitedKeys = keys.filter((key) => key.limitMode !== "unlimited");
-  const previewKeys = keys.slice(0, 5);
-  const hiddenPreviewKeyCount = Math.max(0, keys.length - previewKeys.length);
+  const previewKeys = keys.filter((k) => k && k.enabled !== false);
+  const hiddenPreviewKeyCount = 0;
   const needsCreateTokenLimit = newKeyLimitMode !== "unlimited" && newKeyLimitMode !== DUAL_LIMIT_MODE && !newKeyTokenLimit;
   const needsCreateDualLimits = newKeyLimitMode === DUAL_LIMIT_MODE && (!newKeyDailyTokenLimit || !newKeyWeeklyTokenLimit);
   const cavemanSelection = getCavemanSelection(cavemanLevel);
@@ -1514,7 +1514,7 @@ export default function APIPageClient({ machineId }) {
               <div>
                 <p className="text-sm font-medium text-text-main">API key quota usage</p>
                 <p className="text-xs text-text-muted">
-                  {hiddenPreviewKeyCount > 0 ? `Showing 5 keys, 4 visible. ${hiddenPreviewKeyCount} more in manager.` : "API keys with quota bars"}
+                  API keys with quota bars
                 </p>
               </div>
               {hiddenPreviewKeyCount > 0 && (
