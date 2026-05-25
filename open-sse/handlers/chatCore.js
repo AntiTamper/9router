@@ -82,13 +82,13 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   // Native passthrough: CLI tool and provider are the same ecosystem
   // Skip all translation/normalization — only model and Bearer are swapped
-  const clientTool = detectClientTool(clientRawRequest?.headers || {}, body);
-  const passthrough = isNativePassthrough(clientTool, provider);
+  const passthrough = isNativePassthrough(detectedTool, provider);
+
 
   let translatedBody;
   let toolNameMap;
   if (passthrough) {
-    log?.debug?.("PASSTHROUGH", `${clientTool} → ${provider} | native lossless`);
+    log?.debug?.("PASSTHROUGH", `${detectedTool} → ${provider} | native lossless`);
     translatedBody = { ...body, model };
   } else {
     const translated = translateProviderRequest({
@@ -100,7 +100,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       credentials,
       reqLogger,
       connectionId,
-      clientTool,
+      detectedTool,
     });
     translatedBody = translated.body;
     if (!translatedBody) {
@@ -113,7 +113,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   }
 
   // Dedupe duplicate built-in tools when equivalent MCP tools are present (Claude clients only).
-  if (clientTool === "claude" && Array.isArray(translatedBody.tools)) {
+  if (detectedTool === "claude" && Array.isArray(translatedBody.tools)) {
     const { tools: deduped, stripped } = dedupeTools(translatedBody.tools);
     if (stripped.length > 0) {
       translatedBody.tools = deduped;
@@ -141,10 +141,10 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   }
 
   // Codex usage forwarding: inject stream_options.include_usage ONLY when
-  // the client is Codex (sourceFormat=openai-responses). Other CLIs (Claude
+  // the client is Codex CLI (detected by user-agent). Other CLIs (Claude
   // Code, Kiro, generic OpenAI clients) are unaffected because some upstream
   // providers reject unknown stream_options or break on the extra usage chunk.
-  if (codexUsageEnabled !== false && stream && sourceFormat === FORMATS.OPENAI_RESPONSES && translatedBody && Array.isArray(translatedBody.messages) && !translatedBody.stream_options) {
+  if (codexUsageEnabled !== false && stream && detectedTool === "codex" && translatedBody && Array.isArray(translatedBody.messages) && !translatedBody.stream_options) {
     translatedBody.stream_options = { include_usage: true };
   }
 
@@ -309,3 +309,4 @@ export function isTokenExpiringSoon(expiresAt, bufferMs = 5 * 60 * 1000) {
   if (!expiresAt) return false;
   return new Date(expiresAt).getTime() - Date.now() < bufferMs;
 }
+
