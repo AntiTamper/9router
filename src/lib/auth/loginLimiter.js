@@ -3,12 +3,27 @@
 const MAX_FAILS_BEFORE_LOCK = 5;
 const LOCK_STEPS_MS = [30_000, 120_000, 600_000, 1_800_000]; // 30s, 2m, 10m, 30m
 const FAIL_WINDOW_MS = 60 * 60 * 1000; // 1h since last fail → auto reset
+const MAX_ATTEMPT_ENTRIES = 2048;
 
 const attempts = new Map(); // ip → { fails, lockUntil, lockLevel, lastFailAt }
 
 function now() { return Date.now(); }
 
+function pruneAttempts(ts = now()) {
+  for (const [ip, entry] of attempts) {
+    if (!entry?.lastFailAt || (ts - entry.lastFailAt > FAIL_WINDOW_MS && (!entry.lockUntil || ts >= entry.lockUntil))) {
+      attempts.delete(ip);
+    }
+  }
+  while (attempts.size > MAX_ATTEMPT_ENTRIES) {
+    const oldestKey = attempts.keys().next().value;
+    if (!oldestKey) break;
+    attempts.delete(oldestKey);
+  }
+}
+
 function getEntry(ip) {
+  pruneAttempts();
   const e = attempts.get(ip);
   if (!e) return null;
   // Auto reset if window expired and not currently locked
@@ -28,6 +43,7 @@ export function checkLock(ip) {
 }
 
 export function recordFail(ip) {
+  pruneAttempts();
   const e = getEntry(ip) || { fails: 0, lockUntil: 0, lockLevel: 0, lastFailAt: 0 };
   e.fails += 1;
   e.lastFailAt = now();
@@ -38,6 +54,7 @@ export function recordFail(ip) {
     e.fails = 0;
   }
   attempts.set(ip, e);
+  pruneAttempts();
   return { remainingBeforeLock: Math.max(0, MAX_FAILS_BEFORE_LOCK - e.fails) };
 }
 

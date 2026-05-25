@@ -11,16 +11,33 @@ export async function GET(request, { params }) {
 
   const encoder = new TextEncoder();
   let sid;
+  let closed = false;
+
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    if (sid) unregisterSession(plugin, sid);
+    request.signal.removeEventListener("abort", cleanup);
+  };
+
+  request.signal.addEventListener("abort", cleanup, { once: true });
 
   const stream = new ReadableStream({
     start(controller) {
-      const send = (chunk) => controller.enqueue(encoder.encode(chunk));
+      const send = (chunk) => {
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(chunk));
+        } catch {
+          cleanup();
+        }
+      };
       sid = registerSession(plugin, send);
       // MCP SSE handshake: tell client where to POST messages.
       send(`event: endpoint\ndata: /api/mcp/${plugin}/message?sessionId=${sid}\n\n`);
     },
     cancel() {
-      if (sid) unregisterSession(plugin, sid);
+      cleanup();
     },
   });
 

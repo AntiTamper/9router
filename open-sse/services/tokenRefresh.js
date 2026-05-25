@@ -1,5 +1,6 @@
 import { PROVIDERS } from "../config/providers.js";
 import { OAUTH_ENDPOINTS, GITHUB_COPILOT, REFRESH_LEAD_MS } from "../config/appConstants.js";
+import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 
 // xAI refresh — wraps the class method from src/lib/oauth/services/xai.js so
@@ -748,6 +749,17 @@ export function parseVertexSaJson(apiKey) {
 // Cache Vertex tokens keyed by service account email { token, expiresAt }
 const vertexTokenCache = new Map();
 
+function pruneVertexTokenCache(now = Date.now()) {
+  for (const [key, entry] of vertexTokenCache) {
+    if (!entry || entry.expiresAt <= now) vertexTokenCache.delete(key);
+  }
+  while (vertexTokenCache.size > MEMORY_CONFIG.vertexTokenCacheMaxSize) {
+    const oldestKey = vertexTokenCache.keys().next().value;
+    if (!oldestKey) break;
+    vertexTokenCache.delete(oldestKey);
+  }
+}
+
 /**
  * Mint a short-lived OAuth2 Bearer token for Google Cloud Vertex AI
  * using Service Account JSON + jose (RS256 JWT assertion flow).
@@ -755,6 +767,7 @@ const vertexTokenCache = new Map();
  */
 export async function refreshVertexToken(saJson, log) {
   const cacheKey = saJson.client_email;
+  pruneVertexTokenCache();
   const cached = vertexTokenCache.get(cacheKey);
 
   // Return cached token if still valid (5-min buffer)
@@ -795,6 +808,7 @@ export async function refreshVertexToken(saJson, log) {
     const expiresAt = Date.now() + (expires_in ?? 3600) * 1000;
 
     vertexTokenCache.set(cacheKey, { token: access_token, expiresAt });
+    pruneVertexTokenCache();
     log?.info?.("TOKEN_REFRESH", `Vertex token minted for ${saJson.client_email}`);
 
     return { accessToken: access_token, expiresAt };

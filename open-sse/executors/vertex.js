@@ -1,17 +1,38 @@
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
+import { createHash } from "crypto";
+import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
 import { parseVertexSaJson, refreshVertexToken } from "../services/tokenRefresh.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 
-// Cache project IDs resolved from raw API keys { apiKey → projectId }
+// Cache project IDs resolved from raw API keys without retaining the raw key.
 const projectIdCache = new Map();
+
+function projectIdCacheKey(apiKey) {
+  return createHash("sha256").update(String(apiKey || "")).digest("hex");
+}
+
+function pruneProjectIdCache(now = Date.now()) {
+  for (const [key, entry] of projectIdCache) {
+    if (!entry || entry.expiresAt <= now) projectIdCache.delete(key);
+  }
+  while (projectIdCache.size > MEMORY_CONFIG.vertexProjectIdCacheMaxSize) {
+    const oldestKey = projectIdCache.keys().next().value;
+    if (!oldestKey) break;
+    projectIdCache.delete(oldestKey);
+  }
+}
 
 /**
  * Resolve GCP project ID from a raw Vertex API key.
  * Sends a dummy 404 request and parses "projects/{id}" from the error message.
  */
 async function resolveProjectId(apiKey) {
-  if (projectIdCache.has(apiKey)) return projectIdCache.get(apiKey);
+  const key = projectIdCacheKey(apiKey);
+  const now = Date.now();
+  pruneProjectIdCache(now);
+  const cached = projectIdCache.get(key);
+  if (cached && cached.expiresAt > now) return cached.projectId;
 
   const res = await fetch(
     `https://aiplatform.googleapis.com/v1/publishers/google/models/__probe__:generateContent?key=${apiKey}`,
@@ -22,7 +43,13 @@ async function resolveProjectId(apiKey) {
   const match = msg.match(/projects\/([^/]+)\//);
   const projectId = match?.[1] || null;
 
-  if (projectId) projectIdCache.set(apiKey, projectId);
+  if (projectId) {
+    projectIdCache.set(key, {
+      projectId,
+      expiresAt: Date.now() + MEMORY_CONFIG.vertexProjectIdCacheTtlMs,
+    });
+    pruneProjectIdCache();
+  }
   return projectId;
 }
 

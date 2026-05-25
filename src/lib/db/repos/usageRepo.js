@@ -160,18 +160,26 @@ async function calculateCost(provider, model, tokens) {
   }
 }
 
-export function trackPendingRequest(model, provider, connectionId, started, error = false) {
-  const modelKey = provider ? `${model} (${provider})` : model;
-  const timerKey = `${connectionId}|${modelKey}`;
+function getPendingTimerList(timerKey) {
+  const current = pendingTimers[timerKey];
+  if (!current) return [];
+  if (Array.isArray(current)) return current;
+  return [current];
+}
 
-  if (!pendingRequests.byModel[modelKey]) pendingRequests.byModel[modelKey] = 0;
-  pendingRequests.byModel[modelKey] = Math.max(0, pendingRequests.byModel[modelKey] + (started ? 1 : -1));
+function storePendingTimerList(timerKey, timers) {
+  if (timers.length > 0) pendingTimers[timerKey] = timers;
+  else delete pendingTimers[timerKey];
+}
+
+function decrementPendingCount(modelKey, connectionId) {
+  if (pendingRequests.byModel[modelKey] > 0) {
+    pendingRequests.byModel[modelKey] = Math.max(0, pendingRequests.byModel[modelKey] - 1);
+  }
   if (pendingRequests.byModel[modelKey] === 0) delete pendingRequests.byModel[modelKey];
 
-  if (connectionId) {
-    if (!pendingRequests.byAccount[connectionId]) pendingRequests.byAccount[connectionId] = {};
-    if (!pendingRequests.byAccount[connectionId][modelKey]) pendingRequests.byAccount[connectionId][modelKey] = 0;
-    pendingRequests.byAccount[connectionId][modelKey] = Math.max(0, pendingRequests.byAccount[connectionId][modelKey] + (started ? 1 : -1));
+  if (connectionId && pendingRequests.byAccount[connectionId]?.[modelKey] > 0) {
+    pendingRequests.byAccount[connectionId][modelKey] = Math.max(0, pendingRequests.byAccount[connectionId][modelKey] - 1);
     if (pendingRequests.byAccount[connectionId][modelKey] === 0) {
       delete pendingRequests.byAccount[connectionId][modelKey];
       if (Object.keys(pendingRequests.byAccount[connectionId]).length === 0) {
@@ -179,20 +187,49 @@ export function trackPendingRequest(model, provider, connectionId, started, erro
       }
     }
   }
+}
+
+function clearOnePendingTimer(timerKey) {
+  const timers = getPendingTimerList(timerKey);
+  const timer = timers.shift();
+  if (timer) clearTimeout(timer);
+  storePendingTimerList(timerKey, timers);
+}
+
+function removePendingTimer(timerKey, timer) {
+  const timers = getPendingTimerList(timerKey).filter((item) => item !== timer);
+  storePendingTimerList(timerKey, timers);
+}
+
+export function trackPendingRequest(model, provider, connectionId, started, error = false) {
+  const modelKey = provider ? `${model} (${provider})` : model;
+  const timerKey = `${connectionId}|${modelKey}`;
 
   if (started) {
-    clearTimeout(pendingTimers[timerKey]);
-    pendingTimers[timerKey] = setTimeout(() => {
-      delete pendingTimers[timerKey];
-      if (pendingRequests.byModel[modelKey] > 0) pendingRequests.byModel[modelKey] = 0;
-      if (connectionId && pendingRequests.byAccount[connectionId]?.[modelKey] > 0) {
-        pendingRequests.byAccount[connectionId][modelKey] = 0;
-      }
+    if (!pendingRequests.byModel[modelKey]) pendingRequests.byModel[modelKey] = 0;
+    pendingRequests.byModel[modelKey] += 1;
+
+    if (connectionId) {
+      if (!pendingRequests.byAccount[connectionId]) pendingRequests.byAccount[connectionId] = {};
+      if (!pendingRequests.byAccount[connectionId][modelKey]) pendingRequests.byAccount[connectionId][modelKey] = 0;
+      pendingRequests.byAccount[connectionId][modelKey] += 1;
+    }
+  } else {
+    decrementPendingCount(modelKey, connectionId);
+  }
+
+  if (started) {
+    const timer = setTimeout(() => {
+      removePendingTimer(timerKey, timer);
+      decrementPendingCount(modelKey, connectionId);
       statsEmitter.emit("pending");
     }, PENDING_TIMEOUT_MS);
+    timer.unref?.();
+    const timers = getPendingTimerList(timerKey);
+    timers.push(timer);
+    storePendingTimerList(timerKey, timers);
   } else {
-    clearTimeout(pendingTimers[timerKey]);
-    delete pendingTimers[timerKey];
+    clearOnePendingTimer(timerKey);
   }
 
   if (!started && error && provider) {
@@ -710,7 +747,7 @@ export async function appendRequestLog() {}
 
 export async function getRecentLogs(limit = 200) {
   try {
-    const db = getAdapter();
+    const db = await getAdapter();
     const rows = db.all(
       `SELECT timestamp, provider, model, connectionId, promptTokens, completionTokens, status, tokens FROM usageHistory ORDER BY id DESC LIMIT ?`,
       [limit],

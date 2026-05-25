@@ -4,11 +4,13 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
-import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, IFlowCookieModal, GitLabAuthModal, Toggle, Select, EditConnectionModal, NoAuthProxyCard, ConfirmModal } from "@/shared/components";
+import { Card, Button, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, IFlowCookieModal, GitLabAuthModal, EditConnectionModal, NoAuthProxyCard, ConfirmModal } from "@/shared/components";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS, THINKING_CONFIG } from "@/shared/constants/providers";
 import { getModelsByProviderId } from "@/shared/constants/models";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { fetchSuggestedModels } from "@/shared/utils/providerModelsFetcher";
+import Pagination from "@/shared/components/Pagination";
+import { ACCOUNT_ROUTING_MODE_OPTIONS, normalizeAccountRoutingMode } from "@/shared/utils/accountRouting";
 import ModelRow from "./ModelRow";
 import PassthroughModelsSection from "./PassthroughModelsSection";
 import CompatibleModelsSection from "./CompatibleModelsSection";
@@ -49,7 +51,8 @@ export default function ProviderDetailPage() {
   const [bulkProxyPoolId, setBulkProxyPoolId] = useState("__none__");
   const [bulkUpdatingProxy, setBulkUpdatingProxy] = useState(false);
   const [providerStrategy, setProviderStrategy] = useState(null);
-  const [providerStickyLimit, setProviderStickyLimit] = useState("");
+  const [connectionPage, setConnectionPage] = useState(1);
+  const [connectionPageSize, setConnectionPageSize] = useState(10);
   const [thinkingMode, setThinkingMode] = useState("auto");
   const [suggestedModels, setSuggestedModels] = useState([]);
   const [kiloFreeModels, setKiloFreeModels] = useState([]);
@@ -247,8 +250,7 @@ export default function ProviderDetailPage() {
       }
       // Load per-provider strategy override
       const override = (settingsData.providerStrategies || {})[providerId] || {};
-      setProviderStrategy(override.fallbackStrategy || null);
-      setProviderStickyLimit(override.stickyRoundRobinLimit != null ? String(override.stickyRoundRobinLimit) : "1");
+      setProviderStrategy(override.fallbackStrategy ? normalizeAccountRoutingMode(override.fallbackStrategy) : null);
       // Load per-provider thinking config
       const thinkingCfg = (settingsData.providerThinking || {})[providerId] || {};
       setThinkingMode(thinkingCfg.mode || "auto");
@@ -295,18 +297,15 @@ export default function ProviderDetailPage() {
     }
   };
 
-  const saveProviderStrategy = async (strategy, stickyLimit) => {
+  const saveProviderStrategy = async (strategy) => {
     try {
+      const normalizedStrategy = strategy ? normalizeAccountRoutingMode(strategy) : null;
       const settingsRes = await fetch("/api/settings", { cache: "no-store" });
       const settingsData = settingsRes.ok ? await settingsRes.json() : {};
       const current = settingsData.providerStrategies || {};
 
-      // Build override: null strategy means remove override, use global
       const override = {};
-      if (strategy) override.fallbackStrategy = strategy;
-      if (strategy === "round-robin" && stickyLimit !== "") {
-        override.stickyRoundRobinLimit = Number(stickyLimit) || 3;
-      }
+      if (normalizedStrategy) override.fallbackStrategy = normalizedStrategy;
 
       const updated = { ...current };
       if (Object.keys(override).length === 0) {
@@ -325,17 +324,10 @@ export default function ProviderDetailPage() {
     }
   };
 
-  const handleRoundRobinToggle = (enabled) => {
-    const strategy = enabled ? "round-robin" : null;
-    const sticky = enabled ? (providerStickyLimit || "1") : providerStickyLimit;
-    if (enabled && !providerStickyLimit) setProviderStickyLimit("1");
+  const handleProviderStrategyChange = (value) => {
+    const strategy = value === "global" ? null : normalizeAccountRoutingMode(value);
     setProviderStrategy(strategy);
-    saveProviderStrategy(strategy, sticky);
-  };
-
-  const handleStickyLimitChange = (value) => {
-    setProviderStickyLimit(value);
-    saveProviderStrategy("round-robin", value);
+    saveProviderStrategy(strategy);
   };
 
   const saveThinkingConfig = async (mode) => {
@@ -642,6 +634,20 @@ export default function ProviderDetailPage() {
     setSelectedConnectionIds((prev) => prev.filter((id) => connections.some((conn) => conn.id === id)));
   }, [connections]);
 
+  const connectionTotalPages = Math.max(1, Math.ceil(connections.length / connectionPageSize));
+  const currentConnectionPage = Math.min(Math.max(connectionPage, 1), connectionTotalPages);
+  const connectionStartIndex = (currentConnectionPage - 1) * connectionPageSize;
+  const paginatedConnections = connections.slice(connectionStartIndex, connectionStartIndex + connectionPageSize);
+
+  useEffect(() => {
+    setConnectionPage((page) => Math.min(Math.max(page, 1), connectionTotalPages));
+  }, [connectionTotalPages]);
+
+  const handleConnectionPageSizeChange = (size) => {
+    setConnectionPageSize(size);
+    setConnectionPage(1);
+  };
+
   const selectedProxySummary = (() => {
     if (selectedConnections.length === 0) return "";
     const poolIds = new Set(selectedConnections.map((conn) => conn.providerSpecificData?.proxyPoolId || "__none__"));
@@ -712,10 +718,57 @@ export default function ProviderDetailPage() {
 
   const isSelected = (connectionId) => selectedConnectionIds.includes(connectionId);
 
+  const connectionAddActions = hasDualAuthModes ? (
+    <>
+      <Button
+        size="sm"
+        icon="lock"
+        variant="secondary"
+        onClick={triggerOAuthConnection}
+        className="w-full sm:w-auto"
+      >
+        {oauthConnectionLabel}
+      </Button>
+      <Button
+        size="sm"
+        icon="key"
+        onClick={triggerApiKeyConnection}
+        className="w-full sm:w-auto"
+      >
+        {apiKeyConnectionLabel}
+      </Button>
+    </>
+  ) : (
+    <>
+      {!isCompatible && providerId === "iflow" && (
+        <Button
+          size="sm"
+          icon="cookie"
+          variant="secondary"
+          onClick={() => setShowIFlowCookieModal(true)}
+          title="Add connection using browser cookie"
+          className="w-full sm:w-auto"
+        >
+          Cookie
+        </Button>
+      )}
+      <Button
+        size="sm"
+        icon={isCompatible ? "key" : "add"}
+        onClick={triggerAddConnection}
+        className="w-full sm:w-auto"
+      >
+        {isCompatible ? "Add API Key" : (providerId === "iflow" ? "OAuth" : "Add Connection")}
+      </Button>
+    </>
+  );
+
   const connectionsList = (
     <div className="flex min-w-0 flex-col divide-y divide-black/[0.03] dark:divide-white/[0.03]">
-      {connections
-        .map((conn, index) => (
+      {paginatedConnections
+        .map((conn, pageIndex) => {
+          const index = connectionStartIndex + pageIndex;
+          return (
           <div key={conn.id} className="flex min-w-0 items-stretch">
             <div className="flex-1 min-w-0">
               <ConnectionRow
@@ -754,7 +807,8 @@ export default function ProviderDetailPage() {
               />
             </div>
           </div>
-        ))}
+          );
+        })}
     </div>
   );
 
@@ -1157,7 +1211,10 @@ export default function ProviderDetailPage() {
         <Card>
           <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <h2 className="text-lg font-semibold">Connections</h2>
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
+            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
+              <div className="grid grid-cols-1 gap-2 sm:flex sm:items-center">
+                {connectionAddActions}
+              </div>
               {connections.length > 0 && proxyPools.length > 0 && (
                 <Button
                   size="sm"
@@ -1207,26 +1264,18 @@ export default function ProviderDetailPage() {
                   </select>
                 </div>
               )} */}
-              {/* Round Robin toggle */}
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs text-text-muted font-medium">Round Robin</span>
-                <Toggle
-                  checked={providerStrategy === "round-robin"}
-                  onChange={handleRoundRobinToggle}
-                />
-                {providerStrategy === "round-robin" && (
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs text-text-muted">Sticky:</span>
-                    <input
-                      type="number"
-                      min={1}
-                      value={providerStickyLimit}
-                      onChange={(e) => handleStickyLimitChange(e.target.value)}
-                      placeholder="1"
-                      className="w-14 px-2 py-1 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary"
-                    />
-                  </div>
-                )}
+                <span className="text-xs font-medium text-text-muted">Route</span>
+                <select
+                  value={providerStrategy || "global"}
+                  onChange={(event) => handleProviderStrategyChange(event.target.value)}
+                  className="h-8 rounded-lg border border-border bg-background px-2 text-xs text-text-main focus:outline-none focus:border-primary"
+                >
+                  <option value="global">Global</option>
+                  {ACCOUNT_ROUTING_MODE_OPTIONS.map((option) => (
+                    <option key={option.id} value={option.id}>{option.label}</option>
+                  ))}
+                </select>
               </div>
             </div>
           </div>
@@ -1245,33 +1294,6 @@ export default function ProviderDetailPage() {
                     </p>
                   )}
                 </div>
-              </div>
-              <div className="flex gap-2">
-                {hasDualAuthModes ? (
-                  <>
-                    <Button size="sm" icon="lock" variant="secondary" onClick={triggerOAuthConnection}>
-                      {oauthConnectionLabel}
-                    </Button>
-                    <Button size="sm" icon="key" onClick={triggerApiKeyConnection}>
-                      {apiKeyConnectionLabel}
-                    </Button>
-                  </>
-                ) : (
-                  <>
-                    {!isCompatible && providerId === "iflow" && (
-                      <Button size="sm" icon="cookie" variant="secondary" onClick={() => setShowIFlowCookieModal(true)}>
-                        Cookie
-                      </Button>
-                    )}
-                    <Button
-                      size="sm"
-                      icon="add"
-                      onClick={triggerAddConnection}
-                    >
-                      {isCompatible ? "Add API Key" : (providerId === "iflow" ? "OAuth" : "Add Connection")}
-                    </Button>
-                  </>
-                )}
               </div>
             </div>
           ) : (
@@ -1293,52 +1315,14 @@ export default function ProviderDetailPage() {
                 </div>
               )}
               {connectionsList}
-              {!isCompatible && (
-                <div className="mt-4 grid grid-cols-1 gap-2 sm:flex">
-                  {providerId === "iflow" && (
-                    <Button
-                      size="sm"
-                      icon="cookie"
-                      variant="secondary"
-                      onClick={() => setShowIFlowCookieModal(true)}
-                      title="Add connection using browser cookie"
-                      className="w-full sm:w-auto"
-                    >
-                      Cookie
-                    </Button>
-                  )}
-                  {hasDualAuthModes ? (
-                    <>
-                      <Button
-                        size="sm"
-                        icon="lock"
-                        variant="secondary"
-                        onClick={triggerOAuthConnection}
-                        className="w-full sm:w-auto"
-                      >
-                        {oauthConnectionLabel}
-                      </Button>
-                      <Button
-                        size="sm"
-                        icon="key"
-                        onClick={triggerApiKeyConnection}
-                        className="w-full sm:w-auto"
-                      >
-                        {apiKeyConnectionLabel}
-                      </Button>
-                    </>
-                  ) : (
-                    <Button
-                      size="sm"
-                      icon="add"
-                      onClick={triggerAddConnection}
-                      className="w-full sm:w-auto"
-                    >
-                      Add
-                    </Button>
-                  )}
-                </div>
-              )}
+              <Pagination
+                currentPage={currentConnectionPage}
+                pageSize={connectionPageSize}
+                totalItems={connections.length}
+                onPageChange={setConnectionPage}
+                onPageSizeChange={handleConnectionPageSizeChange}
+                className="mt-3 border-t border-border/50 px-0 pb-0"
+              />
             </>
           )}
         </Card>

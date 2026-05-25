@@ -12,6 +12,7 @@ export async function GET(request) {
     if (state.send) statsEmitter.off("update", state.send);
     if (state.sendPending) statsEmitter.off("pending", state.sendPending);
     if (state.keepalive) clearInterval(state.keepalive);
+    request.signal.removeEventListener("abort", cleanup);
   };
 
   request.signal.addEventListener("abort", cleanup, { once: true });

@@ -15,6 +15,7 @@ const MAX_TEXT_CHARS = 50000;
 const COLLAPSE_THRESHOLD = 30;
 const COLLAPSE_KEEP_HEAD = 10;
 const COLLAPSE_KEEP_TAIL = 5;
+const IDLE_SHUTDOWN_MS = 2 * 60 * 1000;
 
 // Drop noise nodes, collapse repeated siblings, hard-truncate. Preserve [ref=eXX].
 function smartFilterText(text) {
@@ -138,13 +139,19 @@ function findPlugin(name) {
 function getOrSpawn(name) {
   const store = getStore();
   let entry = store.get(name);
-  if (entry?.proc && !entry.proc.killed && entry.proc.exitCode === null) return entry;
+  if (entry?.proc && !entry.proc.killed && entry.proc.exitCode === null) {
+    if (entry.idleTimer) {
+      clearTimeout(entry.idleTimer);
+      entry.idleTimer = null;
+    }
+    return entry;
+  }
 
   const plugin = findPlugin(name);
   if (!plugin) throw new Error(`Unknown local plugin: ${name}`);
 
   const proc = spawn(plugin.command, plugin.args, { stdio: ["pipe", "pipe", "pipe"], env: process.env });
-  entry = { proc, sessions: new Map(), buffer: "" };
+  entry = { proc, sessions: new Map(), buffer: "", idleTimer: null };
   store.set(name, entry);
 
   // Parse newline-delimited JSON-RPC from child stdout, broadcast to all sessions.
@@ -165,6 +172,8 @@ function getOrSpawn(name) {
   proc.stderr.on("data", (d) => console.log(`[mcp:${name}]`, d.toString().trim()));
   proc.on("exit", (code) => {
     console.log(`[mcp:${name}] exited`, code);
+    if (entry.idleTimer) clearTimeout(entry.idleTimer);
+    entry.sessions.clear();
     store.delete(name);
   });
 
@@ -173,6 +182,10 @@ function getOrSpawn(name) {
 
 function registerSession(name, sendFn) {
   const entry = getOrSpawn(name);
+  if (entry.idleTimer) {
+    clearTimeout(entry.idleTimer);
+    entry.idleTimer = null;
+  }
   const sid = crypto.randomUUID();
   entry.sessions.set(sid, sendFn);
   return sid;
@@ -182,6 +195,13 @@ function unregisterSession(name, sid) {
   const entry = getStore().get(name);
   if (!entry) return;
   entry.sessions.delete(sid);
+  if (entry.sessions.size === 0 && !entry.idleTimer) {
+    entry.idleTimer = setTimeout(() => {
+      if (entry.sessions.size > 0) return;
+      try { entry.proc.kill(); } catch {}
+    }, IDLE_SHUTDOWN_MS);
+    entry.idleTimer.unref?.();
+  }
 }
 
 function sendToChild(name, jsonRpc) {

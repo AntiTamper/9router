@@ -120,9 +120,24 @@ let codexProxyTimeout = null;
 
 const CODEX_PROXY_TIMEOUT_MS = 300000; // 5 minutes
 const CODEX_PORT = 1455;
+const PENDING_EXCHANGE_TTL_MS = 10 * 60 * 1000;
+const PENDING_EXCHANGE_MAX = 128;
 
 // Pending exchange sessions keyed by state — used by server-side exchange mode
 const pendingExchanges = new Map();
+
+function prunePendingExchangeMap(map, now = Date.now()) {
+  for (const [state, session] of map) {
+    if (!session?.createdAt || now - session.createdAt > PENDING_EXCHANGE_TTL_MS) {
+      map.delete(state);
+    }
+  }
+  while (map.size > PENDING_EXCHANGE_MAX) {
+    const oldestKey = map.keys().next().value;
+    if (!oldestKey) break;
+    map.delete(oldestKey);
+  }
+}
 
 /**
  * Register a pending exchange session for server-side mode.
@@ -130,12 +145,14 @@ const pendingExchanges = new Map();
  */
 export function registerCodexSession({ state, codeVerifier, redirectUri }) {
   if (!state || !codeVerifier || !redirectUri) return false;
+  prunePendingExchangeMap(pendingExchanges);
   pendingExchanges.set(state, {
     codeVerifier,
     redirectUri,
     status: "pending",
     createdAt: Date.now(),
   });
+  prunePendingExchangeMap(pendingExchanges);
   return true;
 }
 
@@ -143,6 +160,7 @@ export function registerCodexSession({ state, codeVerifier, redirectUri }) {
  * Read session status (modal polls this).
  */
 export function getCodexSessionStatus(state) {
+  prunePendingExchangeMap(pendingExchanges);
   return pendingExchanges.get(state) || null;
 }
 
@@ -247,6 +265,7 @@ export function startCodexProxy(appPort) {
     server.listen(CODEX_PORT, "127.0.0.1", () => {
       codexProxyServer = server;
       codexProxyTimeout = setTimeout(() => stopCodexProxy(), CODEX_PROXY_TIMEOUT_MS);
+      codexProxyTimeout.unref?.();
       resolve({ success: true });
     });
 
@@ -288,16 +307,19 @@ const xaiPendingExchanges = new Map();
 
 export function registerXaiSession({ state, codeVerifier, redirectUri }) {
   if (!state || !codeVerifier || !redirectUri) return false;
+  prunePendingExchangeMap(xaiPendingExchanges);
   xaiPendingExchanges.set(state, {
     codeVerifier,
     redirectUri,
     status: "pending",
     createdAt: Date.now(),
   });
+  prunePendingExchangeMap(xaiPendingExchanges);
   return true;
 }
 
 export function getXaiSessionStatus(state) {
+  prunePendingExchangeMap(xaiPendingExchanges);
   return xaiPendingExchanges.get(state) || null;
 }
 
@@ -389,6 +411,7 @@ export function startXaiProxy(appPort) {
     server.listen(XAI_PROXY_PORT, "127.0.0.1", () => {
       xaiProxyServer = server;
       xaiProxyTimeout = setTimeout(() => stopXaiProxy(), XAI_PROXY_TIMEOUT_MS);
+      xaiProxyTimeout.unref?.();
       resolve({ success: true });
     });
 

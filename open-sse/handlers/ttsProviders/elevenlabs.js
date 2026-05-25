@@ -1,13 +1,32 @@
 // ElevenLabs TTS — voice id with optional model_id prefix
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
+import { MEMORY_CONFIG } from "../../config/runtimeConfig.js";
 
 const VOICES_TTL = 24 * 60 * 60 * 1000;
-const _voicesCache = new Map(); // by API key
+const _voicesCache = new Map(); // by hashed API key
+
+function voicesCacheKey(apiKey) {
+  return createHash("sha256").update(String(apiKey || "")).digest("hex");
+}
+
+function pruneVoicesCache(now = Date.now()) {
+  for (const [key, entry] of _voicesCache) {
+    if (!entry || now - entry.time >= VOICES_TTL) _voicesCache.delete(key);
+  }
+  while (_voicesCache.size > MEMORY_CONFIG.elevenLabsVoiceCacheMaxSize) {
+    const oldestKey = _voicesCache.keys().next().value;
+    if (!oldestKey) break;
+    _voicesCache.delete(oldestKey);
+  }
+}
 
 export async function fetchElevenLabsVoices(apiKey) {
   if (!apiKey) throw new Error("ElevenLabs API key required");
   const now = Date.now();
-  const cached = _voicesCache.get(apiKey);
+  const key = voicesCacheKey(apiKey);
+  pruneVoicesCache(now);
+  const cached = _voicesCache.get(key);
   if (cached && now - cached.time < VOICES_TTL) return cached.voices;
 
   const res = await fetch("https://api.elevenlabs.io/v1/voices", {
@@ -17,7 +36,8 @@ export async function fetchElevenLabsVoices(apiKey) {
   const data = await res.json();
   // Normalize: derive lang from labels for grouping
   const voices = (data.voices || []).map((v) => ({ ...v, lang: v.labels?.language || "en" }));
-  _voicesCache.set(apiKey, { voices, time: now });
+  _voicesCache.set(key, { voices, time: now });
+  pruneVoicesCache();
   return voices;
 }
 

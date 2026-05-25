@@ -16,6 +16,7 @@ export async function GET(request) {
     if (state.send) emitter.off("line", state.send);
     if (state.sendClear) emitter.off("clear", state.sendClear);
     if (state.keepalive) clearInterval(state.keepalive);
+    request.signal.removeEventListener("abort", cleanup);
   };
 
   // request.signal fires reliably on client disconnect; ReadableStream.cancel()

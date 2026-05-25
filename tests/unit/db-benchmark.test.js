@@ -7,6 +7,7 @@ import { describe, it, beforeAll, afterAll, vi } from "vitest";
 
 const N_ITEMS = 500;
 const N_QUERIES = 200;
+const RUN_DB_BENCHMARK = process.env.RUN_DB_BENCHMARK === "1";
 
 const originalDataDir = process.env.DATA_DIR;
 let tempSqlite, tempLowdb;
@@ -24,7 +25,7 @@ async function bench(label, fn) {
   return dt;
 }
 
-beforeAll(async () => {
+if (RUN_DB_BENCHMARK) beforeAll(async () => {
   // SQLite setup
   tempSqlite = fs.mkdtempSync(path.join(os.tmpdir(), "9router-bench-sqlite-"));
   process.env.DATA_DIR = tempSqlite;
@@ -42,14 +43,18 @@ beforeAll(async () => {
   await lowDb.read();
 });
 
-afterAll(() => {
+if (RUN_DB_BENCHMARK) afterAll(async () => {
+  try {
+    const { resetDbAdapterForTests } = await import("@/lib/db/driver.js");
+    resetDbAdapterForTests();
+  } catch {}
   if (tempSqlite) fs.rmSync(tempSqlite, { recursive: true, force: true });
   if (tempLowdb) fs.rmSync(tempLowdb, { recursive: true, force: true });
   if (originalDataDir === undefined) delete process.env.DATA_DIR;
   else process.env.DATA_DIR = originalDataDir;
 });
 
-describe("DB Benchmark — SQLite vs Lowdb", () => {
+(RUN_DB_BENCHMARK ? describe : describe.skip)("DB Benchmark — SQLite vs Lowdb", () => {
   it(`INSERT ${N_ITEMS} provider connections`, async () => {
     console.log(`\n[INSERT ${N_ITEMS}]`);
 

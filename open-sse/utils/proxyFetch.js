@@ -19,6 +19,24 @@ const HTTPS_PORT = 443;
 const HTTP_SUCCESS_MIN = 200;
 const HTTP_SUCCESS_MAX = 300;
 
+function pruneDnsCache(now = Date.now()) {
+  for (const [hostname, entry] of DNS_CACHE) {
+    if (!entry || now >= entry.expiry) DNS_CACHE.delete(hostname);
+  }
+  while (DNS_CACHE.size > MEMORY_CONFIG.dnsCacheMaxSize) {
+    const oldestKey = DNS_CACHE.keys().next().value;
+    if (!oldestKey) break;
+    DNS_CACHE.delete(oldestKey);
+  }
+}
+
+async function closeDispatcher(dispatcher) {
+  try {
+    if (typeof dispatcher?.close === "function") await dispatcher.close();
+    else if (typeof dispatcher?.destroy === "function") dispatcher.destroy();
+  } catch {}
+}
+
 function normalizeString(value) {
   if (value === undefined || value === null) return "";
   return String(value).trim();
@@ -28,6 +46,7 @@ function normalizeString(value) {
  * Resolve real IP using Google DNS (bypass system DNS)
  */
 async function resolveRealIP(hostname) {
+  pruneDnsCache();
   const cached = DNS_CACHE.get(hostname);
   if (cached && Date.now() < cached.expiry) return cached.ip;
 
@@ -39,6 +58,7 @@ async function resolveRealIP(hostname) {
     const resolve4 = promisify(resolver.resolve4.bind(resolver));
     const addresses = await resolve4(hostname);
     DNS_CACHE.set(hostname, { ip: addresses[0], expiry: Date.now() + MEMORY_CONFIG.dnsCacheTtlMs });
+    pruneDnsCache();
     return addresses[0];
   } catch (error) {
     console.warn(`[ProxyFetch] DNS resolve failed for ${hostname}:`, error.message);
@@ -51,8 +71,8 @@ async function resolveRealIP(hostname) {
  */
 function shouldBypassMitmDns(url) {
   try {
-    const hostname = new URL(url).hostname;
-    return MITM_BYPASS_HOSTS.some(host => hostname.includes(host));
+    const hostname = new URL(url).hostname.toLowerCase();
+    return MITM_BYPASS_HOSTS.some(host => hostname === host || hostname.endsWith(`.${host}`));
   } catch { return false; }
 }
 
@@ -169,7 +189,10 @@ async function getDispatcher(proxyUrl) {
   if (!proxyDispatchers.has(normalized)) {
     // Evict oldest entry if max size reached
     if (proxyDispatchers.size >= MEMORY_CONFIG.proxyDispatchersMaxSize) {
-      proxyDispatchers.delete(proxyDispatchers.keys().next().value);
+      const oldestKey = proxyDispatchers.keys().next().value;
+      const oldest = proxyDispatchers.get(oldestKey);
+      proxyDispatchers.delete(oldestKey);
+      closeDispatcher(oldest);
     }
     const { ProxyAgent } = await import("undici");
     proxyDispatchers.set(normalized, new ProxyAgent({ uri: normalized }));

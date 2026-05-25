@@ -202,11 +202,35 @@ describe("DB SQLite layer — public API parity", () => {
     expect(stats.byProvider.openai).toBeDefined();
     expect(stats.byProvider.openai.requests).toBeGreaterThanOrEqual(2);
     expect(stats.byProvider.openai.promptTokens).toBeGreaterThanOrEqual(300);
+
+    const logs = await sqliteDb.getRecentLogs(10);
+    expect(logs.length).toBeGreaterThanOrEqual(1);
+    expect(logs[0]).toContain("gpt-4");
   });
 
   it("usage: pending tracking in-memory", () => {
+    global._pendingRequests.byModel = {};
+    global._pendingRequests.byAccount = {};
+    for (const key of Object.keys(global._pendingTimers)) delete global._pendingTimers[key];
+
     sqliteDb.trackPendingRequest("gpt-4", "openai", "c1", true);
     expect(global._pendingRequests.byModel["gpt-4 (openai)"]).toBe(1);
+    sqliteDb.trackPendingRequest("gpt-4", "openai", "c1", false);
+    expect(global._pendingRequests.byModel["gpt-4 (openai)"]).toBeUndefined();
+  });
+
+  it("usage: pending tracking keeps concurrent requests independent", () => {
+    global._pendingRequests.byModel = {};
+    global._pendingRequests.byAccount = {};
+    for (const key of Object.keys(global._pendingTimers)) delete global._pendingTimers[key];
+
+    sqliteDb.trackPendingRequest("gpt-4", "openai", "c1", true);
+    sqliteDb.trackPendingRequest("gpt-4", "openai", "c1", true);
+    expect(global._pendingRequests.byModel["gpt-4 (openai)"]).toBe(2);
+
+    sqliteDb.trackPendingRequest("gpt-4", "openai", "c1", false);
+    expect(global._pendingRequests.byModel["gpt-4 (openai)"]).toBe(1);
+
     sqliteDb.trackPendingRequest("gpt-4", "openai", "c1", false);
     expect(global._pendingRequests.byModel["gpt-4 (openai)"]).toBeUndefined();
   });

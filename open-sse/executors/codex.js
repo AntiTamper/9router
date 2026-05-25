@@ -5,6 +5,7 @@ import { PROVIDERS } from "../config/providers.js";
 import { normalizeResponsesInput } from "../translator/helpers/responsesApiHelper.js";
 import { fetchImageAsBase64 } from "../translator/helpers/imageHelper.js";
 import { getModelUpstreamId } from "../config/providerModels.js";
+import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
 import { getConsistentMachineId } from "../../src/shared/utils/machineId.js";
 
 // In-memory map: hash(machineId + first assistant content) → { sessionId, lastUsed }
@@ -13,7 +14,9 @@ const assistantSessionMap = new Map();
 
 // Cache machine ID at module level (resolved once)
 let cachedMachineId = null;
-getConsistentMachineId().then(id => { cachedMachineId = id; });
+getConsistentMachineId()
+  .then(id => { cachedMachineId = id; })
+  .catch(() => { cachedMachineId = null; });
 
 function hashContent(text) {
   return createHash("sha256").update(text).digest("hex").slice(0, 16);
@@ -21,6 +24,25 @@ function hashContent(text) {
 
 function generateSessionId() {
   return `sess_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function pruneAssistantSessionMap(now = Date.now()) {
+  for (const [key, entry] of assistantSessionMap) {
+    if (now - entry.lastUsed > SESSION_TTL_MS) assistantSessionMap.delete(key);
+  }
+
+  while (assistantSessionMap.size > MEMORY_CONFIG.codexAssistantSessionMaxSize) {
+    let oldestKey = null;
+    let oldestTs = Infinity;
+    for (const [key, entry] of assistantSessionMap) {
+      if (entry.lastUsed < oldestTs) {
+        oldestTs = entry.lastUsed;
+        oldestKey = key;
+      }
+    }
+    if (!oldestKey) break;
+    assistantSessionMap.delete(oldestKey);
+  }
 }
 
 // Extract text content from an input item
@@ -58,16 +80,15 @@ function resolveConversationSessionId(input, machineId) {
 
   const sessionId = generateSessionId();
   assistantSessionMap.set(hash, { sessionId, lastUsed: Date.now() });
+  pruneAssistantSessionMap();
   return sessionId;
 }
 
 // Cleanup expired entries periodically
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, entry] of assistantSessionMap) {
-    if (now - entry.lastUsed > SESSION_TTL_MS) assistantSessionMap.delete(key);
-  }
+const sessionCleanupTimer = setInterval(() => {
+  pruneAssistantSessionMap();
 }, 10 * 60 * 1000);
+sessionCleanupTimer.unref?.();
 
 /**
  * Codex Executor - handles OpenAI Codex API (Responses API format)

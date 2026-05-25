@@ -27,8 +27,15 @@ export const CACHE_TTL = {
 export const MEMORY_CONFIG = {
   sessionTtlMs: 2 * 60 * 60 * 1000,
   sessionCleanupIntervalMs: 30 * 60 * 1000,
+  codexAssistantSessionMaxSize: 1000,
   dnsCacheTtlMs: 5 * 60 * 1000,
+  dnsCacheMaxSize: 256,
   proxyDispatchersMaxSize: 20,
+  defaultExecutorMaxSize: 256,
+  vertexProjectIdCacheTtlMs: 60 * 60 * 1000,
+  vertexProjectIdCacheMaxSize: 128,
+  vertexTokenCacheMaxSize: 128,
+  elevenLabsVoiceCacheMaxSize: 64,
 };
 
 // Stream stall timeout: abort if no chunk received within this duration

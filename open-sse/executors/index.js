@@ -16,6 +16,7 @@ import { PerplexityWebExecutor } from "./perplexity-web.js";
 import { OllamaLocalExecutor } from "./ollama-local.js";
 import { CommandCodeExecutor } from "./commandcode.js";
 import { DefaultExecutor } from "./default.js";
+import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
 
 const executors = {
   antigravity: new AntigravityExecutor(),
@@ -43,7 +44,13 @@ const defaultCache = new Map();
 
 export function getExecutor(provider) {
   if (executors[provider]) return executors[provider];
-  if (!defaultCache.has(provider)) defaultCache.set(provider, new DefaultExecutor(provider));
+  if (!defaultCache.has(provider)) {
+    if (defaultCache.size >= MEMORY_CONFIG.defaultExecutorMaxSize) {
+      const oldestKey = defaultCache.keys().next().value;
+      if (oldestKey) defaultCache.delete(oldestKey);
+    }
+    defaultCache.set(provider, new DefaultExecutor(provider));
+  }
   return defaultCache.get(provider);
 }
 
