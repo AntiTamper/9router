@@ -14,7 +14,8 @@ export class DefaultExecutor extends BaseExecutor {
   }
 
   transformRequest(model, body, stream = true, credentials = null, requestContext = null) {
-    let transformed = injectReasoningContent({ provider: this.provider, model, body });
+    let transformed = this.applyJsonSchemaFallback(body);
+    transformed = injectReasoningContent({ provider: this.provider, model, body: transformed });
     if (this.provider === "kimi" || this.provider === "kimi-coding") {
       const alias = this.provider === "kimi-coding" ? "kmc" : "kimi";
       const upstreamModel = getModelUpstreamId(alias, transformed?.model || model);
@@ -23,6 +24,26 @@ export class DefaultExecutor extends BaseExecutor {
       }
     }
     return transformed;
+  }
+
+  // Fallback json_schema → json_object for openai-compatible providers without native Structured Output.
+  applyJsonSchemaFallback(body) {
+    if (!this.provider?.startsWith?.("openai-compatible-")) return body;
+    const rf = body?.response_format;
+    if (rf?.type !== "json_schema" || !rf.json_schema?.schema) return body;
+
+    const schemaJson = JSON.stringify(rf.json_schema.schema, null, 2);
+    const prompt = `You must respond with valid JSON that strictly follows this JSON schema:\n\`\`\`json\n${schemaJson}\n\`\`\`\nRespond ONLY with the JSON object, no other text.`;
+
+    const messages = Array.isArray(body.messages) ? body.messages.map(m => ({ ...m })) : [];
+    const sys = messages.find(m => m.role === "system");
+    if (sys) {
+      if (typeof sys.content === "string") sys.content = `${sys.content}\n\n${prompt}`;
+      else if (Array.isArray(sys.content)) sys.content.push({ type: "text", text: `\n\n${prompt}` });
+    } else {
+      messages.unshift({ role: "system", content: prompt });
+    }
+    return { ...body, messages, response_format: { type: "json_object" } };
   }
 
   shouldRetry(status, urlIndex) {

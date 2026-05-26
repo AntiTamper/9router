@@ -48,9 +48,9 @@ describe("Codex Refresh Token", () => {
       });
 
       const { refreshCodexToken } = await import("../../open-sse/services/tokenRefresh.js");
-      const result = await refreshCodexToken("old-refresh-token", null);
+      const result = await refreshCodexToken("old-refresh-token-no-rotation", null);
 
-      expect(result.refreshToken).toBe("old-refresh-token");
+      expect(result.refreshToken).toBe("old-refresh-token-no-rotation");
     });
   });
 

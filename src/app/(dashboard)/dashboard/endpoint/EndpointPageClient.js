@@ -21,18 +21,32 @@ const CLIENT_PING_FAST_MS = 10000;
 const CLIENT_PING_SLOW_MS = 60000;
 const CLIENT_PING_TIMEOUT_MS = 5000;
 
-// Browser-side health probe: bypasses backend DNS issues (1.1.1.1 vs OS resolver).
-// Uses no-cors → opaque response means TLS+DNS reach succeeded, which is enough.
+// Browser-side health probe: must reach origin (not just CF/TS edge).
+// cors mode → res.ok=false for 5xx (e.g. Cloudflare 530 when origin dead).
+// /api/health route sets Access-Control-Allow-Origin: * → CORS works through tunnel.
 async function clientPingUrl(url) {
   if (!url) return false;
   try {
-    await fetch(`${url}/api/health`, {
-      mode: "no-cors",
+    const res = await fetch(`${url}/api/health`, {
+      mode: "cors",
       cache: "no-store",
       signal: AbortSignal.timeout(CLIENT_PING_TIMEOUT_MS),
     });
-    return true;
+    return res.ok;
   } catch { return false; }
+}
+
+// Race multiple URLs: resolve true as soon as any one passes ping.
+async function clientPingAny(...urls) {
+  const checks = urls.filter(Boolean).map(clientPingUrl);
+  if (!checks.length) return false;
+  return new Promise((resolve) => {
+    let pending = checks.length;
+    checks.forEach((p) => p.then((ok) => {
+      if (ok) resolve(true);
+      else if (--pending === 0) resolve(false);
+    }));
+  });
 }
 
 const CAVEMAN_MODES = [
@@ -379,10 +393,11 @@ export default function APIPageClient({ machineId }) {
   useEffect(() => {
     const probeBoth = async () => {
       if (document.hidden) return;
-      if (tunnelEnabled && tunnelUrl && tunnelCanClientPing) {
-        const ok = await clientPingUrl(tunnelUrl);
+      if (tunnelEnabled && (tunnelUrl || tunnelPublicUrl) && tunnelCanClientPing) {
+        const ok = await clientPingAny(tunnelPublicUrl, tunnelUrl);
         tunnelClientReachableRef.current = ok;
         if (ok) { tunnelMissRef.current = 0; setTunnelReachable(true); if (!tunnelEverReachableRef.current) { tunnelEverReachableRef.current = true; setTunnelEverReachable(true); } }
+        else { tunnelMissRef.current += 1; if (tunnelMissRef.current >= REACHABLE_MISS_THRESHOLD) setTunnelReachable(false); }
       } else {
         tunnelClientReachableRef.current = false;
       }
@@ -390,11 +405,12 @@ export default function APIPageClient({ machineId }) {
         const ok = await clientPingUrl(tsUrl);
         tsClientReachableRef.current = ok;
         if (ok) { tsMissRef.current = 0; setTsReachable(true); if (!tsEverReachableRef.current) { tsEverReachableRef.current = true; setTsEverReachable(true); } }
+        else { tsMissRef.current += 1; if (tsMissRef.current >= REACHABLE_MISS_THRESHOLD) setTsReachable(false); }
       } else {
         tsClientReachableRef.current = false;
       }
     };
-    const anyEnabled = (tunnelEnabled && tunnelUrl && tunnelCanClientPing) || (tsEnabled && tsUrl && tsCanClientPing);
+    const anyEnabled = (tunnelEnabled && (tunnelUrl || tunnelPublicUrl) && tunnelCanClientPing) || (tsEnabled && tsUrl && tsCanClientPing);
     if (!anyEnabled) return;
     probeBoth();
     const tunnelHealthy = !tunnelEnabled || tunnelReachable;
@@ -403,12 +419,12 @@ export default function APIPageClient({ machineId }) {
     const delay = allHealthy ? CLIENT_PING_SLOW_MS : CLIENT_PING_FAST_MS;
     const id = setInterval(probeBoth, delay);
     return () => clearInterval(id);
-  }, [tunnelEnabled, tunnelUrl, tunnelCanClientPing, tsEnabled, tsUrl, tsCanClientPing, tunnelReachable, tsReachable]);
+  }, [tunnelEnabled, tunnelUrl, tunnelPublicUrl, tunnelCanClientPing, tsEnabled, tsUrl, tsCanClientPing, tunnelReachable, tsReachable]);
 
-  // Effective reachable = serverReachable OR clientReachable (1 of 2 is enough).
-  // Miss-debounce: only flip to false after N consecutive misses on BOTH sides.
+  // Effective reachable = server true OR client true.
+  // Miss-debounce: only flip to false after N consecutive misses.
   const updateReachable = useCallback((serverReachable, clientRef, missRef, setter, everRef, everSetter) => {
-    const reachable = serverReachable || clientRef.current;
+    const reachable = serverReachable === true || clientRef.current;
     if (reachable) {
       missRef.current = 0;
       setter(true);
@@ -435,7 +451,7 @@ export default function APIPageClient({ machineId }) {
       setTunnelPublicUrl(data.tunnel?.publicUrl || "");
       setTunnelEnabled(tEnabled);
       setTunnelCanClientPing(tCanClientPing);
-      updateReachable(!!data.tunnel?.reachable, tunnelClientReachableRef, tunnelMissRef, setTunnelReachable, tunnelEverReachableRef, setTunnelEverReachable);
+      updateReachable(null, tunnelClientReachableRef, tunnelMissRef, setTunnelReachable, tunnelEverReachableRef, setTunnelEverReachable);
 
       const tsEn = data.tailscale?.settingsEnabled ?? data.tailscale?.enabled ?? false;
       const tsUrlVal = data.tailscale?.tunnelUrl || "";
@@ -443,7 +459,7 @@ export default function APIPageClient({ machineId }) {
       setTsUrl(tsUrlVal);
       setTsEnabled(tsEn);
       setTsCanClientPing(tsCanClientPingValue);
-      updateReachable(!!data.tailscale?.reachable, tsClientReachableRef, tsMissRef, setTsReachable, tsEverReachableRef, setTsEverReachable);
+      updateReachable(null, tsClientReachableRef, tsMissRef, setTsReachable, tsEverReachableRef, setTsEverReachable);
     } catch { /* ignore poll errors */ }
   };
 
@@ -475,7 +491,7 @@ export default function APIPageClient({ machineId }) {
         setTunnelPublicUrl(data.tunnel?.publicUrl || "");
         setTunnelEnabled(tEnabled);
         setTunnelCanClientPing(tCanClientPing);
-        updateReachable(!!data.tunnel?.reachable, tunnelClientReachableRef, tunnelMissRef, setTunnelReachable, tunnelEverReachableRef, setTunnelEverReachable);
+        updateReachable(null, tunnelClientReachableRef, tunnelMissRef, setTunnelReachable, tunnelEverReachableRef, setTunnelEverReachable);
 
         const tsEn = data.tailscale?.settingsEnabled ?? data.tailscale?.enabled ?? false;
         const tsUrlVal = data.tailscale?.tunnelUrl || "";
@@ -483,7 +499,7 @@ export default function APIPageClient({ machineId }) {
         setTsUrl(tsUrlVal);
         setTsEnabled(tsEn);
         setTsCanClientPing(tsCanClientPingValue);
-        updateReachable(!!data.tailscale?.reachable, tsClientReachableRef, tsMissRef, setTsReachable, tsEverReachableRef, setTsEverReachable);
+        updateReachable(null, tsClientReachableRef, tsMissRef, setTsReachable, tsEverReachableRef, setTsEverReachable);
       }
     } catch (error) {
       console.log("Error loading settings:", error);
@@ -588,24 +604,26 @@ export default function APIPageClient({ machineId }) {
   };
 
   // u2500u2500u2500 Cloudflare Tunnel handlers
-  // Ping tunnel health until reachable, also check backend status to detect process die
-  const pingTunnelHealth = async (url) => {
+  // Ping tunnel health until reachable. Race public short URL + direct tunnel URL.
+  const pingTunnelHealth = async (...urls) => {
     setTunnelLoading(true);
     setTunnelProgress("Waiting for tunnel ready...");
-    const healthUrl = `${url}/api/health`;
+    const targets = urls.filter(Boolean).map((u) => `${u}/api/health`);
     const start = Date.now();
     while (Date.now() - start < TUNNEL_PING_MAX_MS) {
       await new Promise((r) => setTimeout(r, TUNNEL_PING_INTERVAL_MS));
-      try {
-        const ping = await fetch(healthUrl, { mode: "no-cors", cache: "no-store" });
-        if (ping.ok || ping.type === "opaque") {
-          setTunnelEnabled(true);
-          setTunnelCanClientPing(true);
-          setTunnelLoading(false);
-          setTunnelProgress("");
-          return true;
-        }
-      } catch { /* not ready yet */ }
+      const ok = await Promise.any(targets.map(async (h) => {
+        const ping = await fetch(h, { mode: "cors", cache: "no-store" });
+        if (ping.ok) return true;
+        throw new Error("not ready");
+      })).catch(() => false);
+      if (ok) {
+        setTunnelEnabled(true);
+        setTunnelCanClientPing(true);
+        setTunnelLoading(false);
+        setTunnelProgress("");
+        return true;
+      }
       // Every 5 pings (~10s), check if backend process still alive
       if ((Date.now() - start) % 10000 < TUNNEL_PING_INTERVAL_MS) {
         try {
@@ -671,7 +689,7 @@ export default function APIPageClient({ machineId }) {
 
       setTunnelUrl(url);
       setTunnelPublicUrl(data.publicUrl || "");
-      await pingTunnelHealth(url);
+      await pingTunnelHealth(data.publicUrl, url);
     } catch (error) {
       setTunnelStatus({ type: "error", message: error.message });
     } finally {
