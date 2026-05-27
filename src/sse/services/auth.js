@@ -112,6 +112,16 @@ function pickDefaultConnection(availableConnections) {
   return [...availableConnections].sort(sortByOldestThenPriority)[0] || null;
 }
 
+function pickOneByOneConnection(availableConnections) {
+  return [...availableConnections].sort((a, b) => {
+    const priorityDiff = (a.priority || 999) - (b.priority || 999);
+    if (priorityDiff !== 0) return priorityDiff;
+    const createdDiff = new Date(a.createdAt || 0) - new Date(b.createdAt || 0);
+    if (createdDiff !== 0) return createdDiff;
+    return String(a.id || "").localeCompare(String(b.id || ""));
+  })[0] || null;
+}
+
 function pickQuotaConnection(availableConnections, direction) {
   const scored = availableConnections
     .map((candidate) => ({
@@ -244,6 +254,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         connection = pickQuotaConnection(availableConnections, "lowest");
       } else if (strategy === "random") {
         connection = pickRandomConnection(availableConnections);
+      } else if (strategy === "one_by_one") {
+        connection = pickOneByOneConnection(availableConnections);
       } else {
         connection = pickDefaultConnection(availableConnections);
       }

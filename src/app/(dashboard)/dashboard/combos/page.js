@@ -243,9 +243,9 @@ function ComboCard({ combo, copied, onCopy, onEdit, onDelete, roundRobinEnabled,
 
         {/* Actions */}
         <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center sm:gap-3 sm:shrink-0">
-          {/* Round Robin Toggle — always visible */}
+          {/* Cycle toggle — always visible */}
           <div className="flex items-center justify-between gap-1.5 rounded-lg bg-black/[0.02] px-2 py-1.5 dark:bg-white/[0.02] sm:justify-start sm:bg-transparent sm:px-0 sm:py-0 sm:dark:bg-transparent">
-            <span className="text-xs text-text-muted font-medium">Round Robin</span>
+            <span className="text-xs text-text-muted font-medium">Cycle</span>
             <Toggle
               size="sm"
               checked={roundRobinEnabled}

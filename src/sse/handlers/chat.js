@@ -249,6 +249,11 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       return result.response;
     }
 
+    if (result.skipAccountFallback) {
+      log.warn("CHAT", `Non-account failure for ${provider}/${model}; not locking account: ${result.error}`);
+      return result.response;
+    }
+
     // Mark account unavailable (auto-calculates cooldown with exponential backoff, or precise resetsAtMs)
     const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, result.resetsAtMs);
 

@@ -1,10 +1,11 @@
-export const ACCOUNT_ROUTING_MODES = ["default", "highest", "random", "lowest"];
+export const ACCOUNT_ROUTING_MODES = ["cycle", "highest", "lowest", "random", "one_by_one"];
 
 export const ACCOUNT_ROUTING_MODE_LABELS = {
-  default: "Default",
+  cycle: "Cycle",
   highest: "Highest quota",
-  random: "Random",
   lowest: "Lowest quota",
+  random: "Random",
+  one_by_one: "1 by 1",
 };
 
 export const ACCOUNT_ROUTING_MODE_OPTIONS = ACCOUNT_ROUTING_MODES.map((id) => ({
@@ -13,15 +14,19 @@ export const ACCOUNT_ROUTING_MODE_OPTIONS = ACCOUNT_ROUTING_MODES.map((id) => ({
 }));
 
 const LEGACY_ACCOUNT_ROUTING_MODES = {
-  "fill-first": "default",
-  "round-robin": "default",
+  default: "cycle",
+  "fill-first": "one_by_one",
+  "one-by-one": "one_by_one",
+  "1-by-1": "one_by_one",
+  "1 by 1": "one_by_one",
+  "round-robin": "cycle",
   "highest-session-quota": "highest",
 };
 
 export function normalizeAccountRoutingMode(value) {
   const raw = typeof value === "string" ? value.trim() : "";
   if (ACCOUNT_ROUTING_MODES.includes(raw)) return raw;
-  return LEGACY_ACCOUNT_ROUTING_MODES[raw] || "default";
+  return LEGACY_ACCOUNT_ROUTING_MODES[raw] || "cycle";
 }
 
 export function isKnownAccountRoutingMode(value) {

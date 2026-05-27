@@ -392,7 +392,7 @@ describe("provider quota auto-disable", () => {
     expect(credentials.accessToken).toBe("lowest-low-token");
   });
 
-  it("routes default mode one by one in provider order", async () => {
+  it("keeps legacy default mode as account cycling", async () => {
     await db.updateSettings({ fallbackStrategy: "default" });
     const first = await db.createProviderConnection({
       provider: "codex",
@@ -422,6 +422,57 @@ describe("provider quota auto-disable", () => {
     expect((await getProviderCredentials("codex")).connectionId).toBe(second.id);
     expect((await getProviderCredentials("codex")).connectionId).toBe(third.id);
     expect((await getProviderCredentials("codex")).connectionId).toBe(first.id);
+  });
+
+  it("routes cycle mode through accounts in provider order", async () => {
+    await db.updateSettings({ fallbackStrategy: "cycle" });
+    const first = await db.createProviderConnection({
+      provider: "codex",
+      authType: "oauth",
+      email: "cycle-1@example.com",
+      accessToken: "cycle-token-1",
+      priority: 1,
+    });
+    const second = await db.createProviderConnection({
+      provider: "codex",
+      authType: "oauth",
+      email: "cycle-2@example.com",
+      accessToken: "cycle-token-2",
+      priority: 2,
+    });
+
+    const { getProviderCredentials } = await import("@/sse/services/auth.js");
+
+    expect((await getProviderCredentials("codex")).connectionId).toBe(first.id);
+    expect((await getProviderCredentials("codex")).connectionId).toBe(second.id);
+    expect((await getProviderCredentials("codex")).connectionId).toBe(first.id);
+  });
+
+  it("routes one-by-one mode to the first available account until it locks", async () => {
+    await db.updateSettings({ fallbackStrategy: "one_by_one" });
+    const first = await db.createProviderConnection({
+      provider: "codex",
+      authType: "oauth",
+      email: "one-1@example.com",
+      accessToken: "one-token-1",
+      priority: 1,
+    });
+    const second = await db.createProviderConnection({
+      provider: "codex",
+      authType: "oauth",
+      email: "one-2@example.com",
+      accessToken: "one-token-2",
+      priority: 2,
+    });
+
+    const { getProviderCredentials, markAccountUnavailable } = await import("@/sse/services/auth.js");
+
+    expect((await getProviderCredentials("codex")).connectionId).toBe(first.id);
+    expect((await getProviderCredentials("codex")).connectionId).toBe(first.id);
+
+    await markAccountUnavailable(first.id, 429, "rate limit", "codex", "gpt-5.3-codex");
+
+    expect((await getProviderCredentials("codex", null, "gpt-5.3-codex")).connectionId).toBe(second.id);
   });
 
   it("routes random mode to a random available account", async () => {

@@ -275,7 +275,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       } catch { /* non-fatal */ }
       log?.warn?.("CONTEXT", `${provider.toUpperCase()} | ${model} | upstream context-limit hit (${statusCode}) — client should compact`);
       const headerHint = `[CONTEXT_LIMIT] ${message}`;
-      return createErrorResult(statusCode, headerHint, resetsAtMs);
+      return createErrorResult(statusCode, headerHint, resetsAtMs, { skipAccountFallback: true });
     }
     const errMsg = formatProviderError(new Error(message), provider, model, statusCode);
     console.log(`${COLORS.red}[ERROR] ${errMsg}${COLORS.reset}`);

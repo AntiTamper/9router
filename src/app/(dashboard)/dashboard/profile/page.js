@@ -9,7 +9,7 @@ import { ACCOUNT_ROUTING_MODE_OPTIONS, normalizeAccountRoutingMode } from "@/sha
 
 export default function ProfilePage() {
   const { theme, setTheme, isDark } = useTheme();
-  const [settings, setSettings] = useState({ fallbackStrategy: "default" });
+  const [settings, setSettings] = useState({ fallbackStrategy: "cycle" });
   const [loading, setLoading] = useState(true);
   const [passwords, setPasswords] = useState({ current: "", new: "", confirm: "" });
   const [passStatus, setPassStatus] = useState({ type: "", message: "" });
@@ -851,7 +851,7 @@ export default function ProfilePage() {
               <div className="flex-1 min-w-0">
                 <p className="font-medium text-sm sm:text-base">Account Mode</p>
                 <p className="text-xs sm:text-sm text-text-muted">
-                  Default rotates in account order; quota modes use cached quota status.
+                  Cycle rotates each request; 1 by 1 stays on one account until it is locked or out of quota.
                 </p>
               </div>
               <select
@@ -866,10 +866,10 @@ export default function ProfilePage() {
               </select>
             </div>
 
-            {/* Combo Round Robin */}
+            {/* Combo Cycle */}
             <div className="flex items-start sm:items-center justify-between gap-4 pt-4 border-t border-border/50">
               <div className="flex-1 min-w-0">
-                <p className="font-medium text-sm sm:text-base">Combo Round Robin</p>
+                <p className="font-medium text-sm sm:text-base">Combo Cycle</p>
                 <p className="text-xs sm:text-sm text-text-muted">
                   Cycle through providers in combos instead of always starting with first
                 </p>
@@ -881,7 +881,7 @@ export default function ProfilePage() {
               />
             </div>
 
-            {/* Combo Sticky Round Robin Limit */}
+            {/* Combo Sticky Cycle Limit */}
             {settings.comboStrategy === "round-robin" && (
               <div className="flex items-center justify-between pt-2 border-t border-border/50">
                 <div>
@@ -909,7 +909,9 @@ export default function ProfilePage() {
                   ? "Currently choosing the account with the lowest cached quota."
                   : normalizeAccountRoutingMode(settings.fallbackStrategy) === "random"
                     ? "Currently choosing a random available account."
-                    : "Currently rotating through accounts in priority order."}
+                    : normalizeAccountRoutingMode(settings.fallbackStrategy) === "one_by_one"
+                      ? "Currently staying on the first available account until it locks or runs out of quota."
+                      : "Currently cycling through accounts in priority order."}
               {settings.comboStrategy === "round-robin"
                 ? ` Combos rotate after ${settings.comboStickyRoundRobinLimit || 1} call${(settings.comboStickyRoundRobinLimit || 1) === 1 ? "" : "s"} per model.`
                 : " Combos always start with their first model."}

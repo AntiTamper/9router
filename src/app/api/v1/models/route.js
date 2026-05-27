@@ -181,7 +181,8 @@ function comboMatchesKinds(combo, kindFilter) {
  * Build OpenAI-format models list filtered by service kinds.
  * @param {string[]} kindFilter - List of service kinds to include (e.g. ["llm"], ["webSearch","webFetch"]).
  */
-export async function buildModelsList(kindFilter) {
+export async function buildModelsList(kindFilter, options = {}) {
+  const includeRemoteFetches = options.includeRemoteFetches === true;
   // Aggregated live catalogs keyed by alias/providerId; populated below per provider.
   const liveCatalogs = {};
   // Parallel DB reads: was 5 sequential awaits (~5x slower).
@@ -297,7 +298,7 @@ export async function buildModelsList(kindFilter) {
           )
         : providerModels.map((model) => model.id);
 
-      if (isCompatibleProvider && rawModelIds.length === 0 && !UPSTREAM_CONNECTION_RE.test(providerId)) {
+      if (includeRemoteFetches && isCompatibleProvider && rawModelIds.length === 0 && !UPSTREAM_CONNECTION_RE.test(providerId)) {
         rawModelIds = await fetchCompatibleModelIds(conn);
       }
 
@@ -307,7 +308,7 @@ export async function buildModelsList(kindFilter) {
       const liveResolver = LIVE_MODEL_RESOLVERS[providerId];
       // Capture full live entries for downstream contextWindow enrichment.
       let liveEntries = null;
-      if (liveResolver && !hasExplicitEnabledModels) {
+      if (includeRemoteFetches && liveResolver && !hasExplicitEnabledModels) {
         try {
           const live = await liveResolver(conn);
           if (live?.models?.length) {
@@ -450,7 +451,9 @@ export async function OPTIONS(request) {
  */
 export async function GET(request) {
   try {
-    const data = await buildModelsList([LLM_KIND]);
+    const { searchParams } = new URL(request.url);
+    const includeRemoteFetches = ["1", "true", "yes"].includes(String(searchParams.get("live") || "").toLowerCase());
+    const data = await buildModelsList([LLM_KIND], { includeRemoteFetches });
     return Response.json({ object: "list", data }, { headers: getCorsHeaders(request) });
   } catch (error) {
     console.log("Error fetching models:", error);

@@ -11,7 +11,7 @@ const DEFAULT_SETTINGS = {
   tunnelProvider: "cloudflare",
   tailscaleEnabled: false,
   tailscaleUrl: "",
-  fallbackStrategy: "default",
+  fallbackStrategy: "cycle",
   stickyRoundRobinLimit: 3,
   providerStrategies: {},
   comboStrategy: "fallback",

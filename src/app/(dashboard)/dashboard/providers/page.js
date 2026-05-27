@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import PropTypes from "prop-types";
 import {
   Card,
@@ -33,6 +33,7 @@ import {
   fetchQuotaWithCache,
   getCachedQuotaDataForConnections,
 } from "../usage/components/ProviderLimits/quotaCache";
+import { runQuotaRefreshQueue } from "../usage/components/ProviderLimits/quotaRefreshQueue";
 
 function isUsageEligibleConnection(conn) {
   return (
@@ -164,6 +165,7 @@ export default function ProvidersPage() {
   const searchQuery = useHeaderSearchStore((s) => s.query);
   const registerSearch = useHeaderSearchStore((s) => s.register);
   const unregisterSearch = useHeaderSearchStore((s) => s.unregister);
+  const quotaQueueRef = useRef(null);
 
   useEffect(() => {
     registerSearch("Search providers...");
@@ -202,6 +204,8 @@ export default function ProvidersPage() {
     const fetchQuotaData = async (connectionList, seq) => {
       const eligibleConnections = connectionList.filter(isUsageEligibleConnection);
       if (eligibleConnections.length === 0) {
+        quotaQueueRef.current?.cancel();
+        quotaQueueRef.current = null;
         if (!cancelled && seq === requestSeq) {
           setQuotaData({});
           setQuotaLoading({});
@@ -229,47 +233,50 @@ export default function ProvidersPage() {
         setQuotaCompleted(initialCompleted);
       }
 
+      quotaQueueRef.current?.cancel();
+      quotaQueueRef.current = null;
       if (!visible) return;
 
       const nextQuotaData = { ...cachedQuotaData };
-      for (let i = 0; i < pendingConnections.length; i += 6) {
-        const batch = pendingConnections.slice(i, i + 6);
-        await Promise.all(
-          batch.map(async (conn) => {
-            try {
-              const { entry } = await fetchQuotaWithCache(conn);
-              if (entry) nextQuotaData[conn.id] = entry;
-              else delete nextQuotaData[conn.id];
-              if (!cancelled && seq === requestSeq) {
-                setQuotaData((prev) => {
-                  const next = { ...prev };
-                  if (entry) next[conn.id] = entry;
-                  else delete next[conn.id];
-                  return next;
-                });
-              }
-            } catch (error) {
-              console.log(`Error fetching quota for ${conn.provider}:`, error);
-            } finally {
-              if (!cancelled && seq === requestSeq) {
-                setQuotaLoading((prev) => ({ ...prev, [conn.id]: false }));
-                setQuotaCompleted((prev) => ({ ...prev, [conn.id]: true }));
-              }
+      const queue = runQuotaRefreshQueue(
+        pendingConnections,
+        async (conn) => {
+          try {
+            const { entry } = await fetchQuotaWithCache(conn);
+            if (entry) nextQuotaData[conn.id] = entry;
+            else delete nextQuotaData[conn.id];
+            if (!cancelled && seq === requestSeq) {
+              setQuotaData((prev) => {
+                const next = { ...prev };
+                if (entry) next[conn.id] = entry;
+                else delete next[conn.id];
+                return next;
+              });
             }
-          }),
-        );
-        if (cancelled || seq !== requestSeq) return;
-        if (!isPageVisible()) return;
-      }
-
-      if (!cancelled && seq === requestSeq) {
+          } catch (error) {
+            console.log(`Error fetching quota for ${conn.provider}:`, error);
+          } finally {
+            if (!cancelled && seq === requestSeq) {
+              setQuotaLoading((prev) => ({ ...prev, [conn.id]: false }));
+              setQuotaCompleted((prev) => ({ ...prev, [conn.id]: true }));
+            }
+          }
+        },
+        {
+          shouldContinue: () => !cancelled && seq === requestSeq && isPageVisible(),
+        },
+      );
+      quotaQueueRef.current = queue;
+      queue.done.then(() => {
+        if (cancelled || seq !== requestSeq || quotaQueueRef.current !== queue) return;
         const eligibleIds = new Set(eligibleConnections.map((conn) => conn.id));
         setQuotaData(
           Object.fromEntries(
             Object.entries(nextQuotaData).filter(([id]) => eligibleIds.has(id)),
           ),
         );
-      }
+        quotaQueueRef.current = null;
+      });
     };
 
     const fetchData = async () => {
@@ -306,6 +313,8 @@ export default function ProvidersPage() {
     return () => {
       cancelled = true;
       if (activeController) activeController.abort();
+      quotaQueueRef.current?.cancel();
+      quotaQueueRef.current = null;
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);

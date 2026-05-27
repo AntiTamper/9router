@@ -269,7 +269,7 @@ export default function ComboDetailPage() {
           </div>
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium">Round Robin</p>
+              <p className="text-sm font-medium">Cycle</p>
               <p className="text-xs text-text-muted">Rotate providers across requests instead of strict fallback order.</p>
             </div>
             <Toggle checked={roundRobin} onChange={handleToggleRoundRobin} />
@@ -282,7 +282,7 @@ export default function ComboDetailPage() {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-3">
           <div>
             <h2 className="text-lg font-semibold">Providers</h2>
-            <p className="text-xs text-text-muted">Tried in order (top-down) or rotated when round-robin is on.</p>
+            <p className="text-xs text-text-muted">Tried in order (top-down) or cycled when Cycle is on.</p>
           </div>
           <Button size="sm" icon="add" onClick={() => setShowPicker(true)}>Add Provider</Button>
         </div>
