@@ -7,9 +7,23 @@ import { normalizeAccountRoutingMode } from "@/shared/utils/accountRouting.js";
 import { restoreExpiredAutoDisabledConnections } from "@/lib/quota/autoDisable.js";
 import * as log from "../utils/logger.js";
 
-// Mutex to prevent race conditions during account selection
-let selectionMutex = Promise.resolve();
+// Provider-scoped mutexes prevent same-provider selection races without serializing all traffic.
+const selectionMutexes = new Map();
 let lastSelectionTimeMs = 0;
+
+function acquireSelectionMutex(providerId) {
+  const current = selectionMutexes.get(providerId) || Promise.resolve();
+  let releaseCurrent;
+  const next = new Promise((resolve) => { releaseCurrent = resolve; });
+  selectionMutexes.set(providerId, next);
+  return {
+    wait: current,
+    release() {
+      releaseCurrent?.();
+      if (selectionMutexes.get(providerId) === next) selectionMutexes.delete(providerId);
+    },
+  };
+}
 
 function clampPercentage(value) {
   const n = Number(value);
@@ -157,16 +171,13 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     ? excludeConnectionIds
     : (excludeConnectionIds ? new Set([excludeConnectionIds]) : new Set());
   const preferredConnectionId = options?.preferredConnectionId || null;
-  // Acquire mutex to prevent race conditions
-  const currentMutex = selectionMutex;
-  let resolveMutex;
-  selectionMutex = new Promise(resolve => { resolveMutex = resolve; });
+  const providerId = resolveProviderId(provider);
+  const mutex = acquireSelectionMutex(providerId);
 
   try {
-    await currentMutex;
+    await mutex.wait;
 
     // Resolve alias to provider ID (e.g., "kc" -> "kilocode")
-    const providerId = resolveProviderId(provider);
     await restoreExpiredAutoDisabledConnections(providerId);
 
     // Inject a virtual connection for no-auth free providers (with optional proxy pool from settings)
@@ -291,7 +302,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       _connection: connection
     };
   } finally {
-    if (resolveMutex) resolveMutex();
+    mutex.release();
   }
 }
 

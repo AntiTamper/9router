@@ -1,4 +1,5 @@
 import { ERROR_TYPES, DEFAULT_ERROR_MESSAGES } from "../config/errorConfig.js";
+import { readResponseTextBounded } from "./boundedText.js";
 
 /**
  * Build OpenAI-compatible error response body
@@ -58,9 +59,11 @@ export async function writeStreamError(writer, statusCode, message) {
 export async function parseUpstreamError(response, executor = null) {
   let bodyText = "";
   try {
-    bodyText = await response.text();
-  } catch {
-    bodyText = "";
+    ({ text: bodyText } = await readResponseTextBounded(response));
+  } catch (error) {
+    if (error?.name === "BodyLimitError") bodyText = `Upstream error body exceeded safe read limit`;
+    else if (error?.name === "TimeoutError") bodyText = `Upstream error body read timed out`;
+    else bodyText = "";
   }
 
   // Let executor-specific parser extract provider-specific fields (e.g. codex resetsAtMs)

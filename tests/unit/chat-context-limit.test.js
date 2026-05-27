@@ -91,4 +91,37 @@ describe("chat context-limit handling", () => {
     expect(res.status).toBe(400);
     expect(mocks.markAccountUnavailable).not.toHaveBeenCalled();
   });
+
+  it("caps account fallback attempts so bad accounts cannot stall a request", async () => {
+    mocks.getProviderCredentials.mockImplementation(async (_provider, excludeConnectionIds) => {
+      const attempt = excludeConnectionIds?.size || 0;
+      return {
+        connectionId: `kimi-${attempt + 1}`,
+        connectionName: `Kimi ${attempt + 1}`,
+        apiKey: "sk-kimi",
+        providerSpecificData: {},
+      };
+    });
+    mocks.handleChatCore.mockResolvedValue({
+      success: false,
+      status: 502,
+      error: "upstream connect timeout",
+      response: new Response(JSON.stringify({ error: { message: "upstream connect timeout" } }), { status: 502 }),
+    });
+    mocks.markAccountUnavailable.mockResolvedValue({ shouldFallback: true, cooldownMs: 1000 });
+
+    const req = new Request("http://127.0.0.1:20128/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json", "user-agent": "codex-cli" },
+      body: JSON.stringify({ model: "kimi/kimi-k2.6", messages: [{ role: "user", content: "hi" }], stream: true }),
+    });
+
+    const res = await handleChat(req);
+    const body = await res.json();
+
+    expect(res.status).toBe(502);
+    expect(mocks.getProviderCredentials).toHaveBeenCalledTimes(3);
+    expect(mocks.markAccountUnavailable).toHaveBeenCalledTimes(3);
+    expect(body.error.message).toContain("account fallback capped after 3 attempts");
+  });
 });

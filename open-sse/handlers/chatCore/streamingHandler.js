@@ -39,13 +39,13 @@ function buildTransformStream({ provider, sourceFormat, targetFormat, userAgent,
 /**
  * Handle streaming response — pipe provider SSE through transform stream to client.
  */
-export function handleStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, userAgent, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, streamController, onStreamComplete }) {
+export function handleStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, userAgent, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, streamController, onStreamComplete, streamDetailId = null }) {
   if (onRequestSuccess) onRequestSuccess();
 
   const transformStream = buildTransformStream({ provider, sourceFormat, targetFormat, userAgent, reqLogger, toolNameMap, model, connectionId, body, onStreamComplete, apiKey });
   const transformedBody = pipeWithDisconnect(providerResponse, transformStream, streamController);
 
-  const streamDetailId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+  const detailId = streamDetailId || `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
   saveRequestDetail(buildRequestDetail({
     provider, model, connectionId,
     latency: { ttft: 0, total: Date.now() - requestStartTime },
@@ -55,7 +55,7 @@ export function handleStreamingResponse({ providerResponse, provider, model, sou
     providerResponse: "[Streaming - raw response not captured]",
     response: { content: "[Streaming in progress...]", thinking: null, type: "streaming" },
     status: "success"
-  }, { id: streamDetailId })).catch(err => {
+  }, { id: detailId })).catch(err => {
     console.error("[RequestDetail] Failed to save streaming request:", err.message);
   });
 
@@ -78,6 +78,12 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
     };
     const safeContent = contentObj?.content || "[Empty streaming response]";
     const safeThinking = contentObj?.thinking || null;
+    const responseMeta = {
+      contentOriginalLength: contentObj?.contentOriginalLength ?? safeContent.length,
+      contentTruncated: contentObj?.contentTruncated === true,
+      thinkingOriginalLength: contentObj?.thinkingOriginalLength ?? (safeThinking ? safeThinking.length : 0),
+      thinkingTruncated: contentObj?.thinkingTruncated === true,
+    };
 
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
@@ -86,7 +92,7 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
       request: extractRequestConfig(body, stream),
       providerRequest: finalBody || translatedBody || null,
       providerResponse: safeContent,
-      response: { content: safeContent, thinking: safeThinking, type: "streaming" },
+      response: { content: safeContent, thinking: safeThinking, type: "streaming", ...responseMeta },
       status: "success"
     }, { id: streamDetailId })).catch(err => {
       console.error("[RequestDetail] Failed to update streaming content:", err.message);

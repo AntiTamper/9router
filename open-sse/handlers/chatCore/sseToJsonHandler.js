@@ -4,6 +4,10 @@ import { HTTP_STATUS } from "../../config/runtimeConfig.js";
 import { FORMATS } from "../../translator/formats.js";
 import { buildRequestDetail, extractRequestConfig, saveUsageStats } from "./requestDetail.js";
 import { saveRequestDetail, appendRequestLog } from "@/lib/usageDb.js";
+import { readResponseTextBounded } from "../../utils/boundedText.js";
+
+const SUCCESS_BODY_LIMIT_BYTES = 64 * 1024 * 1024;
+const SUCCESS_BODY_TIMEOUT_MS = 10 * 60 * 1000;
 
 function textFromResponsesMessageItem(item) {
   if (!item?.content || !Array.isArray(item.content)) return "";
@@ -115,7 +119,10 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, pr
   const isCodexResponsesApi = provider === "codex" || sourceFormat === FORMATS.OPENAI_RESPONSES;
   if (isCodexResponsesApi) {
     try {
-      const jsonResponse = await convertResponsesStreamToJson(providerResponse.body);
+      const jsonResponse = await convertResponsesStreamToJson(providerResponse.body, {
+        maxBytes: SUCCESS_BODY_LIMIT_BYTES,
+        timeoutMs: SUCCESS_BODY_TIMEOUT_MS,
+      });
       if (onRequestSuccess) await onRequestSuccess();
 
       const usage = jsonResponse.usage || {};
@@ -187,7 +194,10 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, pr
 
   // Standard Chat Completions SSE path
   try {
-    const sseText = await providerResponse.text();
+    const { text: sseText } = await readResponseTextBounded(providerResponse, {
+      limitBytes: SUCCESS_BODY_LIMIT_BYTES,
+      timeoutMs: SUCCESS_BODY_TIMEOUT_MS,
+    });
     const parsed = parseSSEToOpenAIResponse(sseText, model);
     if (!parsed) return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Invalid SSE response for non-streaming request");
 

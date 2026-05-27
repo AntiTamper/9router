@@ -4,6 +4,7 @@ import { parseQuotaData } from "./utils";
 
 export const PROVIDER_QUOTA_CACHE_KEY = "providerQuotaSnapshots:v1";
 export const PROVIDER_QUOTA_CACHE_TTL_MS = 15 * 60 * 1000;
+export const PROVIDER_QUOTA_FETCH_TIMEOUT_MS = 12 * 1000;
 
 const inflightRequests = new Map();
 let memoryCache = null;
@@ -150,9 +151,12 @@ export async function fetchQuotaWithCache(connection, { force = false } = {}) {
   }
 
   const request = (async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), PROVIDER_QUOTA_FETCH_TIMEOUT_MS);
     try {
       const response = await fetch(`/api/usage/${connection.id}`, {
         cache: "no-store",
+        signal: controller.signal,
       });
 
       if (!response.ok) {
@@ -192,6 +196,7 @@ export async function fetchQuotaWithCache(connection, { force = false } = {}) {
       if (stale) return { entry: stale, fromCache: true, stale: true, error };
       throw error;
     } finally {
+      clearTimeout(timeout);
       inflightRequests.delete(connection.id);
     }
   })();

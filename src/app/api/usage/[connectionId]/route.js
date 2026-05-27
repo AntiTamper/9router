@@ -8,6 +8,8 @@ import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { USAGE_APIKEY_PROVIDERS } from "@/shared/constants/providers";
 import { syncConnectionQuotaState } from "@/lib/quota/autoDisable";
 
+const QUOTA_FETCH_TIMEOUT_MS = 12 * 1000;
+
 // Detect auth-expired messages returned by usage providers instead of throwing
 const AUTH_EXPIRED_PATTERNS = ["expired", "authentication", "unauthorized", "401", "re-authorize"];
 function isAuthExpiredMessage(usage) {
@@ -32,6 +34,41 @@ function isTransientUsageFetchError(error) {
 function safeUsageErrorMessage(error) {
   const message = String(error?.message || "fetch failed");
   return message.replace(/bearer\s+[^\s]+/gi, "Bearer [redacted]");
+}
+
+function timeoutError(ms) {
+  const err = new Error(`quota fetch timeout after ${ms}ms`);
+  err.name = "TimeoutError";
+  return err;
+}
+
+function withQuotaTimeout(promise) {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(timeoutError(QUOTA_FETCH_TIMEOUT_MS)), QUOTA_FETCH_TIMEOUT_MS);
+    timer.unref?.();
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+function staleQuotaResponse(connection, reason) {
+  const snapshot = connection?.lastQuotaSnapshot;
+  if (snapshot && typeof snapshot === "object") {
+    return {
+      plan: snapshot.plan || null,
+      message: `${connection.provider} usage temporarily unavailable: ${reason}. Showing cached quota.`,
+      quotas: Object.fromEntries((snapshot.quotas || []).map((quota, index) => [quota.name || `quota_${index}`, quota])),
+      stale: true,
+      savedAt: snapshot.savedAt || connection.lastQuotaSnapshotAt || null,
+    };
+  }
+  return {
+    message: `${connection?.provider || "Provider"} usage temporarily unavailable: ${reason}.`,
+    quotas: {},
+    stale: true,
+  };
 }
 
 /**
@@ -167,7 +204,7 @@ export async function GET(request, { params }) {
     }
 
     // Fetch usage from provider API
-    let usage = await getUsageForProvider(connection, proxyOptions);
+    let usage = await withQuotaTimeout(getUsageForProvider(connection, proxyOptions));
 
     // If provider returned an auth-expired message instead of throwing,
     // force-refresh token and retry once (OAuth only)
@@ -175,7 +212,7 @@ export async function GET(request, { params }) {
       try {
         const retryResult = await refreshAndUpdateCredentials(connection, true, proxyOptions);
         connection = retryResult.connection;
-        usage = await getUsageForProvider(connection, proxyOptions);
+        usage = await withQuotaTimeout(getUsageForProvider(connection, proxyOptions));
       } catch (retryError) {
         console.warn(`[Usage] ${connection.provider}: force refresh failed: ${retryError.message}`);
       }
@@ -187,6 +224,9 @@ export async function GET(request, { params }) {
   } catch (error) {
     const provider = connection?.provider ?? "unknown";
     console.warn(`[Usage] ${provider}: ${error.message}`);
+    if (connection && error?.name === "TimeoutError") {
+      return Response.json(staleQuotaResponse(connection, error.message));
+    }
     if (connection && isTransientUsageFetchError(error)) {
       return Response.json({
         message: `${provider} connected. Usage temporarily unavailable: ${safeUsageErrorMessage(error)}`,

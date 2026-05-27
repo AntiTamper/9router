@@ -4,6 +4,7 @@ import { trackPendingRequest, appendRequestLog } from "@/lib/usageDb.js";
 import { extractUsage, hasValidUsage, estimateUsage, logUsage, addBufferToUsage, filterUsageForFormat, COLORS } from "./usageTracking.js";
 import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE } from "./streamHelpers.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
+import { createBoundedTextAccumulator, previewText } from "./boundedText.js";
 
 export { COLORS, formatSSE };
 
@@ -56,8 +57,8 @@ export function createSSEStream(options = {}) {
   const state = mode === STREAM_MODE.TRANSLATE ? { ...initState(sourceFormat), provider, toolNameMap, model } : null;
 
   let totalContentLength = 0;
-  let accumulatedContent = "";
-  let accumulatedThinking = "";
+  const accumulatedContent = createBoundedTextAccumulator();
+  const accumulatedThinking = createBoundedTextAccumulator();
   let ttftAt = null;
   let sseLineCount = 0;
   let sseEmittedCount = 0;
@@ -124,11 +125,11 @@ export function createSSEStream(options = {}) {
               const reasoning = delta?.reasoning_content;
               if (content && typeof content === "string") {
                 totalContentLength += content.length;
-                accumulatedContent += content;
+                accumulatedContent.append(content);
               }
               if (reasoning && typeof reasoning === "string") {
                 totalContentLength += reasoning.length;
-                accumulatedThinking += reasoning;
+                accumulatedThinking.append(reasoning);
               }
 
               const extracted = extractUsage(parsed);
@@ -186,23 +187,23 @@ export function createSSEStream(options = {}) {
         // Claude format - content
         if (parsed.delta?.text) {
           totalContentLength += parsed.delta.text.length;
-          accumulatedContent += parsed.delta.text;
+          accumulatedContent.append(parsed.delta.text);
         }
         // Claude format - thinking
         if (parsed.delta?.thinking) {
           totalContentLength += parsed.delta.thinking.length;
-          accumulatedThinking += parsed.delta.thinking;
+          accumulatedThinking.append(parsed.delta.thinking);
         }
         
         // OpenAI format - content
         if (parsed.choices?.[0]?.delta?.content) {
           totalContentLength += parsed.choices[0].delta.content.length;
-          accumulatedContent += parsed.choices[0].delta.content;
+          accumulatedContent.append(parsed.choices[0].delta.content);
         }
         // OpenAI format - reasoning
         if (parsed.choices?.[0]?.delta?.reasoning_content) {
           totalContentLength += parsed.choices[0].delta.reasoning_content.length;
-          accumulatedThinking += parsed.choices[0].delta.reasoning_content;
+          accumulatedThinking.append(parsed.choices[0].delta.reasoning_content);
         }
         
         // Gemini format
@@ -212,9 +213,9 @@ export function createSSEStream(options = {}) {
               totalContentLength += part.text.length;
               // Check if this is thinking content
               if (part.thought === true) {
-                accumulatedThinking += part.text;
+                accumulatedThinking.append(part.text);
               } else {
-                accumulatedContent += part.text;
+                accumulatedContent.append(part.text);
               }
             }
           }
@@ -300,9 +301,15 @@ export function createSSEStream(options = {}) {
           controller.enqueue(sharedEncoder.encode(doneOutput));
 
           if (onStreamComplete) {
+            const contentSnapshot = accumulatedContent.snapshot();
+            const thinkingSnapshot = accumulatedThinking.snapshot();
             onStreamComplete({
-              content: accumulatedContent,
-              thinking: accumulatedThinking
+              content: previewText(contentSnapshot),
+              thinking: previewText(thinkingSnapshot, null),
+              contentOriginalLength: contentSnapshot.originalLength,
+              contentTruncated: contentSnapshot.truncated,
+              thinkingOriginalLength: thinkingSnapshot.originalLength,
+              thinkingTruncated: thinkingSnapshot.truncated,
             }, usage, ttftAt);
           }
           return;
@@ -362,9 +369,15 @@ export function createSSEStream(options = {}) {
         }
         
         if (onStreamComplete) {
+          const contentSnapshot = accumulatedContent.snapshot();
+          const thinkingSnapshot = accumulatedThinking.snapshot();
           onStreamComplete({
-            content: accumulatedContent,
-            thinking: accumulatedThinking
+            content: previewText(contentSnapshot),
+            thinking: previewText(thinkingSnapshot, null),
+            contentOriginalLength: contentSnapshot.originalLength,
+            contentTruncated: contentSnapshot.truncated,
+            thinkingOriginalLength: thinkingSnapshot.originalLength,
+            thinkingTruncated: thinkingSnapshot.truncated,
           }, state?.usage, ttftAt);
         }
       } catch (error) {

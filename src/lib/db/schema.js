@@ -131,6 +131,9 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_uh_model ON usageHistory(model)",
       "CREATE INDEX IF NOT EXISTS idx_uh_conn ON usageHistory(connectionId)",
       "CREATE INDEX IF NOT EXISTS idx_uh_apiKey ON usageHistory(apiKey)",
+      "CREATE INDEX IF NOT EXISTS idx_uh_ts_provider ON usageHistory(timestamp DESC, provider)",
+      "CREATE INDEX IF NOT EXISTS idx_uh_ts_model ON usageHistory(timestamp DESC, model)",
+      "CREATE INDEX IF NOT EXISTS idx_uh_ts_conn ON usageHistory(timestamp DESC, connectionId)",
     ],
   },
   usageDaily: {

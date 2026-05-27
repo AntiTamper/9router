@@ -34,6 +34,7 @@ describe("/api/usage/stream cleanup", () => {
     const reader = res.body.getReader();
 
     await reader.read();
+    expect(mocks.getUsageStats).toHaveBeenCalledWith("7d");
     expect(mocks.statsEmitter.on).toHaveBeenCalledWith("update", expect.any(Function));
     expect(mocks.statsEmitter.on).toHaveBeenCalledWith("pending", expect.any(Function));
 

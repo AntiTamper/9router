@@ -20,6 +20,9 @@ import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 
+const MAX_ACCOUNT_FALLBACK_ATTEMPTS = Math.max(1, parseInt(process.env.MAX_ACCOUNT_FALLBACK_ATTEMPTS || "3", 10));
+const ACCOUNT_FALLBACK_DEADLINE_MS = Math.max(1000, parseInt(process.env.ACCOUNT_FALLBACK_DEADLINE_MS || "45000", 10));
+
 /**
  * Handle chat completion request
  * Supports: OpenAI, Claude, Gemini, OpenAI Responses API formats
@@ -173,8 +176,18 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   const excludeConnectionIds = new Set();
   let lastError = null;
   let lastStatus = null;
+  const fallbackStartMs = Date.now();
 
   while (true) {
+    if (excludeConnectionIds.size >= MAX_ACCOUNT_FALLBACK_ATTEMPTS || Date.now() - fallbackStartMs > ACCOUNT_FALLBACK_DEADLINE_MS) {
+      const attempted = excludeConnectionIds.size;
+      const reason = attempted >= MAX_ACCOUNT_FALLBACK_ATTEMPTS
+        ? `account fallback capped after ${attempted} attempt${attempted === 1 ? "" : "s"}`
+        : `account fallback deadline ${ACCOUNT_FALLBACK_DEADLINE_MS}ms exceeded`;
+      log.warn("CHAT", `${provider}/${model} ${reason}`);
+      return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError ? `${lastError} (${reason})` : reason);
+    }
+
     const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
 
     // All accounts unavailable

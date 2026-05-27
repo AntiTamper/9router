@@ -5,7 +5,10 @@ const DEFAULT_MAX_RECORDS = 200;
 const DEFAULT_BATCH_SIZE = 20;
 const DEFAULT_FLUSH_INTERVAL_MS = 5000;
 const DEFAULT_MAX_JSON_SIZE = 5 * 1024;
+const DEFAULT_MAX_BUFFER_ITEMS = 1000;
+const DEFAULT_FLUSH_CHUNK_SIZE = 100;
 const CONFIG_CACHE_TTL_MS = 5000;
+const BUFFER_WARN_INTERVAL_MS = 30 * 1000;
 
 let cachedConfig = null;
 let cachedConfigTs = 0;
@@ -25,6 +28,8 @@ async function getObservabilityConfig() {
       batchSize: settings.observabilityBatchSize || parseInt(process.env.OBSERVABILITY_BATCH_SIZE || String(DEFAULT_BATCH_SIZE), 10),
       flushIntervalMs: settings.observabilityFlushIntervalMs || parseInt(process.env.OBSERVABILITY_FLUSH_INTERVAL_MS || String(DEFAULT_FLUSH_INTERVAL_MS), 10),
       maxJsonSize: (settings.observabilityMaxJsonSize || parseInt(process.env.OBSERVABILITY_MAX_JSON_SIZE || "5", 10)) * 1024,
+      maxBufferItems: settings.observabilityMaxBufferItems || parseInt(process.env.OBSERVABILITY_MAX_BUFFER_ITEMS || String(DEFAULT_MAX_BUFFER_ITEMS), 10),
+      flushChunkSize: settings.observabilityFlushChunkSize || parseInt(process.env.OBSERVABILITY_FLUSH_CHUNK_SIZE || String(DEFAULT_FLUSH_CHUNK_SIZE), 10),
     };
   } catch {
     cachedConfig = {
@@ -33,6 +38,8 @@ async function getObservabilityConfig() {
       batchSize: DEFAULT_BATCH_SIZE,
       flushIntervalMs: DEFAULT_FLUSH_INTERVAL_MS,
       maxJsonSize: DEFAULT_MAX_JSON_SIZE,
+      maxBufferItems: DEFAULT_MAX_BUFFER_ITEMS,
+      flushChunkSize: DEFAULT_FLUSH_CHUNK_SIZE,
     };
   }
   cachedConfigTs = Date.now();
@@ -42,6 +49,7 @@ async function getObservabilityConfig() {
 let writeBuffer = [];
 let flushTimer = null;
 let isFlushing = false;
+let lastBufferWarnTs = 0;
 
 function sanitizeHeaders(headers) {
   if (!headers || typeof headers !== "object") return {};
@@ -73,11 +81,12 @@ async function flushToDatabase() {
   if (writeBuffer.length === 0) return;
   isFlushing = true;
   try {
-    // Drain entire buffer (loop in case more pushed during await)
+    // Drain bounded chunks so one stalled backlog does not monopolize the DB.
     while (writeBuffer.length > 0) {
-      const items = writeBuffer.splice(0, writeBuffer.length);
-      const db = await getAdapter();
       const config = await getObservabilityConfig();
+      const chunkSize = Math.max(1, Math.min(config.flushChunkSize || DEFAULT_FLUSH_CHUNK_SIZE, config.maxBufferItems || DEFAULT_MAX_BUFFER_ITEMS));
+      const items = writeBuffer.splice(0, chunkSize);
+      const db = await getAdapter();
 
       db.transaction(() => {
         for (const item of items) {
@@ -126,7 +135,26 @@ export async function saveRequestDetail(detail) {
   const config = await getObservabilityConfig();
   if (!config.enabled) return;
 
-  writeBuffer.push(detail);
+  const bufferedDetail = { ...detail };
+  if (!bufferedDetail.id) bufferedDetail.id = generateDetailId(bufferedDetail.model);
+  if (!bufferedDetail.timestamp) bufferedDetail.timestamp = new Date().toISOString();
+  if (bufferedDetail.request?.headers) bufferedDetail.request = { ...bufferedDetail.request, headers: sanitizeHeaders(bufferedDetail.request.headers) };
+  bufferedDetail.request = truncateField(bufferedDetail.request, config.maxJsonSize);
+  bufferedDetail.providerRequest = truncateField(bufferedDetail.providerRequest, config.maxJsonSize);
+  bufferedDetail.providerResponse = truncateField(bufferedDetail.providerResponse, config.maxJsonSize);
+  bufferedDetail.response = truncateField(bufferedDetail.response, config.maxJsonSize);
+
+  writeBuffer.push(bufferedDetail);
+  const maxBufferItems = Math.max(1, config.maxBufferItems || DEFAULT_MAX_BUFFER_ITEMS);
+  if (writeBuffer.length > maxBufferItems) {
+    const dropped = writeBuffer.length - maxBufferItems;
+    writeBuffer.splice(0, dropped);
+    const now = Date.now();
+    if (now - lastBufferWarnTs > BUFFER_WARN_INTERVAL_MS) {
+      lastBufferWarnTs = now;
+      console.warn(`[requestDetailsRepo] Dropped ${dropped} observability records after buffer cap ${maxBufferItems}`);
+    }
+  }
 
   // Trigger immediate flush if batch threshold reached.
   // flushToDatabase() drains entire buffer in a loop, so all pushes during await are persisted.
@@ -138,6 +166,7 @@ export async function saveRequestDetail(detail) {
       flushTimer = null;
       flushToDatabase().catch(() => {});
     }, config.flushIntervalMs);
+    flushTimer.unref?.();
   }
 }
 
@@ -189,12 +218,10 @@ function ensureShutdownHandler() {
   process.off("beforeExit", _shutdownHandler);
   process.off("SIGINT", _shutdownHandler);
   process.off("SIGTERM", _shutdownHandler);
-  process.off("exit", _shutdownHandler);
 
   process.on("beforeExit", _shutdownHandler);
   process.on("SIGINT", _shutdownHandler);
   process.on("SIGTERM", _shutdownHandler);
-  process.on("exit", _shutdownHandler);
 }
 
 ensureShutdownHandler();

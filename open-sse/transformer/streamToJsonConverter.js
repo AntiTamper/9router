@@ -46,7 +46,7 @@ const EMPTY_RESPONSE = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
  * @param {ReadableStream} stream - SSE stream from provider
  * @returns {Promise<Object>} Final JSON response in Responses API format
  */
-export async function convertResponsesStreamToJson(stream) {
+export async function convertResponsesStreamToJson(stream, options = {}) {
   if (!stream || typeof stream.getReader !== "function") {
     return { id: `resp_${Date.now()}`, object: "response", created_at: Math.floor(Date.now() / 1000), status: "failed", output: [], usage: { ...EMPTY_RESPONSE } };
   }
@@ -54,6 +54,23 @@ export async function convertResponsesStreamToJson(stream) {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  const maxBytes = Math.max(1, Number(options.maxBytes || 64 * 1024 * 1024));
+  const timeoutMs = Math.max(1, Number(options.timeoutMs || 10 * 60 * 1000));
+  let totalBytes = 0;
+  const readWithTimeout = () => {
+    let timer = null;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        const err = new Error(`responses stream conversion timeout after ${timeoutMs}ms`);
+        try { reader.cancel(err); } catch {}
+        reject(err);
+      }, timeoutMs);
+      timer.unref?.();
+    });
+    return Promise.race([reader.read(), timeout]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+  };
 
   const state = {
     responseId: "",
@@ -65,8 +82,12 @@ export async function convertResponsesStreamToJson(stream) {
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readWithTimeout();
       if (done) break;
+      totalBytes += value?.byteLength || value?.length || 0;
+      if (totalBytes > maxBytes) {
+        throw new Error(`responses stream conversion exceeded ${maxBytes} bytes`);
+      }
 
       buffer += decoder.decode(value, { stream: true });
       const messages = buffer.split("\n\n");
@@ -82,7 +103,7 @@ export async function convertResponsesStreamToJson(stream) {
       processSSEMessage(buffer, state);
     }
   } finally {
-    reader.releaseLock();
+    try { reader.releaseLock(); } catch {}
   }
 
   // Build output array from accumulated items (ordered by index)

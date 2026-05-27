@@ -8,6 +8,10 @@ import { parseSSEToOpenAIResponse } from "./sseToJsonHandler.js";
 import { buildRequestDetail, extractRequestConfig, extractUsageFromResponse, saveUsageStats } from "./requestDetail.js";
 import { appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { decloakToolNames } from "../../utils/claudeCloaking.js";
+import { readResponseJsonBounded, readResponseTextBounded } from "../../utils/boundedText.js";
+
+const SUCCESS_BODY_LIMIT_BYTES = 64 * 1024 * 1024;
+const SUCCESS_BODY_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
  * Translate non-streaming response body from provider format → OpenAI format.
@@ -134,7 +138,10 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   let responseBody;
 
   if (contentType.includes("text/event-stream")) {
-    const sseText = await providerResponse.text();
+    const { text: sseText } = await readResponseTextBounded(providerResponse, {
+      limitBytes: SUCCESS_BODY_LIMIT_BYTES,
+      timeoutMs: SUCCESS_BODY_TIMEOUT_MS,
+    });
     const parsed = parseSSEToOpenAIResponse(sseText, model);
     if (!parsed) {
       appendLog({ status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` });
@@ -143,7 +150,10 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
     responseBody = parsed;
   } else {
     try {
-      responseBody = await providerResponse.json();
+      responseBody = await readResponseJsonBounded(providerResponse, {
+        limitBytes: SUCCESS_BODY_LIMIT_BYTES,
+        timeoutMs: SUCCESS_BODY_TIMEOUT_MS,
+      });
     } catch (err) {
       appendLog({ status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` });
       console.error(`[ChatCore] Failed to parse JSON from ${provider}:`, err.message);
