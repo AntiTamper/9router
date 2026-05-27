@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { PROVIDERS } from "../../open-sse/config/providers.js";
 import { CHAT_SEARCH_CONFIG } from "../../open-sse/handlers/search/chatSearch.js";
 import { DefaultExecutor } from "../../open-sse/executors/default.js";
+import { resolveFetchConnectTimeoutMs } from "../../open-sse/executors/base.js";
 import {
   buildProviderHeaders,
   buildProviderUrl,
@@ -12,6 +13,7 @@ import { resolveModelContextWindow } from "../../open-sse/services/contextWindow
 import { buildKimiCodingAgentHeaders, buildKimiOpenAICompatibilityHeaders, detectKimiCodingAgent } from "../../open-sse/utils/kimiCodingAgentHeaders.js";
 import { handleForcedSSEToJson } from "../../open-sse/handlers/chatCore/sseToJsonHandler.js";
 import { isLocalProxyFailure } from "../../open-sse/utils/error.js";
+import { FORMATS } from "../../open-sse/translator/formats.js";
 
 describe("Kimi Code API key provider", () => {
   it("uses the Kimi Code OpenAI-compatible endpoint", () => {
@@ -106,10 +108,17 @@ describe("Kimi Code API key provider", () => {
       isLocalProxyFailure(502, "Invalid SSE response for non-streaming request"),
     ).toBe(true);
     expect(isLocalProxyFailure(502, "Invalid JSON response from kimi")).toBe(true);
+    expect(isLocalProxyFailure(502, "[502]: fetch connect timeout")).toBe(true);
     expect(isLocalProxyFailure(502, "[502]: upstream gateway timeout")).toBe(false);
     expect(
       isLocalProxyFailure(403, "Invalid SSE response for non-streaming request"),
     ).toBe(false);
+  });
+
+  it("gives Kimi Responses compact requests a longer first-byte timeout", () => {
+    expect(resolveFetchConnectTimeoutMs({ provider: "kimi", sourceFormat: FORMATS.OPENAI_RESPONSES })).toBe(120000);
+    expect(resolveFetchConnectTimeoutMs({ provider: "kimi", sourceFormat: FORMATS.OPENAI })).toBe(20000);
+    expect(resolveFetchConnectTimeoutMs({ provider: "openai", sourceFormat: FORMATS.OPENAI_RESPONSES })).toBe(20000);
   });
 
   it("does not append Claude beta query params to Kimi Code requests", () => {

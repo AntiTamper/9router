@@ -111,6 +111,7 @@ export function createErrorResult(statusCode, message, resetsAtMs, options = {})
 }
 
 const LOCAL_PROXY_FAILURE_PATTERNS = [
+  "fetch connect timeout",
   "invalid sse response for non-streaming request",
   "invalid json response from",
   "failed to convert streaming response to json",

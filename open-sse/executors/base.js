@@ -1,7 +1,15 @@
-import { HTTP_STATUS, RETRY_CONFIG, DEFAULT_RETRY_CONFIG, resolveRetryEntry, FETCH_CONNECT_TIMEOUT_MS } from "../config/runtimeConfig.js";
+import { HTTP_STATUS, RETRY_CONFIG, DEFAULT_RETRY_CONFIG, resolveRetryEntry, FETCH_CONNECT_TIMEOUT_MS, KIMI_RESPONSES_FETCH_CONNECT_TIMEOUT_MS } from "../config/runtimeConfig.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { detectKimiCodingAgent } from "../utils/kimiCodingAgentHeaders.js";
 import { dbg } from "../utils/debugLog.js";
+import { FORMATS } from "../translator/formats.js";
+
+export function resolveFetchConnectTimeoutMs({ provider, sourceFormat } = {}) {
+  if (provider === "kimi" && sourceFormat === FORMATS.OPENAI_RESPONSES) {
+    return KIMI_RESPONSES_FETCH_CONNECT_TIMEOUT_MS;
+  }
+  return FETCH_CONNECT_TIMEOUT_MS;
+}
 
 /**
  * BaseExecutor - Base class for provider executors
@@ -133,15 +141,16 @@ export class BaseExecutor {
 
       if (!retryAttemptsByUrl[urlIndex]) retryAttemptsByUrl[urlIndex] = 0;
 
-      // Abort if upstream doesn't return response headers within FETCH_CONNECT_TIMEOUT_MS
+      // Abort if upstream doesn't return response headers within the configured TTFT window.
+      const fetchConnectTimeoutMs = resolveFetchConnectTimeoutMs({ provider: this.provider, sourceFormat, targetFormat, body: transformedBody });
       const connectCtrl = new AbortController();
-      const connectTimer = setTimeout(() => connectCtrl.abort(new Error("fetch connect timeout")), FETCH_CONNECT_TIMEOUT_MS);
+      const connectTimer = setTimeout(() => connectCtrl.abort(new Error("fetch connect timeout")), fetchConnectTimeoutMs);
       const mergedSignal = signal ? AbortSignal.any([signal, connectCtrl.signal]) : connectCtrl.signal;
 
       try {
         const bodyStr = JSON.stringify(transformedBody);
         const fetchT0 = Date.now();
-        dbg("FETCH", `${this.provider.toUpperCase()} → ${url} | body=${bodyStr.length}B | connectTimeout=${FETCH_CONNECT_TIMEOUT_MS}ms`);
+        dbg("FETCH", `${this.provider.toUpperCase()} → ${url} | body=${bodyStr.length}B | connectTimeout=${fetchConnectTimeoutMs}ms`);
         const response = await proxyAwareFetch(url, {
           method: "POST",
           headers,

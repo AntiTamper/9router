@@ -92,6 +92,30 @@ describe("chat context-limit handling", () => {
     expect(mocks.markAccountUnavailable).not.toHaveBeenCalled();
   });
 
+  it("does not lock the selected account on local fetch header timeout", async () => {
+    const response = new Response(JSON.stringify({
+      error: { message: "[502]: fetch connect timeout" },
+    }), { status: 502, headers: { "content-type": "application/json" } });
+
+    mocks.handleChatCore.mockResolvedValue({
+      success: false,
+      status: 502,
+      error: "[502]: fetch connect timeout",
+      response,
+    });
+
+    const req = new Request("http://127.0.0.1:20128/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json", "user-agent": "codex-cli" },
+      body: JSON.stringify({ model: "kimi/kimi-k2.6", input: "compact", stream: true }),
+    });
+
+    const res = await handleChat(req);
+
+    expect(res.status).toBe(502);
+    expect(mocks.markAccountUnavailable).not.toHaveBeenCalled();
+  });
+
   it("caps account fallback attempts so bad accounts cannot stall a request", async () => {
     mocks.getProviderCredentials.mockImplementation(async (_provider, excludeConnectionIds) => {
       const attempt = excludeConnectionIds?.size || 0;
