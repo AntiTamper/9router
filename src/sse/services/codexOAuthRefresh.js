@@ -21,6 +21,7 @@ const WAITER_POLL_MS = 250;
 const TOKEN_TIMEOUT_MS = 12 * 1000;
 const TOKEN_BODY_CAP = 64 * 1024;
 const UNRECOVERABLE_CODES = new Set(["invalid_grant", "refresh_token_reused", "invalid_token", "token_expired"]);
+const PERMANENT_AUTH_CODES = new Set(["token_revoked", "token_invalid", "token_expired", ...UNRECOVERABLE_CODES]);
 
 const state = global.__codexOAuthEvergreen ??= {
   timer: null,
@@ -75,11 +76,12 @@ export function shouldRefreshCodexOAuthConnection(connection, settings = {}, now
   const keepAliveMs = hourSetting(settings, "codexOAuthKeepAliveHours", 72) * HOUR_MS;
   const expiresAtMs = toMs(connection.expiresAt);
   const lastSuccessMs = toMs(connection.lastSuccessfulRefreshAt);
+  const keepAliveBaselineMs = lastSuccessMs || toMs(connection.createdAt) || toMs(connection.updatedAt);
 
   if (expiresAtMs && expiresAtMs <= now + leadMs) return true;
   if (options.includeKeepAlive === false) return false;
-  if (!lastSuccessMs) return true;
-  return now - lastSuccessMs >= keepAliveMs;
+  if (!keepAliveBaselineMs) return true;
+  return now - keepAliveBaselineMs >= keepAliveMs;
 }
 
 function credentialsFromConnection(connection, extra = {}) {
@@ -130,6 +132,17 @@ function parseRefreshError(text) {
   } catch {
     const lower = String(text || "").toLowerCase();
     return [...UNRECOVERABLE_CODES].find((code) => lower.includes(code)) || null;
+  }
+}
+
+function parseAuthErrorCode(text) {
+  try {
+    const parsed = JSON.parse(text || "{}");
+    const err = parsed?.error;
+    return parsed?.error_code || parsed?.code || err?.code || err?.type || (typeof err === "string" ? err : null);
+  } catch {
+    const lower = String(text || "").toLowerCase();
+    return [...PERMANENT_AUTH_CODES].find((code) => lower.includes(code)) || null;
   }
 }
 
@@ -317,7 +330,11 @@ export function isUnrecoverableCodexRefreshCode(code) {
 export function isCodexAuthFailure(status, errorText = "") {
   if (status !== 401 && status !== 403) return false;
   const text = String(errorText || "").toLowerCase();
-  return !text || ["unauthorized", "invalid", "expired", "jwt", "token", "authentication", "forbidden"].some((p) => text.includes(p));
+  const code = parseAuthErrorCode(errorText);
+  if (PERMANENT_AUTH_CODES.has(code)) return true;
+  return text.includes("invalidated oauth token") ||
+    text.includes("authentication token has been invalidated") ||
+    text.includes("authentication token is expired");
 }
 
 export async function markCodexConnectionReauthRequired(connectionId, reason = "Codex OAuth re-auth required", code = "reauth_required") {

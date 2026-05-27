@@ -62,13 +62,60 @@ describe("Codex OAuth evergreen", () => {
     const expired = await mk("expired@test.local", { expiresAt: iso(now - 1000) });
     const near = await mk("near@test.local", { expiresAt: iso(now + 23 * 60 * 60 * 1000) });
     const stale = await mk("stale@test.local", { expiresAt: iso(now + 7 * 24 * 60 * 60 * 1000), lastSuccessfulRefreshAt: iso(now - 73 * 60 * 60 * 1000) });
+    const freshNewSchema = await mk("fresh-created@test.local", { expiresAt: iso(now + 7 * 24 * 60 * 60 * 1000) });
+    await db.updateProviderConnection(freshNewSchema.id, { lastSuccessfulRefreshAt: null });
     await mk("fresh@test.local", { expiresAt: iso(now + 7 * 24 * 60 * 60 * 1000), lastSuccessfulRefreshAt: iso(now) });
-    await mk("reauth@test.local", { expiresAt: iso(now - 1000), providerSpecificData: { evergreen: true, reauthRequired: true } });
+    const reauth = await mk("reauth@test.local", { expiresAt: iso(now - 1000) });
+    await db.updateProviderConnection(reauth.id, { providerSpecificData: { evergreen: true, reauthRequired: true } });
     await db.createProviderConnection({ provider: "codex", authType: "access_token", name: "raw", accessToken: "raw", refreshToken: "rt", providerSpecificData: { evergreen: false } });
     await db.createProviderConnection({ provider: "claude", authType: "oauth", email: "c@test.local", refreshToken: "rt", expiresAt: iso(now - 1000) });
 
     const candidates = await service.getCodexOAuthRefreshCandidates(await db.getSettings(), now);
     expect(candidates.map((c) => c.id).sort()).toEqual([expired.id, near.id, stale.id].sort());
+
+    const settings = await db.getSettings();
+    expect(service.shouldRefreshCodexOAuthConnection({
+      provider: "codex",
+      authType: "oauth",
+      refreshToken: "rt",
+      expiresAt: iso(now + 7 * 24 * 60 * 60 * 1000),
+      createdAt: iso(now - 73 * 60 * 60 * 1000),
+      providerSpecificData: { evergreen: true },
+    }, settings, now)).toBe(true);
+    expect(service.shouldRefreshCodexOAuthConnection({
+      provider: "codex",
+      authType: "oauth",
+      refreshToken: "rt",
+      expiresAt: iso(now + 7 * 24 * 60 * 60 * 1000),
+      createdAt: iso(now),
+      providerSpecificData: { evergreen: true },
+    }, settings, now)).toBe(false);
+  });
+
+  it("treats initial Codex OAuth authorization as a fresh token issue", async () => {
+    const { db } = await loadFresh();
+    const conn = await db.createProviderConnection({
+      provider: "codex",
+      authType: "oauth",
+      email: "new@test.local",
+      accessToken: "access-new",
+      refreshToken: "refresh-new",
+      expiresAt: iso(Date.now() + 10 * 24 * 60 * 60 * 1000),
+      providerSpecificData: { evergreen: true, reauthRequired: true, reauthReason: "old" },
+    });
+
+    expect(conn.lastSuccessfulRefreshAt).toBeTruthy();
+    expect(conn.providerSpecificData.reauthRequired).toBe(false);
+    expect(conn.providerSpecificData.reauthReason).toBeNull();
+    expect(conn.testStatus).toBe("active");
+  });
+
+  it("only treats explicit Codex token invalidation as permanent auth failure", async () => {
+    const { service } = await loadFresh();
+    expect(service.isCodexAuthFailure(401, JSON.stringify({ error: { code: "token_revoked" } }))).toBe(true);
+    expect(service.isCodexAuthFailure(401, JSON.stringify({ error: { code: "token_expired" } }))).toBe(true);
+    expect(service.isCodexAuthFailure(403, "forbidden by policy")).toBe(false);
+    expect(service.isCodexAuthFailure(401, "temporary unauthorized")).toBe(false);
   });
 
   it("deduplicates concurrent refresh for one connection and persists rotated token", async () => {

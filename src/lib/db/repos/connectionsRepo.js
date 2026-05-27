@@ -59,6 +59,27 @@ function upsert(db, c) {
   );
 }
 
+function normalizeCodexOAuthCreateData(data, now) {
+  if (data?.provider !== "codex" || data?.authType !== "oauth" || !data?.refreshToken) return data;
+  return {
+    ...data,
+    lastSuccessfulRefreshAt: data.lastSuccessfulRefreshAt || now,
+    lastRefreshAttemptAt: null,
+    refreshLeaseId: null,
+    refreshLeaseUntil: null,
+    testStatus: data.testStatus || "active",
+    lastError: null,
+    lastErrorAt: null,
+    errorCode: null,
+    providerSpecificData: {
+      ...(data.providerSpecificData || {}),
+      evergreen: data.providerSpecificData?.evergreen === false ? false : true,
+      reauthRequired: false,
+      reauthReason: null,
+    },
+  };
+}
+
 export async function getProviderConnections(filter = {}) {
   const db = await getAdapter();
   const where = [];
@@ -94,6 +115,7 @@ function reorderInTx(db, providerId) {
 export async function createProviderConnection(data) {
   const db = await getAdapter();
   const now = new Date().toISOString();
+  data = normalizeCodexOAuthCreateData(data, now);
   let result;
 
   db.transaction(() => {
