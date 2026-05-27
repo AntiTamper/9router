@@ -10,6 +10,7 @@ const OPTIONAL_FIELDS = [
   "consecutiveUseCount", "backoffLevel",
   "quotaAutoDisabled", "quotaAutoDisabledAt", "quotaAutoDisabledUntil", "quotaAutoDisabledReason",
   "lastQuotaSnapshot", "lastQuotaSnapshotAt",
+  "lastSuccessfulRefreshAt", "lastRefreshAttemptAt", "refreshLeaseId", "refreshLeaseUntil",
 ];
 
 function rowToConn(row) {
@@ -171,6 +172,118 @@ export async function updateProviderConnection(id, data) {
   return result;
 }
 
+export async function acquireProviderConnectionRefreshLease(id, { leaseId, leaseMs = 90_000, now = Date.now() } = {}) {
+  const db = await getAdapter();
+  let result;
+  db.transaction(() => {
+    const row = db.get(`SELECT * FROM providerConnections WHERE id = ?`, [id]);
+    if (!row) { result = { acquired: false, connection: null }; return; }
+    const existing = rowToConn(row);
+    const leaseUntilMs = existing.refreshLeaseUntil ? new Date(existing.refreshLeaseUntil).getTime() : 0;
+    if (existing.refreshLeaseId && leaseUntilMs > now) {
+      result = {
+        acquired: false,
+        connection: existing,
+        refreshLeaseId: existing.refreshLeaseId,
+        refreshLeaseUntil: existing.refreshLeaseUntil,
+      };
+      return;
+    }
+    const merged = {
+      ...existing,
+      refreshLeaseId: leaseId,
+      refreshLeaseUntil: new Date(now + leaseMs).toISOString(),
+      lastRefreshAttemptAt: new Date(now).toISOString(),
+      updatedAt: new Date(now).toISOString(),
+    };
+    upsert(db, merged);
+    result = { acquired: true, connection: merged, refreshLeaseId: leaseId, refreshLeaseUntil: merged.refreshLeaseUntil };
+  });
+  return result;
+}
+
+export async function completeProviderConnectionRefreshLease(id, leaseId, data = {}) {
+  const db = await getAdapter();
+  let result;
+  db.transaction(() => {
+    const row = db.get(`SELECT * FROM providerConnections WHERE id = ?`, [id]);
+    if (!row) { result = { completed: false, connection: null }; return; }
+    const existing = rowToConn(row);
+    if (existing.refreshLeaseId && existing.refreshLeaseId !== leaseId) {
+      result = { completed: false, connection: existing };
+      return;
+    }
+    const merged = {
+      ...existing,
+      ...data,
+      refreshLeaseId: null,
+      refreshLeaseUntil: null,
+      updatedAt: new Date().toISOString(),
+    };
+    upsert(db, merged);
+    result = { completed: true, connection: merged };
+  });
+  return result;
+}
+
+export async function releaseProviderConnectionRefreshLease(id, leaseId) {
+  const db = await getAdapter();
+  let released = false;
+  db.transaction(() => {
+    const row = db.get(`SELECT * FROM providerConnections WHERE id = ?`, [id]);
+    if (!row) return;
+    const existing = rowToConn(row);
+    if (existing.refreshLeaseId && existing.refreshLeaseId !== leaseId) return;
+    const merged = { ...existing, refreshLeaseId: null, refreshLeaseUntil: null, updatedAt: new Date().toISOString() };
+    upsert(db, merged);
+    released = true;
+  });
+  return released;
+}
+
+export async function markProviderConnectionReauthRequired(id, { reason = "reauth required", code = null, leaseId = null } = {}) {
+  const db = await getAdapter();
+  let result;
+  db.transaction(() => {
+    const row = db.get(`SELECT * FROM providerConnections WHERE id = ?`, [id]);
+    if (!row) { result = null; return; }
+    const existing = rowToConn(row);
+    const clearLease = !leaseId || !existing.refreshLeaseId || existing.refreshLeaseId === leaseId;
+    const providerSpecificData = {
+      ...(existing.providerSpecificData || {}),
+      evergreen: existing.providerSpecificData?.evergreen !== false,
+      reauthRequired: true,
+      reauthReason: reason,
+    };
+    const merged = {
+      ...existing,
+      isActive: false,
+      testStatus: "error",
+      lastError: reason,
+      errorCode: code || existing.errorCode || "reauth_required",
+      lastErrorAt: new Date().toISOString(),
+      providerSpecificData,
+      ...(clearLease ? { refreshLeaseId: null, refreshLeaseUntil: null } : {}),
+      updatedAt: new Date().toISOString(),
+    };
+    upsert(db, merged);
+    result = merged;
+  });
+  return result;
+}
+
+export async function getActiveCodexRefreshLeaseCount(now = Date.now()) {
+  const db = await getAdapter();
+  const rows = db.all(`SELECT data FROM providerConnections WHERE provider = ?`, ["codex"]);
+  let count = 0;
+  for (const row of rows) {
+    const data = parseJson(row.data, {});
+    const until = data.refreshLeaseUntil ? new Date(data.refreshLeaseUntil).getTime() : 0;
+    if (data.refreshLeaseId && until > now) count++;
+  }
+  return count;
+}
+
 export async function deleteProviderConnection(id) {
   const db = await getAdapter();
   let ok = false;
@@ -206,6 +319,7 @@ export async function cleanupProviderConnections() {
     "consecutiveUseCount", "backoffLevel",
     "quotaAutoDisabled", "quotaAutoDisabledAt", "quotaAutoDisabledUntil", "quotaAutoDisabledReason",
     "lastQuotaSnapshot", "lastQuotaSnapshotAt",
+    "lastSuccessfulRefreshAt", "lastRefreshAttemptAt", "refreshLeaseId", "refreshLeaseUntil",
   ];
   let cleaned = 0;
   db.transaction(() => {

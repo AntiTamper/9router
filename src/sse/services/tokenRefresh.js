@@ -23,6 +23,7 @@ import {
   refreshKiroToken as _refreshKiroToken,
   getRefreshLeadMs as _getRefreshLeadMs
 } from "open-sse/services/tokenRefresh.js";
+import { refreshCodexConnectionIfDue } from "./codexOAuthRefresh.js";
 
 export const TOKEN_EXPIRY_BUFFER_MS = BUFFER_MS;
 
@@ -203,6 +204,20 @@ export async function updateProviderCredentials(connectionId, newCredentials) {
  */
 export async function checkAndRefreshToken(provider, credentials) {
   let creds = { ...credentials };
+
+  if (provider === "codex") {
+    const refreshed = await refreshCodexConnectionIfDue(creds, { reason: "request-proactive" });
+    if (refreshed?.accessToken) {
+      return {
+        ...creds,
+        accessToken: refreshed.accessToken,
+        refreshToken: refreshed.refreshToken ?? creds.refreshToken,
+        providerSpecificData: refreshed.providerSpecificData || creds.providerSpecificData,
+        expiresAt: refreshed.expiresAt || creds.expiresAt,
+      };
+    }
+    return creds;
+  }
 
   // ── 1. Regular access-token expiry ────────────────────────────────────────
   if (creds.expiresAt) {

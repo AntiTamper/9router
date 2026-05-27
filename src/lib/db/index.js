@@ -11,6 +11,9 @@ export {
 export {
   getProviderConnections, getProviderConnectionById,
   createProviderConnection, updateProviderConnection,
+  acquireProviderConnectionRefreshLease, completeProviderConnectionRefreshLease,
+  releaseProviderConnectionRefreshLease, markProviderConnectionReauthRequired,
+  getActiveCodexRefreshLeaseCount,
   deleteProviderConnection, deleteProviderConnectionsByProvider,
   reorderProviderConnections, cleanupProviderConnections,
 } from "./repos/connectionsRepo.js";

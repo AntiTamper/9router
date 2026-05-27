@@ -21,6 +21,7 @@ export async function POST(request) {
       refreshToken: connection.refreshToken,
       copilotToken: connection.copilotToken,
       projectId: connection.projectId,
+      connectionId: connection.id,
       providerSpecificData: connection.providerSpecificData
     };
 
@@ -31,7 +32,9 @@ export async function POST(request) {
 
     // Auto-refresh token on 401/403 and retry (same as chatCore.js)
     if (response.status === 401 || response.status === 403) {
-      const newCredentials = await refreshTokenByProvider(provider, credentials);
+      const newCredentials = provider === "codex"
+        ? await executor.refreshCredentials(credentials, console)
+        : await refreshTokenByProvider(provider, credentials);
       if (newCredentials?.accessToken || newCredentials?.copilotToken) {
         Object.assign(credentials, newCredentials);
         ({ response } = await executor.execute({ model, body, stream, credentials }));

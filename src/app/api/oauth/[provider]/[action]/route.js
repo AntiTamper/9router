@@ -206,14 +206,16 @@ export async function POST(request, { params }) {
         const planType = info.chatgptPlanType || directPayload.plan_type;
         const email = info.email || directPayload.email;
 
-        const providerSpecificData = { authMethod: "access_token" };
+        const providerSpecificData = { authMethod: "access_token", evergreen: false };
         if (accountId) providerSpecificData.chatgptAccountId = accountId;
         if (planType) providerSpecificData.chatgptPlanType = planType;
+        if (directPayload.exp) providerSpecificData.jwtExp = directPayload.exp;
 
         const connection = await createProviderConnection({
           provider,
           authType: "access_token",
           accessToken: code,
+          expiresAt: directPayload.exp ? new Date(directPayload.exp * 1000).toISOString() : null,
           email: email || null,
           providerSpecificData,
           testStatus: "active",
@@ -244,6 +246,9 @@ export async function POST(request, { params }) {
         provider,
         authType: "oauth",
         ...tokenData,
+        providerSpecificData: provider === "codex"
+          ? { ...(tokenData.providerSpecificData || {}), evergreen: true, reauthRequired: false }
+          : tokenData.providerSpecificData,
         expiresAt: tokenData.expiresIn 
           ? new Date(Date.now() + tokenData.expiresIn * 1000).toISOString() 
           : null,
@@ -290,6 +295,9 @@ export async function POST(request, { params }) {
           provider,
           authType: "oauth",
           ...result.tokens,
+          providerSpecificData: provider === "codex"
+            ? { ...(result.tokens.providerSpecificData || {}), evergreen: true, reauthRequired: false }
+            : result.tokens.providerSpecificData,
           expiresAt: result.tokens.expiresIn 
             ? new Date(Date.now() + result.tokens.expiresIn * 1000).toISOString() 
             : null,

@@ -232,7 +232,10 @@ const PROVIDERS = {
         mapped.providerSpecificData = {
           chatgptAccountId: info.chatgptAccountId,
           chatgptPlanType: info.chatgptPlanType,
+          evergreen: true,
         };
+      } else {
+        mapped.providerSpecificData = { evergreen: true };
       }
       return mapped;
     },

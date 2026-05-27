@@ -6,10 +6,10 @@ import { PROVIDER_ENDPOINTS } from "@/shared/constants/config";
 import { getDefaultModel } from "open-sse/config/providerModels.js";
 import { resolveOllamaLocalHost } from "open-sse/config/providers.js";
 import { validatePublicUrl } from "@/lib/security/urlGuard";
+import { safeRefreshCodexConnection } from "@/sse/services/codexOAuthRefresh";
 import {
   GEMINI_CONFIG,
   ANTIGRAVITY_CONFIG,
-  CODEX_CONFIG,
   KIRO_CONFIG,
   QWEN_CONFIG,
   CLAUDE_CONFIG,
@@ -94,7 +94,7 @@ async function probeClineAccessToken(accessToken) {
   return res;
 }
 
-async function refreshOAuthToken(connection) {
+async function refreshOAuthToken(connection, effectiveProxy = null) {
   const provider = connection.provider;
   const refreshToken = connection.refreshToken;
   if (!refreshToken) return null;
@@ -118,18 +118,14 @@ async function refreshOAuthToken(connection) {
     }
 
     if (provider === "codex") {
-      const response = await fetch(CODEX_CONFIG.tokenUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          grant_type: "refresh_token",
-          client_id: CODEX_CONFIG.clientId,
-          refresh_token: refreshToken,
-        }),
-      });
-      if (!response.ok) return null;
-      const data = await response.json();
-      return { accessToken: data.access_token, expiresIn: data.expires_in, refreshToken: data.refresh_token || refreshToken };
+      const result = await safeRefreshCodexConnection(connection.id, { force: true, proxyOptions: effectiveProxy, reason: "provider-test" });
+      if (!result?.accessToken) return null;
+      return {
+        accessToken: result.accessToken,
+        expiresAt: result.expiresAt,
+        expiresIn: result.expiresIn,
+        refreshToken: result.refreshToken || refreshToken,
+      };
     }
 
     if (provider === "claude") {
@@ -241,7 +237,7 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
 
   const tokenExpired = isTokenExpired(connection);
   if (config.refreshable && tokenExpired && connection.refreshToken) {
-    const tokens = await refreshOAuthToken(connection);
+    const tokens = await refreshOAuthToken(connection, effectiveProxy);
     if (tokens) {
       accessToken = tokens.accessToken;
       refreshed = true;
@@ -271,7 +267,7 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
       return initial;
     }
 
-    const tokens = await refreshOAuthToken(connection);
+    const tokens = await refreshOAuthToken(connection, effectiveProxy);
     if (!tokens?.accessToken) {
       return { valid: false, error: "Token invalid or revoked", refreshed: false };
     }
@@ -295,7 +291,7 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
     if (accepted) return { valid: true, error: null, refreshed, newTokens };
 
     if (res.status === 401 && config.refreshable && !refreshed && connection.refreshToken) {
-      const tokens = await refreshOAuthToken(connection);
+      const tokens = await refreshOAuthToken(connection, effectiveProxy);
       if (tokens) {
         const retryUrl = config.buildUrl ? config.buildUrl(tokens.accessToken) : testUrl;
         const retryHeaders = config.noAuth
@@ -670,6 +666,8 @@ export async function testSingleConnection(id) {
     if (result.newTokens.refreshToken) updateData.refreshToken = result.newTokens.refreshToken;
     if (result.newTokens.expiresIn) {
       updateData.expiresAt = new Date(Date.now() + result.newTokens.expiresIn * 1000).toISOString();
+    } else if (result.newTokens.expiresAt) {
+      updateData.expiresAt = result.newTokens.expiresAt;
     }
   }
 

@@ -67,9 +67,12 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
 
   const rowAuthType = connection.authType || (isOAuth ? "oauth" : "apikey");
   const isOAuthConnection = rowAuthType === "oauth";
+  const isAccessTokenConnection = rowAuthType === "access_token";
   const isCookieConnection = rowAuthType === "cookie";
-  const authIcon = isCookieConnection ? "cookie" : isOAuthConnection ? "lock" : "key";
-  const authLabel = isOAuthConnection ? "OAuth" : isCookieConnection ? "Cookie" : "API Key";
+  const authIcon = isCookieConnection ? "cookie" : isOAuthConnection ? "lock" : isAccessTokenConnection ? "vpn_key" : "key";
+  const authLabel = isOAuthConnection ? "OAuth" : isCookieConnection ? "Cookie" : isAccessTokenConnection ? "Access token" : "API Key";
+  const isCodexNonRefreshable = connection.provider === "codex" && (isAccessTokenConnection || connection.providerSpecificData?.evergreen === false);
+  const isReauthRequired = connection.providerSpecificData?.reauthRequired === true;
   const isEmail = (v) => typeof v === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
   const displayName = isOAuthConnection
     ? (isEmail(connection.email) ? connection.email : (isEmail(connection.name) ? connection.name : (connection.name || connection.email || connection.displayName || "OAuth Account")))
@@ -163,6 +166,8 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
             <Badge variant="default" size="sm">
               {authLabel}
             </Badge>
+            {isCodexNonRefreshable && <Badge variant="default" size="sm">not refreshable</Badge>}
+            {isReauthRequired && <Badge variant="error" size="sm">reauth required</Badge>}
             {hasAnyProxy && (
               <Badge variant={proxyBadgeVariant} size="sm">
                 Proxy
@@ -265,6 +270,9 @@ ConnectionRow.propTypes = {
     name: PropTypes.string,
     email: PropTypes.string,
     displayName: PropTypes.string,
+    provider: PropTypes.string,
+    authType: PropTypes.string,
+    providerSpecificData: PropTypes.object,
     modelLockUntil: PropTypes.string,
     testStatus: PropTypes.string,
     isActive: PropTypes.bool,

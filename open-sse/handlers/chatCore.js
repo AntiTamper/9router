@@ -2,7 +2,7 @@ import { detectFormat } from "../services/provider.js";
 import { FORMATS } from "../translator/formats.js";
 import { COLORS } from "../utils/stream.js";
 import { createStreamController } from "../utils/streamHandler.js";
-import { refreshWithRetry } from "../services/tokenRefresh.js";
+import { isUnrecoverableRefreshError, refreshWithRetry } from "../services/tokenRefresh.js";
 import { createRequestLogger } from "../utils/requestLogger.js";
 import { translateProviderRequest, resolveProviderTranslation } from "../services/translation.js";
 import { createErrorResult, parseUpstreamError, formatProviderError } from "../utils/error.js";
@@ -231,8 +231,11 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Handle 401/403 - try token refresh (skip for noAuth providers)
   if (!executor.noAuth && (providerResponse.status === HTTP_STATUS.UNAUTHORIZED || providerResponse.status === HTTP_STATUS.FORBIDDEN)) {
     try {
-      const newCredentials = await refreshWithRetry(() => executor.refreshCredentials(credentials, log), 3, log);
-      if (newCredentials?.accessToken || newCredentials?.copilotToken) {
+      const maxRefreshAttempts = provider === "codex" ? 1 : 3;
+      const newCredentials = await refreshWithRetry(() => executor.refreshCredentials(credentials, log, proxyOptions), maxRefreshAttempts, log);
+      if (isUnrecoverableRefreshError(newCredentials) || newCredentials?.reauthRequired) {
+        log?.warn?.("TOKEN", `${provider.toUpperCase()} | refresh unrecoverable; re-auth required`);
+      } else if (newCredentials?.accessToken || newCredentials?.copilotToken) {
         log?.info?.("TOKEN", `${provider.toUpperCase()} | refreshed`);
         Object.assign(credentials, newCredentials);
         if (onCredentialsRefreshed) {

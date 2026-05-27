@@ -7,6 +7,7 @@ import { getExecutor } from "open-sse/executors/index.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { USAGE_APIKEY_PROVIDERS } from "@/shared/constants/providers";
 import { syncConnectionQuotaState } from "@/lib/quota/autoDisable";
+import { safeRefreshCodexConnection } from "@/sse/services/codexOAuthRefresh";
 
 const QUOTA_FETCH_TIMEOUT_MS = 12 * 1000;
 
@@ -77,6 +78,22 @@ function staleQuotaResponse(connection, reason) {
  * @returns Promise<{ connection, refreshed: boolean }>
  */
 async function refreshAndUpdateCredentials(connection, force = false, proxyOptions = null) {
+  if (connection.provider === "codex") {
+    const result = await safeRefreshCodexConnection(connection.id, {
+      force,
+      includeKeepAlive: false,
+      proxyOptions,
+      reason: force ? "usage-auth-retry" : "usage-proactive",
+    });
+    if (result?.reauthRequired) {
+      throw new Error("Codex OAuth refresh failed; re-authentication required");
+    }
+    if (result?.accessToken) {
+      return { connection: result.connection || { ...connection, ...result }, refreshed: true };
+    }
+    return { connection, refreshed: false };
+  }
+
   const executor = getExecutor(connection.provider);
 
   // Build credentials object from connection

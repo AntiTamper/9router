@@ -5,6 +5,7 @@ import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import { normalizeAccountRoutingMode } from "@/shared/utils/accountRouting.js";
 import { restoreExpiredAutoDisabledConnections } from "@/lib/quota/autoDisable.js";
+import { isCodexAuthFailure, markCodexConnectionReauthRequired } from "./codexOAuthRefresh.js";
 import * as log from "../utils/logger.js";
 
 // Provider-scoped mutexes prevent same-provider selection races without serializing all traffic.
@@ -321,6 +322,13 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const connections = await getProviderConnections({ provider });
   const conn = connections.find(c => c.id === connectionId);
   const backoffLevel = conn?.backoffLevel || 0;
+
+  if (provider === "codex" && isCodexAuthFailure(status, errorText)) {
+    const reason = typeof errorText === "string" ? errorText.slice(0, 180) : "Codex OAuth token invalid";
+    await markCodexConnectionReauthRequired(connectionId, reason || "Codex OAuth token invalid", status || "invalid_token");
+    log.warn("AUTH", `Codex connection ${connectionId.slice(0, 8)} requires re-auth [${status}]`);
+    return { shouldFallback: true, cooldownMs: 0 };
+  }
 
   // Provider-specific precise cooldown (e.g. codex usage_limit_reached resets_at) overrides backoff
   let shouldFallback, cooldownMs, newBackoffLevel;

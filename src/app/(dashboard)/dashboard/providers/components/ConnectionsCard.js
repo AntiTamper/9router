@@ -94,6 +94,12 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
     return "default";
   };
 
+  const rowAuthType = connection.authType || (isOAuth ? "oauth" : "apikey");
+  const authLabel = rowAuthType === "oauth" ? "OAuth" : rowAuthType === "access_token" ? "Access token" : rowAuthType === "cookie" ? "Cookie" : "API Key";
+  const authIcon = rowAuthType === "oauth" ? "lock" : rowAuthType === "access_token" ? "vpn_key" : rowAuthType === "cookie" ? "cookie" : "key";
+  const isCodexNonRefreshable = connection.provider === "codex" && (rowAuthType === "access_token" || connection.providerSpecificData?.evergreen === false);
+  const isReauthRequired = connection.providerSpecificData?.reauthRequired === true;
+
   const displayName = isOAuth
     ? connection.name || connection.email || connection.displayName || "OAuth Account"
     : connection.name;
@@ -115,13 +121,16 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
             <span className="material-symbols-outlined text-sm">keyboard_arrow_down</span>
           </button>
         </div>
-        <span className="material-symbols-outlined text-base text-text-muted">{isOAuth ? "lock" : "key"}</span>
+        <span className="material-symbols-outlined text-base text-text-muted">{authIcon}</span>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium truncate">{displayName}</p>
           <div className="flex flex-wrap items-center gap-2 mt-1">
             <Badge variant={getStatusVariant()} size="sm" dot>
               {connection.isActive === false ? "disabled" : (effectiveStatus || "Unknown")}
             </Badge>
+            <Badge variant="default" size="sm">{authLabel}</Badge>
+            {isCodexNonRefreshable && <Badge variant="default" size="sm">not refreshable</Badge>}
+            {isReauthRequired && <Badge variant="error" size="sm">reauth required</Badge>}
             {hasAnyProxy && <Badge variant={proxyBadgeVariant} size="sm">Proxy</Badge>}
             {isCooldown && connection.isActive !== false && <CooldownTimer until={modelLockUntil} />}
             {connection.lastError && connection.isActive !== false && (
@@ -181,6 +190,9 @@ ConnectionRow.propTypes = {
     name: PropTypes.string,
     email: PropTypes.string,
     displayName: PropTypes.string,
+    provider: PropTypes.string,
+    authType: PropTypes.string,
+    providerSpecificData: PropTypes.object,
     testStatus: PropTypes.string,
     isActive: PropTypes.bool,
     lastError: PropTypes.string,

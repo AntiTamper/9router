@@ -24,7 +24,8 @@ export async function POST(request) {
 
     // Extract account info from the JWT (email, workspace, plan)
     let email = null;
-    let providerSpecificData = { authMethod: "access_token" };
+    let providerSpecificData = { authMethod: "access_token", evergreen: false };
+    let expiresAt = null;
 
     // Try decoding as JWT to extract email + workspace
     try {
@@ -50,6 +51,7 @@ export async function POST(request) {
         // Store expiry info from JWT if available
         if (payload.exp) {
           providerSpecificData.jwtExp = payload.exp;
+          expiresAt = new Date(payload.exp * 1000).toISOString();
         }
       }
     } catch {
@@ -72,6 +74,7 @@ export async function POST(request) {
       provider: "codex",
       authType: "access_token",
       accessToken: token,
+      expiresAt,
       name: connectionName,
       email: email,
       providerSpecificData,

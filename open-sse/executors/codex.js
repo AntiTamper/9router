@@ -7,6 +7,7 @@ import { fetchImageAsBase64 } from "../translator/helpers/imageHelper.js";
 import { getModelUpstreamId } from "../config/providerModels.js";
 import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
 import { getConsistentMachineId } from "../../src/shared/utils/machineId.js";
+import { safeRefreshCodexConnection } from "../../src/sse/services/codexOAuthRefresh.js";
 import { DEFAULT_RETRY_CONFIG, resolveRetryEntry } from "../config/runtimeConfig.js";
 import { dbg } from "../utils/debugLog.js";
 
@@ -231,6 +232,18 @@ export class CodexExecutor extends BaseExecutor {
   buildUrl(model, stream, urlIndex = 0, credentials = null) {
     const base = super.buildUrl(model, stream, urlIndex, credentials);
     return this._isCompact ? `${base}/compact` : base;
+  }
+
+  async refreshCredentials(credentials, log, proxyOptions = null) {
+    if (!credentials?.connectionId || !credentials?.refreshToken) return null;
+    const result = await safeRefreshCodexConnection(credentials.connectionId, {
+      force: true,
+      proxyOptions,
+      reason: "reactive-auth",
+      log,
+    });
+    if (result?.accessToken || result?.reauthRequired) return result;
+    return null;
   }
 
   /**

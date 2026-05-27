@@ -76,7 +76,9 @@ export function isUnrecoverableRefreshError(result) {
     (result.error === "unrecoverable_refresh_error" ||
       result.error === "refresh_token_reused" ||
       result.error === "invalid_request" ||
-      result.error === "invalid_grant")
+      result.error === "invalid_grant" ||
+      result.error === "invalid_token" ||
+      result.error === "token_expired")
   );
 }
 
