@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   getModelAliases: vi.fn(),
   getDisabledModels: vi.fn(),
   guardedFetch: vi.fn(),
+  resolveKimiModels: vi.fn(),
 }));
 
 vi.mock("@/lib/localDb", () => ({
@@ -19,6 +20,7 @@ vi.mock("@/lib/localDb", () => ({
 vi.mock("@/lib/disabledModelsDb", () => ({ getDisabledModels: mocks.getDisabledModels }));
 vi.mock("@/lib/security/urlGuard", () => ({ guardedFetch: mocks.guardedFetch }));
 vi.mock("@/sse/services/tokenRefresh", () => ({ updateProviderCredentials: vi.fn() }));
+vi.mock("../../open-sse/services/kimiModels.js", () => ({ resolveKimiModels: mocks.resolveKimiModels }));
 
 const { buildModelsList } = await import("../../src/app/api/v1/models/route.js");
 
@@ -43,6 +45,7 @@ describe("/v1/models performance", () => {
     mocks.guardedFetch.mockResolvedValue(new Response(JSON.stringify({ data: [{ id: "remote-model" }] }), {
       headers: { "content-type": "application/json" },
     }));
+    mocks.resolveKimiModels.mockResolvedValue(null);
   });
 
   it("does not probe remote compatible providers on the default model-list path", async () => {
@@ -58,6 +61,33 @@ describe("/v1/models performance", () => {
     expect(mocks.guardedFetch).toHaveBeenCalledTimes(1);
     expect(models).toEqual([
       { id: "slow/remote-model", object: "model", owned_by: "slow" },
+    ]);
+  });
+
+  it("uses Kimi live context metadata without exposing raw upstream model IDs", async () => {
+    mocks.getProviderConnections.mockResolvedValue([
+      { provider: "kimi", apiKey: "sk-kimi", isActive: true, providerSpecificData: {} },
+    ]);
+    mocks.resolveKimiModels.mockResolvedValue({
+      models: [{ id: "kimi-for-coding", upstreamModelId: "kimi-for-coding", contextWindow: 1048576 }],
+    });
+
+    const models = await buildModelsList(["llm"], { includeRemoteFetches: true });
+
+    expect(mocks.resolveKimiModels).toHaveBeenCalledWith(
+      "kimi",
+      { apiKey: "sk-kimi", accessToken: undefined },
+      { log: console },
+    );
+    expect(models).toEqual([
+      {
+        id: "kimi/kimi-k2.6",
+        object: "model",
+        owned_by: "kimi",
+        context_window: 1048576,
+        contextWindow: 1048576,
+        max_input_tokens: 1044480,
+      },
     ]);
   });
 });

@@ -2,6 +2,7 @@ import { PROVIDER_MODELS } from "open-sse/config/providerModels.js";
 import { AI_PROVIDERS, ALIAS_TO_ID } from "@/shared/constants/providers";
 import { getCustomModels } from "@/lib/localDb";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
+import { resolveKimiModels } from "open-sse/services/kimiModels.js";
 import { resolveModelContextWindow } from "open-sse/services/contextWindow.js";
 
 const KIND_ENDPOINT = {
@@ -140,7 +141,7 @@ export async function OPTIONS() {
 
 // GET /v1/models/info?id={alias}/{modelId} — metadata for a single model
 async function loadLookupContext(id) {
-  const ctx = { customModels: [], kiroLive: [] };
+  const ctx = { customModels: [], kiroLive: [], kimiLive: [], kimiApiLive: [] };
   try { ctx.customModels = await getCustomModels(); } catch {}
   try {
     const slash = id.indexOf("/");
@@ -169,6 +170,22 @@ async function loadLookupContext(id) {
         if (Array.isArray(live?.models)) ctx.kiroLive = live.models;
       }
     }
+    if (alias === "kimi" || alias === "kimi-api" || alias === "moonshot") {
+      const { getProviderConnections } = await import("@/lib/localDb");
+      const providerId = alias === "kimi" ? "kimi" : "kimi-api";
+      const conns = await getProviderConnections().catch(() => []);
+      const kimi = (conns || []).find((c) => c.provider === providerId && c.isActive !== false);
+      if (kimi?.apiKey || kimi?.accessToken) {
+        const live = await resolveKimiModels(providerId, {
+          apiKey: kimi.apiKey,
+          accessToken: kimi.accessToken,
+        }, { log: console }).catch(() => null);
+        if (Array.isArray(live?.models)) {
+          if (providerId === "kimi") ctx.kimiLive = live.models;
+          else ctx.kimiApiLive = live.models;
+        }
+      }
+    }
   } catch {}
   return ctx;
 }
@@ -185,14 +202,28 @@ export async function GET(request) {
   const ctx = await loadLookupContext(id);
   // resolveModelContextWindow ensures clients always see a context window when one exists
   let info = lookup(id, ctx);
-  if (info && (!info.contextWindow)) {
+  if (info) {
     const slash = id.indexOf("/");
     const alias = slash > 0 ? id.slice(0, slash) : "";
     const modelId = slash > 0 ? id.slice(slash + 1) : id;
     const providerId = ALIAS_TO_ID[alias] || alias;
-    const resolved = resolveModelContextWindow({ alias, providerId, modelId, customModels: ctx.customModels, live: { kiro: ctx.kiroLive } });
-    if (resolved.contextWindow) info.contextWindow = resolved.contextWindow;
-    if (resolved.maxOutputTokens && !info.maxOutputTokens) info.maxOutputTokens = resolved.maxOutputTokens;
+    const resolved = resolveModelContextWindow({
+      alias,
+      providerId,
+      modelId,
+      customModels: ctx.customModels,
+      live: { kiro: ctx.kiroLive, kimi: ctx.kimiLive, "kimi-api": ctx.kimiApiLive, moonshot: ctx.kimiApiLive },
+    });
+    if (resolved.contextWindow) {
+      info.contextWindow = resolved.contextWindow;
+      info.context_window = resolved.contextWindow;
+      const SAFETY_MARGIN = 4096;
+      info.max_input_tokens = Math.max(resolved.contextWindow - SAFETY_MARGIN, Math.floor(resolved.contextWindow * 0.95));
+    }
+    if (resolved.maxOutputTokens) {
+      info.maxOutputTokens = resolved.maxOutputTokens;
+      info.max_output_tokens = resolved.maxOutputTokens;
+    }
   }
   if (!info) {
     return Response.json(

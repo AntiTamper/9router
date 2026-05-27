@@ -8,6 +8,7 @@ import {
 } from "../../open-sse/services/provider.js";
 import { AI_PROVIDERS } from "../../src/shared/constants/providers.js";
 import { getDefaultModel, getModelUpstreamId } from "../../open-sse/config/providerModels.js";
+import { resolveModelContextWindow } from "../../open-sse/services/contextWindow.js";
 import { buildKimiCodingAgentHeaders, buildKimiOpenAICompatibilityHeaders, detectKimiCodingAgent } from "../../open-sse/utils/kimiCodingAgentHeaders.js";
 import { handleForcedSSEToJson } from "../../open-sse/handlers/chatCore/sseToJsonHandler.js";
 import { isLocalProxyFailure } from "../../open-sse/utils/error.js";
@@ -48,6 +49,20 @@ describe("Kimi Code API key provider", () => {
 
     expect(transformed.model).toBe("kimi-for-coding");
     expect(transformed.messages).toEqual([{ role: "user", content: "hi" }]);
+  });
+
+  it("maps Kimi live catalog context from upstream ID to exposed model ID", () => {
+    const resolved = resolveModelContextWindow({
+      alias: "kimi",
+      providerId: "kimi",
+      modelId: "kimi-k2.6",
+      live: {
+        kimi: [{ id: "kimi-for-coding", upstreamModelId: "kimi-for-coding", contextWindow: 1048576 }],
+      },
+    });
+
+    expect(resolved.contextWindow).toBe(1048576);
+    expect(resolved.source).toBe("live");
   });
 
   it("preserves Claude-format Kimi requests on the Anthropic-style endpoint", () => {

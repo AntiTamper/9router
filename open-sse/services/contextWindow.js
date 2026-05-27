@@ -10,7 +10,7 @@
 // All callers that need a number can post-fall-back themselves; we never
 // guess a value here so misconfigured static entries do not mask real bugs.
 
-import { getStaticContextWindow, getStaticMaxOutputTokens, getFamilyContextWindow } from "../config/providerModels.js";
+import { getStaticContextWindow, getStaticMaxOutputTokens, getFamilyContextWindow, getModelUpstreamId } from "../config/providerModels.js";
 import { resolveKimiModels } from "./kimiModels.js";
 
 const KIMI_PROVIDER_KEYS = new Set(["kimi", "kimi-api", "kimi-coding", "kmc"]);
@@ -32,9 +32,14 @@ function fromCustomList(list, alias, providerId, modelId) {
   };
 }
 
-function fromLiveList(list, modelId) {
+function fromLiveList(list, modelId, alias, providerId) {
   if (!Array.isArray(list)) return null;
-  const m = list.find((x) => x?.id === modelId || x?.upstreamModelId === modelId);
+  const candidates = new Set([modelId]);
+  const aliasUpstream = getModelUpstreamId(alias, modelId);
+  const providerUpstream = getModelUpstreamId(providerId, modelId);
+  if (aliasUpstream) candidates.add(aliasUpstream);
+  if (providerUpstream) candidates.add(providerUpstream);
+  const m = list.find((x) => candidates.has(x?.id) || candidates.has(x?.upstreamModelId));
   if (!m) return null;
   return {
     contextWindow: pickInt(m.contextWindow) ?? pickInt(m.contextLength) ?? pickInt(m.maxInputTokens),
@@ -64,7 +69,7 @@ export function resolveModelContextWindow({ alias, providerId, modelId, live, cu
 
   // Live overrides keyed by alias or providerId
   const liveBucket = live?.[alias] || live?.[providerId];
-  const fromLive = fromLiveList(liveBucket, modelId);
+  const fromLive = fromLiveList(liveBucket, modelId, alias, providerId);
   if (fromLive?.contextWindow) {
     return { ...fromLive, source: "live" };
   }

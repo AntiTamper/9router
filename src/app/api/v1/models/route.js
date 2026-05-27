@@ -9,15 +9,67 @@ import {
 import { getProviderConnections, getCombos, getCustomModels, getModelAliases } from "@/lib/localDb";
 import { getDisabledModels } from "@/lib/disabledModelsDb";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
+import { resolveKimiModels } from "open-sse/services/kimiModels.js";
 import { resolveModelContextWindow } from "open-sse/services/contextWindow.js";
 import { getStaticContextWindow } from "open-sse/config/providerModels.js";
 import { guardedFetch } from "@/lib/security/urlGuard";
 import { updateProviderCredentials } from "@/sse/services/tokenRefresh";
 
+function alignLiveModelsWithStaticIds(providerId, liveModels) {
+  const staticAlias = PROVIDER_ID_TO_ALIAS[providerId] || providerId;
+  const staticModels = PROVIDER_MODELS[staticAlias] || PROVIDER_MODELS[providerId] || [];
+  if (!Array.isArray(liveModels) || liveModels.length === 0 || staticModels.length === 0) {
+    return liveModels || [];
+  }
+
+  const used = new Set();
+  const aligned = staticModels.map((staticModel) => {
+    const upstreamModelId = staticModel.upstreamModelId || staticModel.id;
+    const live = liveModels.find((m, idx) => {
+      if (used.has(idx)) return false;
+      return m?.id === staticModel.id || m?.id === upstreamModelId ||
+        m?.upstreamModelId === staticModel.id || m?.upstreamModelId === upstreamModelId;
+    });
+    if (!live) return null;
+    used.add(liveModels.indexOf(live));
+    return {
+      ...live,
+      id: staticModel.id,
+      name: staticModel.name || live.name || staticModel.id,
+      upstreamModelId: live.upstreamModelId || upstreamModelId,
+      contextWindow: live.contextWindow || staticModel.contextWindow || null,
+      maxOutputTokens: live.maxOutputTokens || staticModel.maxOutputTokens || null,
+    };
+  }).filter(Boolean);
+
+  for (let i = 0; i < liveModels.length; i++) {
+    if (!used.has(i)) aligned.push(liveModels[i]);
+  }
+  return aligned;
+}
+
 // Per-provider live model resolvers. Each receives a connection record and
 // returns { models: [{ id, name? }, ...] } | null on failure.
 // Adding a provider here makes /v1/models prefer the live catalog for it.
 const LIVE_MODEL_RESOLVERS = {
+  kimi: async (conn) => {
+    const result = await resolveKimiModels("kimi", {
+      apiKey: conn.apiKey,
+      accessToken: conn.accessToken,
+    }, { log: console });
+    return result?.models?.length
+      ? { models: alignLiveModelsWithStaticIds("kimi", result.models) }
+      : null;
+  },
+  "kimi-api": async (conn) => {
+    const result = await resolveKimiModels("kimi-api", {
+      apiKey: conn.apiKey,
+      accessToken: conn.accessToken,
+    }, { log: console });
+    return result?.models?.length
+      ? { models: alignLiveModelsWithStaticIds("kimi-api", result.models) }
+      : null;
+  },
   kiro: async (conn) => {
     const result = await resolveKiroModels({
       accessToken: conn.accessToken,
