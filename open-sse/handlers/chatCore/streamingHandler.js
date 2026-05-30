@@ -71,12 +71,14 @@ export function handleStreamingResponse({ providerResponse, provider, model, sou
 export function buildOnStreamComplete({ provider, model, connectionId, apiKey, requestStartTime, body, stream, finalBody, translatedBody, clientRawRequest }) {
   const streamDetailId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 
-  const onStreamComplete = (contentObj, usage, ttftAt) => {
+  const onStreamComplete = (contentObj, usage, ttftAt, meta = null) => {
     const latency = {
       ttft: ttftAt ? ttftAt - requestStartTime : Date.now() - requestStartTime,
       total: Date.now() - requestStartTime
     };
-    const safeContent = contentObj?.content || "[Empty streaming response]";
+    const aborted = meta?.aborted === true;
+    const fallbackContent = aborted ? "[Aborted streaming response]" : "[Empty streaming response]";
+    const safeContent = contentObj?.content || fallbackContent;
     const safeThinking = contentObj?.thinking || null;
     const responseMeta = {
       contentOriginalLength: contentObj?.contentOriginalLength ?? safeContent.length,
@@ -92,8 +94,8 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
       request: extractRequestConfig(body, stream),
       providerRequest: finalBody || translatedBody || null,
       providerResponse: safeContent,
-      response: { content: safeContent, thinking: safeThinking, type: "streaming", ...responseMeta },
-      status: "success"
+      response: { content: safeContent, thinking: safeThinking, type: "streaming", ...responseMeta, ...(aborted ? { aborted: true, abortReason: meta?.reason || "client_closed" } : {}) },
+      status: aborted ? "aborted" : "success"
     }, { id: streamDetailId })).catch(err => {
       console.error("[RequestDetail] Failed to update streaming content:", err.message);
     });

@@ -63,8 +63,25 @@ export function createSSEStream(options = {}) {
   let sseLineCount = 0;
   let sseEmittedCount = 0;
   const eventTypeCounts = {};
+  let completeCalled = false;
 
-  return new TransformStream({
+  const emitComplete = (usageVal, meta = null) => {
+    if (completeCalled) return;
+    completeCalled = true;
+    if (!onStreamComplete) return;
+    const contentSnapshot = accumulatedContent.snapshot();
+    const thinkingSnapshot = accumulatedThinking.snapshot();
+    onStreamComplete({
+      content: previewText(contentSnapshot),
+      thinking: previewText(thinkingSnapshot, null),
+      contentOriginalLength: contentSnapshot.originalLength,
+      contentTruncated: contentSnapshot.truncated,
+      thinkingOriginalLength: thinkingSnapshot.originalLength,
+      thinkingTruncated: thinkingSnapshot.truncated,
+    }, usageVal, ttftAt, meta);
+  };
+
+  const transformStream = new TransformStream({
     transform(chunk, controller) {
       if (!ttftAt) ttftAt = Date.now();
       const text = decoder.decode(chunk, { stream: true });
@@ -300,18 +317,7 @@ export function createSSEStream(options = {}) {
           reqLogger?.appendConvertedChunk?.(doneOutput);
           controller.enqueue(sharedEncoder.encode(doneOutput));
 
-          if (onStreamComplete) {
-            const contentSnapshot = accumulatedContent.snapshot();
-            const thinkingSnapshot = accumulatedThinking.snapshot();
-            onStreamComplete({
-              content: previewText(contentSnapshot),
-              thinking: previewText(thinkingSnapshot, null),
-              contentOriginalLength: contentSnapshot.originalLength,
-              contentTruncated: contentSnapshot.truncated,
-              thinkingOriginalLength: thinkingSnapshot.originalLength,
-              thinkingTruncated: thinkingSnapshot.truncated,
-            }, usage, ttftAt);
-          }
+          emitComplete(usage);
           return;
         }
 
@@ -368,23 +374,22 @@ export function createSSEStream(options = {}) {
           appendRequestLog({ model, provider, connectionId, tokens: null, status: "200 OK" }).catch(() => { });
         }
         
-        if (onStreamComplete) {
-          const contentSnapshot = accumulatedContent.snapshot();
-          const thinkingSnapshot = accumulatedThinking.snapshot();
-          onStreamComplete({
-            content: previewText(contentSnapshot),
-            thinking: previewText(thinkingSnapshot, null),
-            contentOriginalLength: contentSnapshot.originalLength,
-            contentTruncated: contentSnapshot.truncated,
-            thinkingOriginalLength: thinkingSnapshot.originalLength,
-            thinkingTruncated: thinkingSnapshot.truncated,
-          }, state?.usage, ttftAt);
-        }
+        emitComplete(state?.usage);
       } catch (error) {
         console.log("Error in flush:", error);
       }
     }
   });
+
+  // Idempotent finalizer for early-termination paths (client disconnect,
+  // cancel, upstream error) where flush() never runs. Ensures usage/detail
+  // are still recorded for short or aborted requests.
+  transformStream.finalize = (reason = "client_closed") => {
+    const usageVal = mode === STREAM_MODE.PASSTHROUGH ? usage : state?.usage;
+    emitComplete(usageVal, { aborted: true, reason });
+  };
+
+  return transformStream;
 }
 
 export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider = null, reqLogger = null, toolNameMap = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null) {

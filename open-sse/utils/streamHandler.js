@@ -1,4 +1,4 @@
-﻿// Stream handler with disconnect detection - shared for all providers
+// Stream handler with disconnect detection - shared for all providers
 import { STREAM_STALL_TIMEOUT_MS } from "../config/runtimeConfig.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
 
@@ -94,13 +94,14 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
  * for long periods while raw bytes still flow (e.g. Kiro EventStream
  * binary frames buffering, Claude reasoning streams).
  */
-export function createDisconnectAwareStream(transformStream, streamController) {
+export function createDisconnectAwareStream(transformStream, streamController, onFinalize = null) {
   const reader = transformStream.readable.getReader();
   const writer = transformStream.writable.getWriter();
 
   return new ReadableStream({
     async pull(controller) {
       if (!streamController.isConnected()) {
+        try { onFinalize?.("client_closed"); } catch { /* non-fatal */ }
         controller.close();
         return;
       }
@@ -136,6 +137,7 @@ export function createDisconnectAwareStream(transformStream, streamController) {
           code === "UND_ERR_SOCKET";
 
         if (!wasConnected || isNetworkClose) {
+          try { onFinalize?.(isNetworkClose ? "network_close" : "client_closed"); } catch { /* non-fatal */ }
           try {
             controller.close();
           } catch (e) {
@@ -151,6 +153,7 @@ export function createDisconnectAwareStream(transformStream, streamController) {
 
     cancel(reason) {
       streamController.handleDisconnect(reason || "cancelled");
+      try { onFinalize?.(typeof reason === "string" && reason ? reason : "cancelled"); } catch { /* non-fatal */ }
       reader.cancel();
       writer.abort();
     }
@@ -226,13 +229,16 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
     flush() { dbg(tag, `upstream EOF | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); clearStall(); }
   });
 
+  const finalize = typeof transformStream.finalize === "function" ? transformStream.finalize : null;
+
   const transformedBody = providerResponse.body
     .pipeThrough(upstreamTap)
     .pipeThrough(transformStream);
 
   return createDisconnectAwareStream(
     { readable: transformedBody, writable: { getWriter: () => ({ abort: () => Promise.resolve() }) } },
-    wrappedController
+    wrappedController,
+    finalize
   );
 }
 
