@@ -21,6 +21,12 @@ import { updateProviderCredentials, checkAndRefreshToken } from "../services/tok
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 
 const MAX_ACCOUNT_FALLBACK_ATTEMPTS = Math.max(1, parseInt(process.env.MAX_ACCOUNT_FALLBACK_ATTEMPTS || "3", 10));
+// Hard cap on inbound request body to bound memory use / payload-flood DoS.
+// Generous default (LLM payloads can be large); override via env.
+const MAX_REQUEST_BODY_BYTES = Math.max(
+  64 * 1024,
+  parseInt(process.env.MAX_REQUEST_BODY_BYTES || String(25 * 1024 * 1024), 10),
+);
 const ACCOUNT_FALLBACK_DEADLINE_MS = Math.max(1000, parseInt(process.env.ACCOUNT_FALLBACK_DEADLINE_MS || "45000", 10));
 
 /**
@@ -29,6 +35,12 @@ const ACCOUNT_FALLBACK_DEADLINE_MS = Math.max(1000, parseInt(process.env.ACCOUNT
  * Format detection and translation handled by translator
  */
 export async function handleChat(request, clientRawRequest = null) {
+  const declaredLength = parseInt(request.headers.get("content-length") || "", 10);
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_REQUEST_BODY_BYTES) {
+    log.warn("CHAT", `Request body too large: ${declaredLength} bytes`);
+    return errorResponse(413, "Request body too large");
+  }
+
   let body;
   try {
     body = await request.json();

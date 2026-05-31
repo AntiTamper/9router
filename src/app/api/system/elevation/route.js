@@ -40,9 +40,20 @@ function isElevated() {
   return typeof process.getuid === "function" && process.getuid() === 0;
 }
 
+// Cache the result briefly so repeated dashboard polls do not spawn a new
+// powershell.exe per request (process-spawn amplification / DoS guard).
+const ELEVATION_TTL_MS = 30_000;
+let cached = { value: null, at: 0 };
+
 export async function GET() {
   try {
+    const nowTs = Date.now();
+    if (cached.value !== null && nowTs - cached.at < ELEVATION_TTL_MS) {
+      const elevated = cached.value;
+      return NextResponse.json({ elevated, status: elevated ? "elevated" : "user" });
+    }
     const elevated = isElevated();
+    cached = { value: elevated, at: nowTs };
     return NextResponse.json({
       elevated,
       status: elevated ? "elevated" : "user",

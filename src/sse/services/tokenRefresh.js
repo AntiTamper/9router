@@ -80,6 +80,7 @@ export const getAllAccessTokens = (userInfo) =>
 export function releaseConnection(connectionId) {
   if (!connectionId) return;
   removeConnection(connectionId);
+  inflightRefreshes.delete(connectionId);
   log.debug("TOKEN_REFRESH", "Released connection resources", { connectionId });
 }
 
@@ -192,6 +193,28 @@ export async function updateProviderCredentials(connectionId, newCredentials) {
   }
 }
 
+// ─── Per-connection refresh lease ─────────────────────────────────────────────
+
+// In-flight proactive-refresh promise per connectionId. Concurrent requests for
+// the same connection share one refresh instead of firing parallel token
+// exchanges. Without this, providers that rotate refresh tokens can see the
+// same refresh token replayed concurrently -> refresh-token reuse / reauth
+// waves. Codex is deduped separately via its evergreen steward/DB lease.
+const inflightRefreshes = new Map(); // connectionId -> Promise<creds>
+
+function leaseRefresh(connectionId, run) {
+  if (!connectionId) return run(); // cannot key a lease; run directly
+  const existing = inflightRefreshes.get(connectionId);
+  if (existing) return existing;
+  const p = Promise.resolve()
+    .then(run)
+    .finally(() => {
+      if (inflightRefreshes.get(connectionId) === p) inflightRefreshes.delete(connectionId);
+    });
+  inflightRefreshes.set(connectionId, p);
+  return p;
+}
+
 // ─── Local-specific: proactive token refresh ─────────────────────────────────
 
 /**
@@ -203,7 +226,7 @@ export async function updateProviderCredentials(connectionId, newCredentials) {
  * @returns {Promise<object>} updated credentials object
  */
 export async function checkAndRefreshToken(provider, credentials) {
-  let creds = { ...credentials };
+  const creds = { ...credentials };
 
   if (provider === "codex") {
     const refreshed = await refreshCodexConnectionIfDue(creds, { reason: "request-proactive" });
@@ -218,6 +241,13 @@ export async function checkAndRefreshToken(provider, credentials) {
     }
     return creds;
   }
+
+  // Dedupe concurrent proactive refreshes for the same connection.
+  return leaseRefresh(creds.connectionId, () => _refreshNonCodexCreds(provider, creds));
+}
+
+async function _refreshNonCodexCreds(provider, credentials) {
+  let creds = { ...credentials };
 
   // ── 1. Regular access-token expiry ────────────────────────────────────────
   if (creds.expiresAt) {

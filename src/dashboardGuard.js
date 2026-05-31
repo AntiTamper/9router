@@ -67,8 +67,12 @@ const PROTECTED_API_PATHS = [
 
 // Routes that spawn child processes or read host secrets — restrict to localhost.
 const LOCAL_ONLY_PATHS = [
-  "/api/cli-tools/cowork-settings",
-  "/api/cli-tools/antigravity-mitm",
+  // All cli-tools routes write host config files and/or spawn `which/where`
+  // probes (claude/codex/cline/copilot/droid/hermes/jcode/kilo/openclaw/
+  // opencode/deepseek/cowork/antigravity). Host-machine config only -> loopback.
+  "/api/cli-tools/",
+  // Spawns powershell.exe per request to check admin rights -> loopback only.
+  "/api/system/elevation",
   "/api/mcp/",
   "/api/tunnel/tailscale-install",
   "/api/tunnel/tailscale-enable",
@@ -145,7 +149,10 @@ async function loadSettings() {
 async function isAuthenticated(request) {
   if (await hasValidToken(request)) return true;
   const settings = await loadSettings();
-  if (settings && settings.requireLogin === false) return true;
+  // requireLogin=false relaxes auth ONLY for local (loopback) requests.
+  // Remote/tunnel/custom-domain requests must always present a valid JWT,
+  // otherwise disabling login would expose every protected API publicly.
+  if (settings && settings.requireLogin === false && isLocalRequest(request)) return true;
   return false;
 }
 
@@ -229,8 +236,9 @@ export async function proxy(request) {
       // On error, keep defaults (require login, block tunnel)
     }
 
-    // If login not required, allow through
-    if (!requireLogin) return NextResponse.next();
+    // If login not required, allow through for local requests only.
+    // Remote/tunnel/custom-domain dashboards must still authenticate.
+    if (!requireLogin && isLocalRequest(request)) return NextResponse.next();
 
     // Verify JWT token
     const token = request.cookies.get("auth_token")?.value;

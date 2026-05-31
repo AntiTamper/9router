@@ -1,4 +1,4 @@
-﻿import { getAdapter } from "../driver.js";
+import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 
 const DEFAULT_MAX_RECORDS = 200;
@@ -170,6 +170,16 @@ export async function saveRequestDetail(detail) {
   }
 }
 
+// Distinct provider ids seen in requestDetails. Used by the providers filter UI
+// instead of pulling every row via a huge pageSize, which a clamp would
+// silently truncate.
+export async function getRequestDetailProviders() {
+  const db = await getAdapter();
+  const rows = db.all(
+    `SELECT DISTINCT provider FROM requestDetails WHERE provider IS NOT NULL AND provider != '' ORDER BY provider ASC`,
+  );
+  return rows.map((r) => r.provider).filter(Boolean);
+}
 export async function getRequestDetails(filter = {}) {
   const db = await getAdapter();
   const conds = [];
@@ -186,8 +196,14 @@ export async function getRequestDetails(filter = {}) {
   const cntRow = db.get(`SELECT COUNT(*) as c FROM requestDetails ${where}`, params);
   const totalItems = cntRow ? cntRow.c : 0;
 
-  const page = filter.page || 1;
-  const pageSize = filter.pageSize || 50;
+  // Clamp pagination so a caller cannot request an unbounded result set.
+  const MAX_PAGE_SIZE = 500;
+  const rawPageSize = parseInt(filter.pageSize, 10);
+  const pageSize = Number.isFinite(rawPageSize)
+    ? Math.min(MAX_PAGE_SIZE, Math.max(1, rawPageSize))
+    : 50;
+  const rawPage = parseInt(filter.page, 10);
+  const page = Number.isFinite(rawPage) ? Math.max(1, rawPage) : 1;
   const totalPages = Math.ceil(totalItems / pageSize);
   const offset = (page - 1) * pageSize;
 

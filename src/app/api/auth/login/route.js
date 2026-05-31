@@ -4,7 +4,7 @@ import bcrypt from "bcryptjs";
 import { cookies } from "next/headers";
 import { setDashboardAuthCookie } from "@/lib/auth/dashboardSession";
 import { isOidcConfigured } from "@/lib/auth/oidc";
-import { checkLock, recordFail, recordSuccess, getClientIp } from "@/lib/auth/loginLimiter";
+import { checkLock, recordFail, recordSuccess, getClientIp, checkGlobalLock, recordGlobalFail } from "@/lib/auth/loginLimiter";
 
 const RESET_HINT = "Forgot password? Reset to default via 9Router CLI → Settings → Reset Password to Default.";
 
@@ -18,6 +18,13 @@ function isTunnelRequest(request, settings) {
 export async function POST(request) {
   try {
     const ip = getClientIp(request);
+    const globalLock = checkGlobalLock();
+    if (globalLock.locked) {
+      return NextResponse.json(
+        { error: `Too many failed attempts. Try again in ${globalLock.retryAfter}s. ${RESET_HINT}`, retryAfter: globalLock.retryAfter, resetHint: RESET_HINT },
+        { status: 429, headers: { "Retry-After": String(globalLock.retryAfter) } }
+      );
+    }
     const lock = checkLock(ip);
     if (lock.locked) {
       return NextResponse.json(
@@ -58,6 +65,7 @@ export async function POST(request) {
       return NextResponse.json({ success: true });
     }
 
+    recordGlobalFail();
     const { remainingBeforeLock } = recordFail(ip);
     const postLock = checkLock(ip);
     if (postLock.locked) {
