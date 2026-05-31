@@ -203,12 +203,24 @@ export async function proxy(request) {
         requireLogin = settings.requireLogin !== false;
         tunnelDashboardAccess = settings.tunnelDashboardAccess === true;
 
+        const host = (request.headers.get("host") || "").split(":")[0].toLowerCase();
+
         // Block tunnel/tailscale access if disabled (redirect to login)
         if (!tunnelDashboardAccess) {
-          const host = (request.headers.get("host") || "").split(":")[0].toLowerCase();
           const tunnelHost = settings.tunnelUrl ? new URL(settings.tunnelUrl).hostname.toLowerCase() : "";
           const tailscaleHost = settings.tailscaleUrl ? new URL(settings.tailscaleUrl).hostname.toLowerCase() : "";
           if ((tunnelHost && host === tunnelHost) || (tailscaleHost && host === tailscaleHost)) {
+            return NextResponse.redirect(new URL("/login", request.url));
+          }
+        }
+
+        // Custom domain: only allow dashboard when the domain is enabled AND
+        // dashboard access via the domain is explicitly enabled. Default off.
+        const customHost = settings.customDomain
+          ? (() => { try { return new URL(settings.customDomain).hostname.toLowerCase(); } catch { return settings.customDomain.trim().toLowerCase(); } })()
+          : "";
+        if (customHost && host === customHost) {
+          if (settings.customDomainEnabled !== true || settings.customDomainDashboardAccess !== true) {
             return NextResponse.redirect(new URL("/login", request.url));
           }
         }

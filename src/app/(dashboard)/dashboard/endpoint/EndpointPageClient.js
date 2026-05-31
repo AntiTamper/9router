@@ -301,6 +301,10 @@ export default function APIPageClient({ machineId }) {
   const [requireLogin, setRequireLogin] = useState(true);
   const [hasPassword, setHasPassword] = useState(true);
   const [tunnelDashboardAccess, setTunnelDashboardAccess] = useState(false);
+  const [customDomainEnabled, setCustomDomainEnabled] = useState(false);
+  const [customDomain, setCustomDomain] = useState("");
+  const [customDomainDashboardAccess, setCustomDomainDashboardAccess] = useState(false);
+  const [customDomainInput, setCustomDomainInput] = useState("");
   const [rtkEnabled, setRtkEnabledState] = useState(true);
   const [codexUsageEnabled, setCodexUsageEnabled] = useState(true);
   const [toonEnabled, setToonEnabled] = useState(false);
@@ -476,6 +480,10 @@ export default function APIPageClient({ machineId }) {
         setRequireLogin(data.requireLogin !== false);
         setHasPassword(data.hasPassword || false);
         setTunnelDashboardAccess(data.tunnelDashboardAccess || false);
+        setCustomDomainEnabled(!!data.customDomainEnabled);
+        setCustomDomain(data.customDomain || "");
+        setCustomDomainInput(data.customDomain || "");
+        setCustomDomainDashboardAccess(!!data.customDomainDashboardAccess);
         setRtkEnabledState(data.rtkEnabled !== false);
         setCodexUsageEnabled(data.codexUsageEnabled !== false);
         setToonEnabled(!!data.toonEnabled);
@@ -519,6 +527,42 @@ export default function APIPageClient({ machineId }) {
     } catch (error) {
       console.log("Error updating tunnelDashboardAccess:", error);
     }
+  };
+
+  const persistCustomDomain = async (patch, applied) => {
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (res.ok && typeof applied === "function") applied();
+    } catch (error) {
+      console.log("Error updating custom domain settings:", error);
+    }
+  };
+
+  const normalizeCustomDomain = (value) => {
+    const raw = (value || "").trim();
+    if (!raw) return "";
+    try { return new URL(raw).origin; } catch { /* not a full URL */ }
+    return `https://${raw.replace(/^https?:\/\//, "").replace(/\/+$/, "")}`;
+  };
+
+  const handleCustomDomainEnabled = (value) => {
+    persistCustomDomain({ customDomainEnabled: value }, () => setCustomDomainEnabled(value));
+  };
+
+  const handleSaveCustomDomain = () => {
+    const normalized = normalizeCustomDomain(customDomainInput);
+    persistCustomDomain({ customDomain: normalized }, () => {
+      setCustomDomain(normalized);
+      setCustomDomainInput(normalized);
+    });
+  };
+
+  const handleCustomDomainDashboardAccess = (value) => {
+    persistCustomDomain({ customDomainDashboardAccess: value }, () => setCustomDomainDashboardAccess(value));
   };
 
   const handleRequireApiKey = async (value) => {
@@ -1360,6 +1404,59 @@ export default function APIPageClient({ machineId }) {
             </div>
           </div>
         )}
+      </Card>
+
+      {/* Custom Domain */}
+      <Card id="custom-domain">
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-lg font-semibold flex items-center gap-2">
+            <span className="material-symbols-outlined text-primary">public</span>
+            Custom Domain
+          </h2>
+          <Toggle
+            checked={customDomainEnabled}
+            onChange={() => handleCustomDomainEnabled(!customDomainEnabled)}
+          />
+        </div>
+        <p className="text-sm text-muted-foreground mb-4">
+          Serve the endpoint on your own domain (e.g. via a Cloudflare named tunnel pointing to this server).
+          Disabled by default. The domain origin is reflected in CORS only while enabled.
+        </p>
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1.5">
+            <label className="text-sm font-medium" htmlFor="custom-domain-input">Domain or URL</label>
+            <div className="flex gap-2">
+              <input
+                id="custom-domain-input"
+                type="text"
+                value={customDomainInput}
+                onChange={(e) => setCustomDomainInput(e.target.value)}
+                placeholder="router.example.com"
+                className="flex-1 px-3 py-2 rounded-md border border-border bg-background text-sm"
+              />
+              <button
+                type="button"
+                onClick={handleSaveCustomDomain}
+                className="px-3 py-2 rounded-md border border-border text-sm font-medium hover:bg-muted"
+              >
+                Save
+              </button>
+            </div>
+            {customDomain && (
+              <p className="text-xs text-muted-foreground">Saved: {customDomain}</p>
+            )}
+          </div>
+          <div className="pt-3 border-t border-border flex items-center gap-3">
+            <Toggle
+              checked={customDomainDashboardAccess}
+              onChange={() => handleCustomDomainDashboardAccess(!customDomainDashboardAccess)}
+            />
+            <div className="flex items-center gap-1.5">
+              <p className="font-medium text-sm">Allow dashboard access via custom domain</p>
+              <Tooltip text="When enabled (and the custom domain is enabled), the dashboard can be reached through your domain (login still required). When disabled, dashboard access via the domain is blocked." />
+            </div>
+          </div>
+        </div>
       </Card>
 
       {/* Token Saver */}
