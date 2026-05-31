@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { exportDb, getSettings, importDb } from "@/lib/localDb";
+import { exportDb, getSettings, importDb, mergeDb, analyzeImport } from "@/lib/localDb";
 import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
 
 export async function GET() {
@@ -14,8 +14,28 @@ export async function GET() {
 
 export async function POST(request) {
   try {
+    const url = new URL(request.url);
     const payload = await request.json();
-    await importDb(payload);
+    const analyze = url.searchParams.get("analyze") === "1" || payload?._analyze === true;
+    const mode = url.searchParams.get("mode") || payload?._mode || "replace";
+    const conflict = url.searchParams.get("conflict") || payload?._conflict || "skip";
+    if (payload && typeof payload === "object") {
+      delete payload._mode;
+      delete payload._analyze;
+      delete payload._conflict;
+    }
+
+    // Dry-run: report conflicts without writing anything.
+    if (analyze) {
+      const report = await analyzeImport(payload);
+      return NextResponse.json({ success: true, report });
+    }
+
+    if (mode === "merge" || mode === "add") {
+      await mergeDb(payload, { conflictStrategy: conflict === "overwrite" ? "overwrite" : "skip" });
+    } else {
+      await importDb(payload);
+    }
 
     // Ensure proxy settings take effect immediately after a DB import.
     try {

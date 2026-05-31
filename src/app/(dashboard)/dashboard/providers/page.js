@@ -166,6 +166,8 @@ export default function ProvidersPage() {
   const registerSearch = useHeaderSearchStore((s) => s.register);
   const unregisterSearch = useHeaderSearchStore((s) => s.unregister);
   const quotaQueueRef = useRef(null);
+  const accountImportRef = useRef(null);
+  const [accountImporting, setAccountImporting] = useState(false);
 
   useEffect(() => {
     registerSearch("Search providers...");
@@ -455,6 +457,60 @@ export default function ProvidersPage() {
   const freeTierEntries = Object.entries(FREE_TIER_PROVIDERS).filter(
     ([, info]) => !info.hidden && matchSearch(info.name),
   );
+  const handleAccountImport = async (event) => {
+    const file = event.target.files?.[0];
+    if (accountImportRef.current) accountImportRef.current.value = "";
+    if (!file) return;
+    let payload;
+    try {
+      payload = JSON.parse(await file.text());
+    } catch {
+      alert("Invalid JSON file");
+      return;
+    }
+    // Accept full DB backup (use its providerConnections) or a bare connection/array.
+    const body = Array.isArray(payload)
+      ? { connections: payload }
+      : Array.isArray(payload?.providerConnections)
+        ? { connections: payload.providerConnections }
+        : Array.isArray(payload?.connections)
+          ? { connections: payload.connections }
+          : payload;
+
+    setAccountImporting(true);
+    try {
+      const ar = await fetch("/api/providers/import?analyze=1", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const adata = await ar.json().catch(() => ({}));
+      let conflict = "skip";
+      if (ar.ok && adata.report?.conflicts > 0) {
+        const names = (adata.report.conflictNames || []).slice(0, 8).join(", ");
+        const overwrite = window.confirm(
+          `${adata.report.conflicts} account(s) already exist (${names}).\n\n` +
+          "OK = Overwrite existing with imported tokens.\n" +
+          "Cancel = Add only new accounts (keep existing)."
+        );
+        conflict = overwrite ? "overwrite" : "skip";
+      }
+      const res = await fetch(`/api/providers/import?conflict=${conflict}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Import failed");
+      alert(`Imported: ${data.added || 0} added, ${data.overwritten || 0} overwritten, ${data.skipped || 0} skipped.`);
+      window.location.reload();
+    } catch (err) {
+      alert(err.message || "Import failed");
+    } finally {
+      setAccountImporting(false);
+    }
+  };
+
   const apikeyEntries = sortByPriority(
     Object.entries(APIKEY_PROVIDERS).filter(
       ([, info]) =>
@@ -523,6 +579,24 @@ export default function ProvidersPage() {
             >
               Add OpenAI Compatible
             </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              icon="upload"
+              loading={accountImporting}
+              onClick={() => accountImportRef.current?.click()}
+              className="w-full sm:w-auto"
+              title="Import provider account token/session from a JSON file (add)"
+            >
+              Import Account
+            </Button>
+            <input
+              ref={accountImportRef}
+              type="file"
+              accept="application/json,.json"
+              className="hidden"
+              onChange={handleAccountImport}
+            />
           </div>
         </div>
         {compatibleProviders.length === 0 &&

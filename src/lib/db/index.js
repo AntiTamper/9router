@@ -247,6 +247,163 @@ export async function importDb(payload) {
   return await exportDb();
 }
 
+// Compute a stable conflict key for a provider connection (mirrors createProviderConnection dedup).
+function connDedupKey(c) {
+  if (c.authType === "oauth" && c.email) {
+    const ws = c.providerSpecificData && c.providerSpecificData.chatgptAccountId;
+    return `conn:oauth:${c.provider}:${c.email}:${ws || ""}`;
+  }
+  if (c.authType === "apikey" && c.name) {
+    return `conn:apikey:${c.provider}:${c.name}`;
+  }
+  return null; // access_token / unkeyed: never dedup
+}
+
+// Inspect an import payload against the current DB and report, per table,
+// which incoming records are NEW vs CONFLICTING (would overwrite an existing record).
+export async function analyzeImport(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("Invalid database payload");
+  }
+  const db = await getAdapter();
+
+  const report = { tables: {}, totalAdds: 0, totalConflicts: 0, hasConflicts: false };
+  const tally = (name, adds, conflicts) => {
+    report.tables[name] = { adds, conflicts };
+    report.totalAdds += adds;
+    report.totalConflicts += conflicts;
+  };
+
+  // providerConnections: conflict by id OR dedup key
+  {
+    const rows = db.all(`SELECT * FROM providerConnections`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, provider: r.provider, authType: r.authType, name: r.name, email: r.email }));
+    const ids = new Set(rows.map((r) => r.id));
+    const keys = new Set(rows.map(connDedupKey).filter(Boolean));
+    let adds = 0, conflicts = 0;
+    for (const c of payload.providerConnections || []) {
+      const k = connDedupKey(c);
+      if (ids.has(c.id) || (k && keys.has(k))) conflicts++; else adds++;
+    }
+    tally("providerConnections", adds, conflicts);
+  }
+
+  const simpleTable = (name, listKey, idField = "id") => {
+    const ids = new Set(db.all(`SELECT ${idField} AS id FROM ${name}`).map((r) => r.id));
+    let adds = 0, conflicts = 0;
+    for (const item of payload[listKey] || []) {
+      if (ids.has(item[idField])) conflicts++; else adds++;
+    }
+    tally(name, adds, conflicts);
+  };
+  simpleTable("providerNodes", "providerNodes");
+  simpleTable("proxyPools", "proxyPools");
+  simpleTable("apiKeys", "apiKeys");
+  simpleTable("combos", "combos");
+
+  report.hasConflicts = report.totalConflicts > 0;
+  return report;
+}
+
+// Additive import: upsert records WITHOUT wiping existing data.
+// conflictStrategy: "skip" = keep existing on conflict (add extras only);
+//                   "overwrite" = replace existing record (destructive on conflict).
+// Settings are shallow-merged. usageHistory is skipped to avoid duplicate rows.
+export async function mergeDb(payload, options = {}) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("Invalid database payload");
+  }
+  const conflictStrategy = options.conflictStrategy === "overwrite" ? "overwrite" : "skip";
+  const db = await getAdapter();
+  const verb = conflictStrategy === "overwrite" ? "INSERT OR REPLACE" : "INSERT OR IGNORE";
+
+  db.transaction(() => {
+    if (payload.settings && typeof payload.settings === "object") {
+      const existingRow = db.all(`SELECT data FROM settings WHERE id = 1`)[0];
+      const existing = existingRow ? parseJson(existingRow.data, {}) : {};
+      const mergedSettings = { ...existing, ...payload.settings };
+      db.run(`INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`, [stringifyJson(mergedSettings)]);
+    }
+
+    // providerConnections honor BOTH id and dedup-key conflicts.
+    {
+      const existingRows = db.all(`SELECT * FROM providerConnections`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, provider: r.provider, authType: r.authType, name: r.name, email: r.email }));
+      const idSet = new Set(existingRows.map((r) => r.id));
+      const keyToId = new Map();
+      for (const r of existingRows) { const k = connDedupKey(r); if (k) keyToId.set(k, r.id); }
+      for (const c of payload.providerConnections || []) {
+        const { id, provider, authType, name, email, priority, isActive, createdAt, updatedAt, ...rest } = c;
+        const k = connDedupKey(c);
+        const conflictId = idSet.has(id) ? id : (k && keyToId.has(k) ? keyToId.get(k) : null);
+        if (conflictId) {
+          if (conflictStrategy !== "overwrite") continue; // skip
+          db.run(
+            `INSERT OR REPLACE INTO providerConnections(id, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [conflictId, provider, authType || "oauth", name || null, email || null, priority || null, isActive === false ? 0 : 1, stringifyJson(rest), createdAt || new Date().toISOString(), updatedAt || new Date().toISOString()]
+          );
+        } else {
+          db.run(
+            `INSERT INTO providerConnections(id, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [id, provider, authType || "oauth", name || null, email || null, priority || null, isActive === false ? 0 : 1, stringifyJson(rest), createdAt || new Date().toISOString(), updatedAt || new Date().toISOString()]
+          );
+        }
+      }
+    }
+
+    for (const n of payload.providerNodes || []) {
+      const { id, type, name, createdAt, updatedAt, ...rest } = n;
+      db.run(
+        `${verb} INTO providerNodes(id, type, name, data, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
+        [id, type || null, name || null, stringifyJson(rest), createdAt || new Date().toISOString(), updatedAt || new Date().toISOString()]
+      );
+    }
+    for (const p of payload.proxyPools || []) {
+      const { id, isActive, testStatus, createdAt, updatedAt, ...rest } = p;
+      db.run(
+        `${verb} INTO proxyPools(id, isActive, testStatus, data, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
+        [id, isActive === false ? 0 : 1, testStatus || "unknown", stringifyJson(rest), createdAt || new Date().toISOString(), updatedAt || new Date().toISOString()]
+      );
+    }
+    for (const k of payload.apiKeys || []) {
+      db.run(
+        `${verb} INTO apiKeys(id, key, name, machineId, isActive, limitMode, tokenLimit, dailyTokenLimit, weeklyTokenLimit, expiresAt, autoDeleteExpired, createdAt, updatedAt)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          k.id, k.key, k.name || null, k.machineId || null,
+          k.isActive === false ? 0 : 1,
+          k.limitMode || "unlimited",
+          k.tokenLimit || null,
+          k.dailyTokenLimit || null,
+          k.weeklyTokenLimit || null,
+          k.expiresAt || null,
+          k.autoDeleteExpired === false ? 0 : 1,
+          k.createdAt || new Date().toISOString(),
+          k.updatedAt || k.createdAt || new Date().toISOString(),
+        ]
+      );
+    }
+    for (const c of payload.combos || []) {
+      db.run(
+        `${verb} INTO combos(id, name, kind, models, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
+        [c.id, c.name, c.kind || null, stringifyJson(c.models || []), c.createdAt || new Date().toISOString(), c.updatedAt || new Date().toISOString()]
+      );
+    }
+    for (const [a, m] of Object.entries(payload.modelAliases || {})) {
+      db.run(`${verb} INTO kv(scope, key, value) VALUES('modelAliases', ?, ?)`, [a, stringifyJson(m)]);
+    }
+    for (const m of payload.customModels || []) {
+      const k = `${m.providerAlias}|${m.id}|${m.type || "llm"}`;
+      db.run(`${verb} INTO kv(scope, key, value) VALUES('customModels', ?, ?)`, [k, stringifyJson(m)]);
+    }
+    for (const [tool, mappings] of Object.entries(payload.mitmAlias || {})) {
+      db.run(`${verb} INTO kv(scope, key, value) VALUES('mitmAlias', ?, ?)`, [tool, stringifyJson(mappings || {})]);
+    }
+    for (const [provider, models] of Object.entries(payload.pricing || {})) {
+      db.run(`${verb} INTO kv(scope, key, value) VALUES('pricing', ?, ?)`, [provider, stringifyJson(models || {})]);
+    }
+  });
+
+  return await exportDb();
+}
 // Eager init helper (optional)
 export async function initDb() {
   await getAdapter();

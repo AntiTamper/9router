@@ -1152,11 +1152,16 @@ export default function APIPageClient({ machineId }) {
   };
 
   const [baseUrl, setBaseUrl] = useState("/v1");
+  const [localLabel, setLocalLabel] = useState("Local");
 
   // Hydration fix: Only access window on client side
   useEffect(() => {
     if (typeof window !== "undefined") {
-      setBaseUrl(`${window.location.origin}/v1`);
+      const loopback = ["localhost", "127.0.0.1", "::1", "[::1]"];
+      const host = window.location.hostname;
+      const isLoopback = loopback.includes(host);
+      setBaseUrl(isLoopback ? "http://127.0.0.1:20128/v1" : `${window.location.origin}/v1`);
+      setLocalLabel(isLoopback ? "Local" : host);
     }
   }, []);
 
@@ -1192,7 +1197,7 @@ export default function APIPageClient({ machineId }) {
         <div className="flex flex-col gap-2">
           {/* Local */}
           <EndpointRow
-            label="Local"
+            label={localLabel}
             url={currentEndpoint}
             copyId="local_url"
             copied={copied}

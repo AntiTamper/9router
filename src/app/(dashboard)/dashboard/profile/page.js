@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Card, Button, Toggle, Input } from "@/shared/components";
+import { Card, Button, Toggle, Input, Modal } from "@/shared/components";
 import { useTheme } from "@/shared/hooks/useTheme";
 import { cn } from "@/shared/utils/cn";
 import { APP_CONFIG } from "@/shared/constants/config";
@@ -31,6 +31,8 @@ export default function ProfilePage() {
   const [oidcRedirectUri, setOidcRedirectUri] = useState("/api/auth/oidc/callback");
   const [oidcExpanded, setOidcExpanded] = useState(false);
   const importFileRef = useRef(null);
+  const importModeRef = useRef("replace");
+  const [conflictModal, setConflictModal] = useState(null); // { report, payload }
   const [proxyForm, setProxyForm] = useState({
     outboundProxyEnabled: false,
     outboundProxyUrl: "",
@@ -477,38 +479,79 @@ export default function ProfilePage() {
     }
   };
 
-  const handleImportDatabase = async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
+  const commitImport = async ({ payload, mode, conflict }) => {
     setDbLoading(true);
     setDbStatus({ type: "", message: "" });
-
     try {
-      const raw = await file.text();
-      const payload = JSON.parse(raw);
-
-      const res = await fetch("/api/settings/database", {
+      const qs = mode === "merge" ? `mode=merge&conflict=${conflict || "skip"}` : "mode=replace";
+      const res = await fetch(`/api/settings/database?${qs}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.error || "Failed to import database");
-      }
+      if (!res.ok) throw new Error(data.error || "Failed to import database");
 
       await reloadSettings();
-      setDbStatus({ type: "success", message: "Database imported successfully" });
+      setDbStatus({
+        type: "success",
+        message: mode === "merge"
+          ? (conflict === "overwrite" ? "Entries added and conflicts overwritten" : "New entries added (existing kept)")
+          : "Database imported successfully",
+      });
     } catch (err) {
-      setDbStatus({ type: "error", message: err.message || "Invalid backup file" });
+      setDbStatus({ type: "error", message: err.message || "Import failed" });
     } finally {
-      if (importFileRef.current) {
-        importFileRef.current.value = "";
-      }
       setDbLoading(false);
     }
+  };
+
+  const handleImportDatabase = async (event) => {
+    const file = event.target.files?.[0];
+    if (importFileRef.current) importFileRef.current.value = "";
+    if (!file) return;
+
+    const mode = importModeRef.current || "replace";
+    setDbStatus({ type: "", message: "" });
+
+    let payload;
+    try {
+      payload = JSON.parse(await file.text());
+    } catch {
+      setDbStatus({ type: "error", message: "Invalid backup file" });
+      return;
+    }
+
+    if (mode === "merge") {
+      // Dry-run to detect overlap before writing.
+      try {
+        setDbLoading(true);
+        const res = await fetch("/api/settings/database?analyze=1", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+        setDbLoading(false);
+        if (res.ok && data.report?.hasConflicts) {
+          // Same entries exist — ask add-extra vs destructive.
+          setConflictModal({ report: data.report, payload });
+          return;
+        }
+      } catch {
+        setDbLoading(false);
+      }
+      // No conflicts → just add.
+      await commitImport({ payload, mode: "merge", conflict: "skip" });
+      return;
+    }
+
+    await commitImport({ payload, mode: "replace" });
+  };
+
+  const openImportPicker = (mode) => {
+    importModeRef.current = mode;
+    importFileRef.current?.click();
   };
 
   const observabilityEnabled = settings.enableObservability === true;
@@ -571,11 +614,21 @@ export default function ProfilePage() {
               <Button
                 variant="outline"
                 icon="upload"
-                onClick={() => importFileRef.current?.click()}
+                onClick={() => openImportPicker("replace")}
                 disabled={dbLoading}
                 className="w-full sm:w-auto"
               >
                 Import Backup
+              </Button>
+              <Button
+                variant="outline"
+                icon="add"
+                onClick={() => openImportPicker("merge")}
+                disabled={dbLoading}
+                className="w-full sm:w-auto"
+                title="Add entries from a backup without erasing existing data"
+              >
+                Add to Database
               </Button>
               <input
                 ref={importFileRef}
@@ -1043,6 +1096,63 @@ export default function ProfilePage() {
           <p className="mt-1">Local Mode - All data stored on your machine</p>
         </div>
       </div>
+
+      <Modal
+        isOpen={!!conflictModal}
+        onClose={() => setConflictModal(null)}
+        title="Some entries already exist"
+      >
+        <div className="flex flex-col gap-4">
+          <p className="text-sm text-text-muted">
+            This backup overlaps with data already in your database
+            {conflictModal ? ` (${conflictModal.report.totalAdds} new, ${conflictModal.report.totalConflicts} conflicting).` : "."}
+            {" "}Choose how to handle the conflicting entries.
+          </p>
+          {conflictModal && (
+            <div className="text-xs font-mono bg-black/5 dark:bg-white/5 rounded p-2 flex flex-col gap-1">
+              {Object.entries(conflictModal.report.tables)
+                .filter(([, v]) => v.adds || v.conflicts)
+                .map(([name, v]) => (
+                  <div key={name} className="flex justify-between gap-4">
+                    <span>{name}</span>
+                    <span>+{v.adds} new, {v.conflicts} conflict</span>
+                  </div>
+                ))}
+            </div>
+          )}
+          <div className="flex flex-col sm:flex-row gap-2">
+            <Button
+              variant="primary"
+              icon="add"
+              className="w-full"
+              loading={dbLoading}
+              onClick={async () => {
+                const job = conflictModal;
+                setConflictModal(null);
+                if (job) await commitImport({ payload: job.payload, mode: "merge", conflict: "skip" });
+              }}
+            >
+              Add extras only
+            </Button>
+            <Button
+              variant="danger"
+              icon="warning"
+              className="w-full"
+              loading={dbLoading}
+              onClick={async () => {
+                const job = conflictModal;
+                setConflictModal(null);
+                if (job) await commitImport({ payload: job.payload, mode: "merge", conflict: "overwrite" });
+              }}
+            >
+              Overwrite existing
+            </Button>
+            <Button variant="ghost" className="w-full" onClick={() => setConflictModal(null)} disabled={dbLoading}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
