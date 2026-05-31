@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 
-import { getRotatedModels, resetComboRotation } from "../../open-sse/services/combo.js";
+import { getRotatedModels, resetComboRotation, handleComboChat } from "../../open-sse/services/combo.js";
 
 describe("combo round-robin routing", () => {
   beforeEach(() => {
@@ -54,5 +54,40 @@ describe("combo round-robin routing", () => {
 
     expect(getRotatedModels(models, "code-xhigh", "fallback", 2)).toEqual(models);
     expect(getRotatedModels(models, "code-xhigh", "fallback", 2)).toEqual(models);
+  });
+});
+
+describe("combo disabled-model handling (#1561-style)", () => {
+  it("returns a 503 with a clear message when no models are enabled", async () => {
+    let called = 0;
+    const res = await handleComboChat({
+      body: {},
+      models: [],
+      handleSingleModel: async () => { called++; return new Response("x", { status: 200 }); },
+      log: { info() {}, warn() {} },
+      comboName: "premium-coding",
+    });
+
+    expect(res.status).toBe(503);
+    const json = await res.json();
+    expect(json.error.message).toBe('Combo "premium-coding" has no enabled models');
+    expect(called).toBe(0);
+  });
+
+  it("still routes when enabled models remain", async () => {
+    const tried = [];
+    const res = await handleComboChat({
+      body: {},
+      models: ["glm/glm-5.1", "kr/claude-sonnet-4.5"],
+      handleSingleModel: async (_body, modelStr) => {
+        tried.push(modelStr);
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+      log: { info() {}, warn() {} },
+      comboName: "premium-coding",
+    });
+
+    expect(res.status).toBe(200);
+    expect(tried).toEqual(["glm/glm-5.1"]);
   });
 });

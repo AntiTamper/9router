@@ -106,6 +106,18 @@ export function getComboModelsFromData(modelStr, combosData) {
  * @returns {Promise<Response>}
  */
 export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1 }) {
+  // No enabled models (e.g. every combo member is disabled in the dashboard).
+  // Answer with a clear, retryable error instead of looping over nothing.
+  if (!models || models.length === 0) {
+    const label = comboName ? `Combo "${comboName}"` : "Combo";
+    const msg = `${label} has no enabled models`;
+    log.warn("COMBO", msg);
+    return new Response(
+      JSON.stringify({ error: { message: msg } }),
+      { status: 503, headers: { "Content-Type": "application/json" } }
+    );
+  }
+
   // Apply rotation strategy if enabled
   const rotatedModels = getRotatedModels(models, comboName, comboStrategy, comboStickyLimit);
   
