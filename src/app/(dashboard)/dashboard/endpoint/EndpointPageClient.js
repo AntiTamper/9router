@@ -49,6 +49,12 @@ async function clientPingAny(...urls) {
   });
 }
 
+// Extract a lowercase hostname from a URL string (empty on failure).
+function hostnameOf(value) {
+  if (!value) return "";
+  try { return new URL(value).hostname.toLowerCase(); } catch { return ""; }
+}
+
 const CAVEMAN_MODES = [
   { id: "normal", label: "Normal", desc: "Terse English output" },
   { id: "wenyan", label: "Wenyan", desc: "Classical concise Chinese" },
@@ -1151,17 +1157,28 @@ export default function APIPageClient({ machineId }) {
     });
   };
 
-  const [baseUrl, setBaseUrl] = useState("/v1");
-  const [localLabel, setLocalLabel] = useState("Local");
+  // Local endpoint always targets loopback so the local machine has a usable
+  // URL even when the dashboard is opened through a tunnel/custom domain.
+  const [baseUrl, setBaseUrl] = useState("http://127.0.0.1:20128/v1");
+  const localLabel = "Local";
+  // When the dashboard is opened from a non-loopback origin (e.g. the custom
+  // domain), surface that origin as its own row instead of overwriting Local.
+  const [remoteOriginUrl, setRemoteOriginUrl] = useState("");
+  const [remoteOriginLabel, setRemoteOriginLabel] = useState("");
 
   // Hydration fix: Only access window on client side
   useEffect(() => {
     if (typeof window !== "undefined") {
       const loopback = ["localhost", "127.0.0.1", "::1", "[::1]"];
       const host = window.location.hostname;
+      const port = window.location.port || "20128";
       const isLoopback = loopback.includes(host);
-      setBaseUrl(isLoopback ? "http://127.0.0.1:20128/v1" : `${window.location.origin}/v1`);
-      setLocalLabel(isLoopback ? "Local" : host);
+      // Keep the local row pinned to loopback, preferring the current port.
+      setBaseUrl(isLoopback ? `${window.location.origin}/v1` : `http://127.0.0.1:${port}/v1`);
+      if (!isLoopback) {
+        setRemoteOriginUrl(`${window.location.origin}/v1`);
+        setRemoteOriginLabel(host);
+      }
     }
   }, []);
 
@@ -1195,7 +1212,7 @@ export default function APIPageClient({ machineId }) {
 
         {/* Endpoint rows */}
         <div className="flex flex-col gap-2">
-          {/* Local */}
+          {/* Local (always loopback so the local machine has a usable URL) */}
           <EndpointRow
             label={localLabel}
             url={currentEndpoint}
@@ -1203,6 +1220,19 @@ export default function APIPageClient({ machineId }) {
             copied={copied}
             onCopy={copy}
           />
+          {/* Current origin (when opened via a remote host that is not the
+              tunnel/tailscale URL already shown below) */}
+          {remoteOriginUrl
+            && hostnameOf(remoteOriginUrl) !== hostnameOf(tunnelPublicUrl || tunnelUrl)
+            && hostnameOf(remoteOriginUrl) !== hostnameOf(tsUrl) && (
+            <EndpointRow
+              label={remoteOriginLabel}
+              url={remoteOriginUrl}
+              copyId="origin_url"
+              copied={copied}
+              onCopy={copy}
+            />
+          )}
           {/* Cloudflare Tunnel */}
           <div className="flex items-center gap-2">
             <span className={`text-xs font-mono px-1.5 py-0.5 rounded shrink-0 min-w-[88px] text-center ${

@@ -18,6 +18,7 @@ import { handleNonStreamingResponse } from "./chatCore/nonStreamingHandler.js";
 import { handleStreamingResponse, buildOnStreamComplete } from "./chatCore/streamingHandler.js";
 import { detectClientTool, isNativePassthrough } from "../utils/clientDetector.js";
 import { dedupeTools } from "../utils/toolDeduper.js";
+import { sanitizeSystemRole } from "../translator/helpers/claudeHelper.js";
 import { injectCaveman } from "../rtk/caveman.js";
 import { compressMessages, formatRtkLog } from "../rtk/index.js";
 import { applyToon, formatToonLog } from "../rtk/toon.js";
@@ -90,6 +91,12 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   if (passthrough) {
     log?.debug?.("PASSTHROUGH", `${detectedTool} → ${provider} | native lossless`);
     translatedBody = { ...body, model };
+    // Anthropic no longer accepts role:"system" inside messages[]. Passthrough
+    // skips translation, so lift any system messages into the top-level
+    // `system` field to avoid a 400 from cc/* Claude models (#1580).
+    if (provider === "claude" || provider?.startsWith("anthropic-compatible")) {
+      translatedBody = sanitizeSystemRole(translatedBody);
+    }
   } else {
     const translated = translateProviderRequest({
       body,

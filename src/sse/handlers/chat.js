@@ -22,10 +22,12 @@ import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 
 const MAX_ACCOUNT_FALLBACK_ATTEMPTS = Math.max(1, parseInt(process.env.MAX_ACCOUNT_FALLBACK_ATTEMPTS || "3", 10));
 // Hard cap on inbound request body to bound memory use / payload-flood DoS.
-// Generous default (LLM payloads can be large); override via env.
+// Generous default (LLM payloads carry large base64 images / long contexts);
+// override via env. 50MB headroom avoids truncating legitimate multimodal/big
+// requests while still bounding abuse (see #1572).
 const MAX_REQUEST_BODY_BYTES = Math.max(
   64 * 1024,
-  parseInt(process.env.MAX_REQUEST_BODY_BYTES || String(25 * 1024 * 1024), 10),
+  parseInt(process.env.MAX_REQUEST_BODY_BYTES || String(50 * 1024 * 1024), 10),
 );
 const ACCOUNT_FALLBACK_DEADLINE_MS = Math.max(1000, parseInt(process.env.ACCOUNT_FALLBACK_DEADLINE_MS || "45000", 10));
 
