@@ -30,8 +30,108 @@ function expiryFromDurationMs(durationMs) {
   return new Date(Date.now() + Math.floor(n)).toISOString();
 }
 
+function parseConfig(raw) {
+  if (!raw) return null;
+  if (typeof raw === "object") return raw;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeHHMM(value) {
+  if (typeof value !== "string") return null;
+  const m = value.trim().match(/^([0-1]?\d|2[0-3]):([0-5]\d)$/);
+  if (!m) return null;
+  return `${m[1].padStart(2, "0")}:${m[2]}`;
+}
+
+// Build the authoritative structured config for a key. New keys store this in
+// the `config` column; legacy keys (config null) derive an equivalent shape
+// from limitMode + legacy token-limit columns so behavior is unchanged.
+function deriveConfig(row, parsedConfig) {
+  const cfg = parsedConfig && typeof parsedConfig === "object" ? { ...parsedConfig } : {};
+
+  // Fusion limits: { daily, weekly, monthly, hard } (token counts, null = off).
+  let limits = cfg.limits && typeof cfg.limits === "object" ? { ...cfg.limits } : null;
+  if (!limits) {
+    const mode = normalizeLimitMode(row.limitMode);
+    limits = { daily: null, weekly: null, monthly: null, hard: null };
+    if (mode === "daily") limits.daily = toIntOrNull(row.tokenLimit);
+    else if (mode === "weekly") limits.weekly = toIntOrNull(row.tokenLimit);
+    else if (mode === "hard") limits.hard = toIntOrNull(row.tokenLimit);
+    else if (mode === "daily_weekly") {
+      limits.daily = toIntOrNull(row.dailyTokenLimit);
+      limits.weekly = toIntOrNull(row.weeklyTokenLimit);
+    }
+  } else {
+    limits = {
+      daily: toIntOrNull(limits.daily),
+      weekly: toIntOrNull(limits.weekly),
+      monthly: toIntOrNull(limits.monthly ?? row.monthlyTokenLimit),
+      hard: toIntOrNull(limits.hard),
+    };
+  }
+  if (limits.monthly == null) limits.monthly = toIntOrNull(row.monthlyTokenLimit);
+
+  const hardCapAnchorAt = normalizeExpiresAt(cfg.hardCapAnchorAt) || null;
+
+  const dw = cfg.dailyWindow && typeof cfg.dailyWindow === "object" ? cfg.dailyWindow : null;
+  const dailyWindow = dw && normalizeHHMM(dw.start) && normalizeHHMM(dw.end)
+    ? { start: normalizeHHMM(dw.start), end: normalizeHHMM(dw.end) }
+    : null;
+
+  const av = cfg.availability && typeof cfg.availability === "object" ? cfg.availability : null;
+  let availability = null;
+  if (av && (av.availableFrom || av.availableUntil)) {
+    availability = {
+      availableFrom: normalizeExpiresAt(av.availableFrom) || null,
+      availableUntil: normalizeExpiresAt(av.availableUntil) || null,
+    };
+  }
+
+  const ts = cfg.tokenSaver && typeof cfg.tokenSaver === "object" ? cfg.tokenSaver : null;
+  const tokenSaver = ts
+    ? {
+        rtk: ts.rtk === true,
+        toon: ts.toon === true,
+        caveman: ts.caveman === true,
+        cavemanLevel: typeof ts.cavemanLevel === "string" ? ts.cavemanLevel : "full",
+        codexUsage: ts.codexUsage !== false,
+      }
+    : null;
+
+  const ex = cfg.exposure && typeof cfg.exposure === "object" ? cfg.exposure : null;
+  const exposure = ex && (ex.mode === "combo" || ex.mode === "all")
+    ? { mode: ex.mode, combo: ex.mode === "combo" && ex.combo ? String(ex.combo) : null }
+    : { mode: "all", combo: null };
+
+  const ov = cfg.overage && typeof cfg.overage === "object" ? cfg.overage : null;
+  let overage = null;
+  if (ov && ov.enabled === true) {
+    const ovWin = ov.window && typeof ov.window === "object" ? ov.window : null;
+    overage = {
+      enabled: true,
+      limit: toIntOrNull(ov.limit),
+      anchorAt: normalizeExpiresAt(ov.anchorAt) || null,
+      window: ovWin && (ovWin.availableFrom || ovWin.availableUntil || ovWin.expiresAt)
+        ? {
+            availableFrom: normalizeExpiresAt(ovWin.availableFrom) || null,
+            availableUntil: normalizeExpiresAt(ovWin.availableUntil || ovWin.expiresAt) || null,
+          }
+        : null,
+    };
+  }
+
+  return { limits, hardCapAnchorAt, dailyWindow, availability, tokenSaver, exposure, overage };
+}
+
 function rowToKey(row) {
   if (!row) return null;
+  const parsedConfig = parseConfig(row.config);
+  const config = deriveConfig(row, parsedConfig);
   return {
     id: row.id,
     key: row.key,
@@ -42,10 +142,12 @@ function rowToKey(row) {
     tokenLimit: toIntOrNull(row.tokenLimit),
     dailyTokenLimit: toIntOrNull(row.dailyTokenLimit),
     weeklyTokenLimit: toIntOrNull(row.weeklyTokenLimit),
+    monthlyTokenLimit: toIntOrNull(row.monthlyTokenLimit),
     expiresAt: row.expiresAt || null,
     autoDeleteExpired: row.autoDeleteExpired === undefined || row.autoDeleteExpired === null
       ? true
       : row.autoDeleteExpired === 1 || row.autoDeleteExpired === true,
+    config,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt || row.createdAt,
   };
@@ -68,9 +170,16 @@ function getWeekWindow(now) {
   return { start, end };
 }
 
+function getMonthWindow(now) {
+  const start = new Date(now.getFullYear(), now.getMonth(), 1);
+  const end = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  return { start, end };
+}
+
 function getUsageResetWindow(period, key, now = new Date()) {
   if (period === "daily") return getDayWindow(now);
   if (period === "weekly") return getWeekWindow(now);
+  if (period === "monthly") return getMonthWindow(now);
   return {
     start: null,
     end: null,
@@ -102,7 +211,7 @@ function mostConstrainedLimit(...limits) {
   return bounded.sort((a, b) => (a.remainingPercentage ?? 100) - (b.remainingPercentage ?? 100))[0];
 }
 
-function sumUsage(db, apiKey, start = null, end = null) {
+function sumUsage(db, apiKey, start = null, end = null, overageFilter = "any") {
   const where = ["apiKey = ?"];
   const params = [apiKey];
   if (start) {
@@ -113,6 +222,10 @@ function sumUsage(db, apiKey, start = null, end = null) {
     where.push("timestamp < ?");
     params.push(end.toISOString());
   }
+  // overageFilter: "any" = all rows; "normal" = exclude overage-tagged;
+  // "overage" = only overage-tagged. Legacy rows have overage = 0/NULL.
+  if (overageFilter === "normal") where.push("COALESCE(overage, 0) = 0");
+  else if (overageFilter === "overage") where.push("COALESCE(overage, 0) = 1");
   const row = db.get(
     `SELECT COALESCE(SUM(COALESCE(promptTokens, 0) + COALESCE(completionTokens, 0)), 0) AS tokens,
             COUNT(*) AS requests,
@@ -128,38 +241,71 @@ function sumUsage(db, apiKey, start = null, end = null) {
   };
 }
 
+function isOverageWindowActive(window, now = new Date()) {
+  if (!window) return true;
+  const t = now.getTime();
+  if (window.availableFrom && new Date(window.availableFrom).getTime() > t) return false;
+  if (window.availableUntil && new Date(window.availableUntil).getTime() <= t) return false;
+  return true;
+}
+
 function buildUsageSummary(db, key, now = new Date()) {
-  const total = sumUsage(db, key.key, null, null);
+  const cfg = key.config || {};
+  const cfgLimits = cfg.limits || { daily: null, weekly: null, monthly: null, hard: null };
+
   const dailyWindow = getDayWindow(now);
   const weeklyWindow = getWeekWindow(now);
-  const daily = sumUsage(db, key.key, dailyWindow.start, dailyWindow.end);
-  const weekly = sumUsage(db, key.key, weeklyWindow.start, weeklyWindow.end);
-  const hard = total;
-  const dailyLimit = key.limitMode === "daily_weekly"
-    ? key.dailyTokenLimit
-    : key.limitMode === "daily"
-      ? key.tokenLimit
-      : null;
-  const weeklyLimit = key.limitMode === "daily_weekly"
-    ? key.weeklyTokenLimit
-    : key.limitMode === "weekly"
-      ? key.tokenLimit
-      : null;
-  const hardLimit = key.limitMode === "hard" ? key.tokenLimit : null;
+  const monthlyWindow = getMonthWindow(now);
+
+  // Raw usage (any rows) drives the reported metrics.
+  const total = sumUsage(db, key.key, null, null, "any");
+  const dailyAny = sumUsage(db, key.key, dailyWindow.start, dailyWindow.end, "any");
+  const weeklyAny = sumUsage(db, key.key, weeklyWindow.start, weeklyWindow.end, "any");
+  const monthlyAny = sumUsage(db, key.key, monthlyWindow.start, monthlyWindow.end, "any");
+
+  // Normal (non-overage) usage is what counts against the timed/hard limits.
+  const dailyNorm = sumUsage(db, key.key, dailyWindow.start, dailyWindow.end, "normal");
+  const weeklyNorm = sumUsage(db, key.key, weeklyWindow.start, weeklyWindow.end, "normal");
+  const monthlyNorm = sumUsage(db, key.key, monthlyWindow.start, monthlyWindow.end, "normal");
+  const hardAnchor = cfg.hardCapAnchorAt ? new Date(cfg.hardCapAnchorAt) : null;
+  const hardNorm = sumUsage(db, key.key, hardAnchor, null, "normal");
+
   const limits = {
-    daily: limitSummary(daily, dailyLimit, dailyWindow),
-    weekly: limitSummary(weekly, weeklyLimit, weeklyWindow),
-    hard: limitSummary(hard, hardLimit),
+    daily: limitSummary(dailyNorm, cfgLimits.daily, dailyWindow),
+    weekly: limitSummary(weeklyNorm, cfgLimits.weekly, weeklyWindow),
+    monthly: limitSummary(monthlyNorm, cfgLimits.monthly, monthlyWindow),
+    hard: limitSummary(hardNorm, cfgLimits.hard),
   };
-  const activeLimit = key.limitMode === "daily"
-    ? limits.daily
-    : key.limitMode === "weekly"
-      ? limits.weekly
-      : key.limitMode === "hard"
-        ? limits.hard
-        : key.limitMode === "daily_weekly"
-          ? mostConstrainedLimit(limits.daily, limits.weekly)
-          : null;
+
+  // Overage pool (above the timed limits). Counts overage-tagged usage since anchor.
+  let overage = null;
+  const ovCfg = cfg.overage;
+  if (ovCfg && ovCfg.enabled && ovCfg.limit) {
+    const ovAnchor = ovCfg.anchorAt ? new Date(ovCfg.anchorAt) : null;
+    const ovUsed = sumUsage(db, key.key, ovAnchor, null, "overage").tokens;
+    const windowActive = isOverageWindowActive(ovCfg.window, now);
+    overage = {
+      enabled: true,
+      limit: ovCfg.limit,
+      used: ovUsed,
+      remaining: Math.max(0, ovCfg.limit - ovUsed),
+      anchorAt: ovCfg.anchorAt || null,
+      window: ovCfg.window || null,
+      windowActive,
+      exhausted: ovUsed >= ovCfg.limit,
+    };
+  }
+
+  const activeTimed = [limits.daily, limits.weekly, limits.monthly].filter((l) => l.limit !== null);
+  const timedBlocked = activeTimed.some((l) => l.exhausted);
+  const hardBlocked = limits.hard.limit !== null && limits.hard.exhausted;
+  const overageAvailable = !!(overage && overage.windowActive && !overage.exhausted);
+  const blocked = hardBlocked || (timedBlocked && !overageAvailable);
+  // A new request consumes overage when a timed limit blocks but overage saves it
+  // (and the absolute hard cap is not itself blocking).
+  const consumeOverage = !hardBlocked && timedBlocked && overageAvailable;
+
+  const activeLimit = mostConstrainedLimit(limits.daily, limits.weekly, limits.monthly, limits.hard);
 
   return {
     mode: key.limitMode,
@@ -175,34 +321,69 @@ function buildUsageSummary(db, key, now = new Date()) {
         lastUsedAt: total.lastUsedAt,
       },
       daily: {
-        used: daily.tokens,
-        requests: daily.requests,
+        used: dailyAny.tokens,
+        requests: dailyAny.requests,
         windowStart: dailyWindow.start.toISOString(),
         resetAt: dailyWindow.end.toISOString(),
-        lastUsedAt: daily.lastUsedAt,
+        lastUsedAt: dailyAny.lastUsedAt,
       },
       weekly: {
-        used: weekly.tokens,
-        requests: weekly.requests,
+        used: weeklyAny.tokens,
+        requests: weeklyAny.requests,
         windowStart: weeklyWindow.start.toISOString(),
         resetAt: weeklyWindow.end.toISOString(),
-        lastUsedAt: weekly.lastUsedAt,
+        lastUsedAt: weeklyAny.lastUsedAt,
+      },
+      monthly: {
+        used: monthlyAny.tokens,
+        requests: monthlyAny.requests,
+        windowStart: monthlyWindow.start.toISOString(),
+        resetAt: monthlyWindow.end.toISOString(),
+        lastUsedAt: monthlyAny.lastUsedAt,
       },
     },
     limits,
+    overage,
+    consumeOverage,
     remaining: activeLimit?.remaining ?? null,
     remainingPercentage: activeLimit?.remainingPercentage ?? null,
     windowStart: activeLimit?.windowStart ?? null,
     resetAt: activeLimit?.resetAt ?? null,
     lastUsedAt: activeLimit?.lastUsedAt || total.lastUsedAt,
-    exhausted: limits.daily.exhausted || limits.weekly.exhausted || limits.hard.exhausted,
+    exhausted: blocked,
   };
+}
+
+function isWithinDailyWindow(dailyWindow, now = new Date()) {
+  if (!dailyWindow || !dailyWindow.start || !dailyWindow.end) return true;
+  const mins = now.getHours() * 60 + now.getMinutes();
+  const [sh, sm] = dailyWindow.start.split(":").map(Number);
+  const [eh, em] = dailyWindow.end.split(":").map(Number);
+  const startMin = sh * 60 + sm;
+  const endMin = eh * 60 + em;
+  if (startMin === endMin) return true; // full-day / no restriction
+  if (startMin < endMin) return mins >= startMin && mins < endMin;
+  // Overnight window (e.g. 22:00-06:00)
+  return mins >= startMin || mins < endMin;
+}
+
+function availabilityState(availability, now = new Date()) {
+  if (!availability) return "ok";
+  const t = now.getTime();
+  if (availability.availableFrom && new Date(availability.availableFrom).getTime() > t) return "not_yet";
+  if (availability.availableUntil && new Date(availability.availableUntil).getTime() <= t) return "ended";
+  return "ok";
 }
 
 function getKeyStatus(key, usage, now = new Date()) {
   if (!key.isActive) return "paused";
   if (key.expiresAt && new Date(key.expiresAt).getTime() <= now.getTime()) return "expired";
-  if (usage.exhausted || (usage.limit !== null && usage.used >= usage.limit)) return "exhausted";
+  const cfg = key.config || {};
+  const avail = availabilityState(cfg.availability, now);
+  if (avail === "ended") return "expired";
+  if (avail === "not_yet") return "unavailable";
+  if (!isWithinDailyWindow(cfg.dailyWindow, now)) return "outside_hours";
+  if (usage.exhausted) return "exhausted";
   return "active";
 }
 
@@ -214,17 +395,126 @@ async function hydrateKey(db, row, includeUsage = false, now = new Date()) {
   return { ...key, usage, status: getKeyStatus(key, usage, now) };
 }
 
+// Merge the structured `config` object from input over an existing key config.
+// `input.config` (if present) is the authoritative structured shape; otherwise
+// legacy fields (limitMode + *TokenLimit) are folded into a config so old API
+// callers keep working unchanged.
+function buildStructuredConfig(input = {}, existing = {}) {
+  const existingCfg = existing.config || {};
+  const inCfg = input.config && typeof input.config === "object" ? input.config : null;
+
+  // Limits
+  let limits;
+  if (inCfg && inCfg.limits && typeof inCfg.limits === "object") {
+    limits = {
+      daily: toIntOrNull(inCfg.limits.daily),
+      weekly: toIntOrNull(inCfg.limits.weekly),
+      monthly: toIntOrNull(inCfg.limits.monthly),
+      hard: toIntOrNull(inCfg.limits.hard),
+    };
+  } else if (input.limitMode !== undefined || input.tokenLimit !== undefined
+      || input.dailyTokenLimit !== undefined || input.weeklyTokenLimit !== undefined) {
+    // Legacy-mode input -> derive limits
+    const mode = normalizeLimitMode(input.limitMode ?? existing.limitMode);
+    limits = { daily: null, weekly: null, monthly: null, hard: null };
+    if (mode === "daily") limits.daily = toIntOrNull(input.tokenLimit ?? existing.tokenLimit);
+    else if (mode === "weekly") limits.weekly = toIntOrNull(input.tokenLimit ?? existing.tokenLimit);
+    else if (mode === "hard") limits.hard = toIntOrNull(input.tokenLimit ?? existing.tokenLimit);
+    else if (mode === "daily_weekly") {
+      limits.daily = toIntOrNull(input.dailyTokenLimit ?? existing.dailyTokenLimit);
+      limits.weekly = toIntOrNull(input.weeklyTokenLimit ?? existing.weeklyTokenLimit);
+    }
+  } else {
+    limits = existingCfg.limits || { daily: null, weekly: null, monthly: null, hard: null };
+  }
+
+  const src = inCfg || {};
+  const pick = (k, fallback) => (src[k] !== undefined ? src[k] : fallback);
+
+  // Hard cap anchor: (re)set when hard limit becomes active and no anchor yet.
+  let hardCapAnchorAt = normalizeExpiresAt(pick("hardCapAnchorAt", existingCfg.hardCapAnchorAt)) || null;
+  if (limits.hard && !hardCapAnchorAt) hardCapAnchorAt = new Date().toISOString();
+  if (!limits.hard) hardCapAnchorAt = null;
+
+  const dwIn = pick("dailyWindow", existingCfg.dailyWindow);
+  const dailyWindow = dwIn && normalizeHHMM(dwIn.start) && normalizeHHMM(dwIn.end)
+    ? { start: normalizeHHMM(dwIn.start), end: normalizeHHMM(dwIn.end) }
+    : null;
+
+  const avIn = pick("availability", existingCfg.availability);
+  const availability = avIn && (avIn.availableFrom || avIn.availableUntil)
+    ? {
+        availableFrom: normalizeExpiresAt(avIn.availableFrom) || null,
+        availableUntil: normalizeExpiresAt(avIn.availableUntil) || null,
+      }
+    : null;
+
+  const tsIn = pick("tokenSaver", existingCfg.tokenSaver);
+  const tokenSaver = tsIn && typeof tsIn === "object"
+    ? {
+        rtk: tsIn.rtk === true,
+        toon: tsIn.toon === true,
+        caveman: tsIn.caveman === true,
+        cavemanLevel: typeof tsIn.cavemanLevel === "string" ? tsIn.cavemanLevel : "full",
+        codexUsage: tsIn.codexUsage !== false,
+      }
+    : null;
+
+  const exIn = pick("exposure", existingCfg.exposure);
+  const exposure = exIn && (exIn.mode === "combo" || exIn.mode === "all")
+    ? { mode: exIn.mode, combo: exIn.mode === "combo" && exIn.combo ? String(exIn.combo) : null }
+    : { mode: "all", combo: null };
+
+  const ovIn = pick("overage", existingCfg.overage);
+  let overage = null;
+  if (ovIn && ovIn.enabled === true) {
+    const existingOv = existingCfg.overage || {};
+    let anchorAt = normalizeExpiresAt(ovIn.anchorAt ?? existingOv.anchorAt) || null;
+    if (!anchorAt) anchorAt = new Date().toISOString();
+    const ow = ovIn.window && typeof ovIn.window === "object" ? ovIn.window : null;
+    overage = {
+      enabled: true,
+      limit: toIntOrNull(ovIn.limit),
+      anchorAt,
+      window: ow && (ow.availableFrom || ow.availableUntil || ow.expiresAt)
+        ? {
+            availableFrom: normalizeExpiresAt(ow.availableFrom) || null,
+            availableUntil: normalizeExpiresAt(ow.availableUntil || ow.expiresAt) || null,
+          }
+        : null,
+    };
+  }
+
+  return { limits, hardCapAnchorAt, dailyWindow, availability, tokenSaver, exposure, overage };
+}
+
 function buildKeyConfig(input = {}, existing = {}) {
-  const limitMode = normalizeLimitMode(input.limitMode ?? existing.limitMode);
-  const dailyTokenLimit = limitMode === "daily_weekly"
-    ? toIntOrNull(input.dailyTokenLimit ?? existing.dailyTokenLimit ?? existing.tokenLimit)
-    : toIntOrNull(input.dailyTokenLimit ?? existing.dailyTokenLimit);
-  const weeklyTokenLimit = limitMode === "daily_weekly"
-    ? toIntOrNull(input.weeklyTokenLimit ?? existing.weeklyTokenLimit ?? existing.tokenLimit)
-    : toIntOrNull(input.weeklyTokenLimit ?? existing.weeklyTokenLimit);
-  const tokenLimit = limitMode === "unlimited" || limitMode === "daily_weekly"
-    ? null
-    : toIntOrNull(input.tokenLimit ?? existing.tokenLimit);
+  const structured = buildStructuredConfig(input, existing);
+  const { limits } = structured;
+
+  // Maintain legacy columns so old readers + UI keep working.
+  let limitMode = "unlimited";
+  const active = [];
+  if (limits.daily) active.push("daily");
+  if (limits.weekly) active.push("weekly");
+  if (limits.monthly) active.push("monthly");
+  if (limits.hard) active.push("hard");
+  if (active.length === 1) limitMode = active[0] === "monthly" ? "hard" : active[0];
+  else if (limits.daily && limits.weekly) limitMode = "daily_weekly";
+  else if (limits.hard) limitMode = "hard";
+  else if (active.length >= 2) limitMode = "daily_weekly";
+
+  const tokenLimit = limitMode === "hard"
+    ? (limits.hard ?? limits.monthly ?? null)
+    : limitMode === "daily"
+      ? limits.daily
+      : limitMode === "weekly"
+        ? limits.weekly
+        : null;
+  const dailyTokenLimit = limits.daily;
+  const weeklyTokenLimit = limits.weekly;
+  const monthlyTokenLimit = limits.monthly;
+
   const expiresAt = Object.prototype.hasOwnProperty.call(input, "expiresInMs")
     ? expiryFromDurationMs(input.expiresInMs)
     : Object.prototype.hasOwnProperty.call(input, "expiresAt")
@@ -234,7 +524,17 @@ function buildKeyConfig(input = {}, existing = {}) {
     ? input.autoDeleteExpired !== false
     : (existing.autoDeleteExpired !== false);
 
-  return { limitMode, tokenLimit, dailyTokenLimit, weeklyTokenLimit, expiresAt, autoDeleteExpired };
+  return {
+    limitMode,
+    tokenLimit,
+    dailyTokenLimit,
+    weeklyTokenLimit,
+    monthlyTokenLimit,
+    expiresAt,
+    autoDeleteExpired,
+    config: structured,
+    configJson: JSON.stringify(structured),
+  };
 }
 
 export async function cleanupExpiredApiKeys(now = new Date()) {
@@ -282,11 +582,12 @@ export async function createApiKey(name, machineId, options = {}) {
     updatedAt: now,
   };
   db.run(
-    `INSERT INTO apiKeys(id, key, name, machineId, isActive, limitMode, tokenLimit, dailyTokenLimit, weeklyTokenLimit, expiresAt, autoDeleteExpired, createdAt, updatedAt)
-     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO apiKeys(id, key, name, machineId, isActive, limitMode, tokenLimit, dailyTokenLimit, weeklyTokenLimit, monthlyTokenLimit, config, expiresAt, autoDeleteExpired, createdAt, updatedAt)
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       apiKey.id, apiKey.key, apiKey.name, apiKey.machineId, 1,
-      apiKey.limitMode, apiKey.tokenLimit, apiKey.dailyTokenLimit, apiKey.weeklyTokenLimit, apiKey.expiresAt,
+      apiKey.limitMode, apiKey.tokenLimit, apiKey.dailyTokenLimit, apiKey.weeklyTokenLimit, apiKey.monthlyTokenLimit ?? null,
+      config.configJson, apiKey.expiresAt,
       apiKey.autoDeleteExpired ? 1 : 0, apiKey.createdAt, apiKey.updatedAt,
     ],
   );
@@ -311,12 +612,13 @@ export async function updateApiKey(id, data) {
     db.run(
       `UPDATE apiKeys
           SET key = ?, name = ?, machineId = ?, isActive = ?, limitMode = ?,
-              tokenLimit = ?, dailyTokenLimit = ?, weeklyTokenLimit = ?,
-              expiresAt = ?, autoDeleteExpired = ?, updatedAt = ?
+              tokenLimit = ?, dailyTokenLimit = ?, weeklyTokenLimit = ?, monthlyTokenLimit = ?,
+              config = ?, expiresAt = ?, autoDeleteExpired = ?, updatedAt = ?
         WHERE id = ?`,
       [
         merged.key, merged.name, merged.machineId, merged.isActive ? 1 : 0,
-        merged.limitMode, merged.tokenLimit, merged.dailyTokenLimit, merged.weeklyTokenLimit, merged.expiresAt,
+        merged.limitMode, merged.tokenLimit, merged.dailyTokenLimit, merged.weeklyTokenLimit, merged.monthlyTokenLimit ?? null,
+        config.configJson, merged.expiresAt,
         merged.autoDeleteExpired ? 1 : 0, merged.updatedAt, id,
       ],
     );
@@ -389,7 +691,8 @@ function rebuildUsageDaily(db) {
 }
 
 export async function resetApiKeyUsage(id, period = "all") {
-  const normalizedPeriod = ["all", "daily", "weekly"].includes(period) ? period : "all";
+  const allowed = ["all", "daily", "weekly", "monthly", "hard", "overage"];
+  const normalizedPeriod = allowed.includes(period) ? period : "all";
   const db = await getAdapter();
   let result = null;
 
@@ -398,23 +701,38 @@ export async function resetApiKeyUsage(id, period = "all") {
     const key = rowToKey(row);
     if (!key) return;
 
-    const { start, end } = getUsageResetWindow(normalizedPeriod, key);
-    const where = ["apiKey = ?"];
-    const params = [key.key];
-    if (start) {
-      where.push("timestamp >= ?");
-      params.push(start.toISOString());
-    }
-    if (end) {
-      where.push("timestamp < ?");
-      params.push(end.toISOString());
+    let deleted = 0;
+    const nowIso = new Date().toISOString();
+
+    if (normalizedPeriod === "hard") {
+      // Re-anchor the hard cap so usage counts from now (non-destructive).
+      const cfg = { ...(key.config || {}), hardCapAnchorAt: key.config?.limits?.hard ? nowIso : null };
+      key.config = cfg;
+      db.run(`UPDATE apiKeys SET config = ?, updatedAt = ? WHERE id = ?`, [JSON.stringify(cfg), nowIso, id]);
+    } else if (normalizedPeriod === "overage") {
+      // Re-anchor the overage pool + drop overage-tagged accounting so used = 0.
+      if (key.config?.overage?.enabled) {
+        const cfg = { ...key.config, overage: { ...key.config.overage, anchorAt: nowIso } };
+        key.config = cfg;
+        db.run(`UPDATE apiKeys SET config = ?, updatedAt = ? WHERE id = ?`, [JSON.stringify(cfg), nowIso, id]);
+      }
+      const res = db.run(`DELETE FROM usageHistory WHERE apiKey = ? AND COALESCE(overage, 0) = 1`, [key.key]);
+      deleted = res?.changes ?? 0;
+      rebuildUsageDaily(db);
+    } else {
+      const { start, end } = getUsageResetWindow(normalizedPeriod, key);
+      const where = ["apiKey = ?"];
+      const params = [key.key];
+      if (start) { where.push("timestamp >= ?"); params.push(start.toISOString()); }
+      if (end) { where.push("timestamp < ?"); params.push(end.toISOString()); }
+      const res = db.run(`DELETE FROM usageHistory WHERE ${where.join(" AND ")}`, params);
+      deleted = res?.changes ?? 0;
+      rebuildUsageDaily(db);
     }
 
-    const res = db.run(`DELETE FROM usageHistory WHERE ${where.join(" AND ")}`, params);
-    rebuildUsageDaily(db);
     const usage = buildUsageSummary(db, key);
     result = {
-      deleted: res?.changes ?? 0,
+      deleted,
       period: normalizedPeriod,
       key: { ...key, usage, status: getKeyStatus(key, usage) },
     };
@@ -446,6 +764,8 @@ export async function checkApiKeyAccess(keyValue) {
 
   if (status === "paused") return { valid: false, reason: "paused", key, usage, status };
   if (status === "expired") return { valid: false, reason: "expired", key, usage, status };
+  if (status === "unavailable") return { valid: false, reason: "not_yet_available", key, usage, status };
+  if (status === "outside_hours") return { valid: false, reason: "outside_authorized_hours", key, usage, status };
   if (status === "exhausted") {
     return {
       valid: false,
@@ -457,7 +777,27 @@ export async function checkApiKeyAccess(keyValue) {
     };
   }
 
-  return { valid: true, reason: "ok", key, usage, status };
+  // consumeOverage = this request is only permitted because the overage pool
+  // covers it (a timed limit is exhausted). The write path tags usage overage=1.
+  return { valid: true, reason: "ok", key, usage, status, consumeOverage: usage.consumeOverage === true };
+}
+
+// Sync write-time overage classifier. Given the api key string, returns true
+// when the next request should be tagged as overage (a timed limit is already
+// exhausted by NORMAL usage and the overage pool is enabled/active/not full).
+// Uses the same logic as buildUsageSummary.consumeOverage. Safe in a usage
+// transaction (synchronous, no JS yield).
+export function classifyOverageAtWrite(db, apiKeyValue, now = new Date()) {
+  if (!apiKeyValue) return false;
+  try {
+    const row = db.get(`SELECT * FROM apiKeys WHERE key = ?`, [apiKeyValue]);
+    const key = rowToKey(row);
+    if (!key || !key.config?.overage?.enabled) return false;
+    const usage = buildUsageSummary(db, key, now);
+    return usage.consumeOverage === true;
+  } catch {
+    return false;
+  }
 }
 
 export async function validateApiKey(key) {
