@@ -48,6 +48,14 @@ const DEFAULT_SETTINGS = {
   toonEnabled: false,
   cavemanEnabled: false,
   cavemanLevel: "full",
+  // Token saver scope: "global" applies the settings above to every key;
+  // "individual" lets each API key carry its own tokenSaver config (falling
+  // back to global when a key has none).
+  tokenSaverMode: "global",
+  // Combo exposure default for keys with no explicit per-key exposure:
+  // "all-prefixed" exposes every provider model by prefix; "combo-only"
+  // exposes only combos. Per-key exposure overrides this default.
+  comboExposureMode: "all-prefixed",
   quotaAutoToggleEnabled: true,
   quotaRefreshIntervalMs: null,
 };

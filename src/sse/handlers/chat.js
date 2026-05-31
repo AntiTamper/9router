@@ -10,6 +10,7 @@ import {
 import { cacheClaudeHeaders } from "open-sse/utils/claudeHeaderCache.js";
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo, getComboModels } from "../services/model.js";
+import { resolveExposure, isModelAllowed, effectiveTokenSaver } from "@/lib/keyPolicy.js";
 import { handleChatCore } from "open-sse/handlers/chatCore.js";
 import { errorResponse, unavailableResponse, isLocalProxyFailure } from "open-sse/utils/error.js";
 import { handleComboChat } from "open-sse/services/combo.js";
@@ -88,6 +89,7 @@ export async function handleChat(request, clientRawRequest = null) {
     log.warn("AUTH", "Missing API key (requireApiKey=true)");
     return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
   }
+  let keyConfig = null;
   if (apiKey) {
     const access = await getApiKeyAccess(apiKey);
     if (!access.valid) {
@@ -103,13 +105,36 @@ export async function handleChat(request, clientRawRequest = null) {
       if (reason === "paused") {
         return errorResponse(HTTP_STATUS.UNAUTHORIZED, "API key paused");
       }
+      if (reason === "outside_authorized_hours") {
+        return errorResponse(HTTP_STATUS.FORBIDDEN, "API key not authorized at this time");
+      }
+      if (reason === "not_yet_available") {
+        return errorResponse(HTTP_STATUS.FORBIDDEN, "API key not yet available");
+      }
       return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
     }
+    keyConfig = access.key?.config || null;
   }
 
   if (!modelStr) {
     log.warn("CHAT", "Missing model");
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
+  }
+
+  // Enforce per-key model/combo exposure (global default + per-key override).
+  if (keyConfig) {
+    const exposure = resolveExposure(keyConfig, settings);
+    if (exposure.mode !== "all") {
+      const requestedCombo = await getComboModels(modelStr);
+      const isCombo = requestedCombo !== null;
+      const allowedComboMembers = exposure.mode === "combo" && exposure.combo
+        ? await getComboModels(exposure.combo)
+        : null;
+      if (!isModelAllowed(exposure, { modelStr, isCombo, allowedComboMembers })) {
+        log.warn("AUTH", `Model ${modelStr} not exposed for this API key`);
+        return errorResponse(HTTP_STATUS.FORBIDDEN, "Model not permitted for this API key");
+      }
+    }
   }
 
   // Bypass naming/warmup requests before combo rotation to avoid wasting rotation slots
@@ -130,7 +155,7 @@ export async function handleChat(request, clientRawRequest = null) {
     return handleComboChat({
       body,
       models: comboModels,
-      handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+      handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, keyConfig),
       log,
       comboName: modelStr,
       comboStrategy,
@@ -139,13 +164,13 @@ export async function handleChat(request, clientRawRequest = null) {
   }
 
   // Single model request
-  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey);
+  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, keyConfig);
 }
 
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null) {
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, keyConfig = null) {
   const modelInfo = await getModelInfo(modelStr);
 
   // If provider is null, this might be a combo name - check and handle
@@ -163,7 +188,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       return handleComboChat({
         body,
         models: comboModels,
-        handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+        handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, keyConfig),
         log,
         comboName: modelStr,
         comboStrategy,
@@ -238,6 +263,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     // Use shared chatCore
     const chatSettings = await getSettings();
     const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
+    // Effective token saver: per-key when tokenSaverMode=individual, else global.
+    const saver = effectiveTokenSaver(chatSettings, keyConfig);
     const result = await handleChatCore({
       body: { ...body, model: `${provider}/${model}` },
       modelInfo: { provider, model },
@@ -248,11 +275,11 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       userAgent,
       apiKey,
       ccFilterNaming: !!chatSettings.ccFilterNaming,
-      codexUsageEnabled: chatSettings.codexUsageEnabled !== false,
-      rtkEnabled: !!chatSettings.rtkEnabled,
-      toonEnabled: !!chatSettings.toonEnabled,
-      cavemanEnabled: !!chatSettings.cavemanEnabled,
-      cavemanLevel: chatSettings.cavemanLevel || "full",
+      codexUsageEnabled: saver.codexUsageEnabled,
+      rtkEnabled: saver.rtkEnabled,
+      toonEnabled: saver.toonEnabled,
+      cavemanEnabled: saver.cavemanEnabled,
+      cavemanLevel: saver.cavemanLevel,
       providerThinking,
       // Detect source format by endpoint + body
       sourceFormatOverride: request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null,

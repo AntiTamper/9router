@@ -1,4 +1,4 @@
-﻿import { corsOptionsResponse, getCorsHeaders } from "@/lib/cors.js";
+import { corsOptionsResponse, getCorsHeaders } from "@/lib/cors.js";
 import { PROVIDER_MODELS, PROVIDER_ID_TO_ALIAS } from "@/shared/constants/models";
 import {
   AI_PROVIDERS,
@@ -6,7 +6,7 @@ import {
   isAnthropicCompatibleProvider,
   isOpenAICompatibleProvider,
 } from "@/shared/constants/providers";
-import { getProviderConnections, getCombos, getCustomModels, getModelAliases } from "@/lib/localDb";
+import { getProviderConnections, getCombos, getCustomModels, getModelAliases, getComboByName, getSettings, getApiKeyConfigByValue } from "@/lib/localDb";
 import { getDisabledModels } from "@/lib/disabledModelsDb";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
 import { resolveKimiModels } from "open-sse/services/kimiModels.js";
@@ -14,6 +14,7 @@ import { resolveModelContextWindow } from "open-sse/services/contextWindow.js";
 import { getStaticContextWindow } from "open-sse/config/providerModels.js";
 import { guardedFetch } from "@/lib/security/urlGuard";
 import { updateProviderCredentials } from "@/sse/services/tokenRefresh";
+import { resolveExposure } from "@/lib/keyPolicy.js";
 
 function alignLiveModelsWithStaticIds(providerId, liveModels) {
   const staticAlias = PROVIDER_ID_TO_ALIAS[providerId] || providerId;
@@ -501,11 +502,57 @@ export async function OPTIONS(request) {
  * GET /v1/models - OpenAI compatible models list (LLM/chat models only by default).
  * For other capabilities use /v1/models/{kind} (image, tts, stt, embedding, image-to-text, web).
  */
+function extractApiKeyFromRequest(request) {
+  const auth = request.headers.get("authorization") || request.headers.get("Authorization");
+  if (auth && auth.startsWith("Bearer ")) return auth.slice(7).trim();
+  return request.headers.get("x-api-key") || null;
+}
+
+// Filter the models list down to what the requesting API key may use, based on
+// its exposure rule (per-key override, else global comboExposureMode). Keys
+// with "all" exposure (or no key / local) see the full list.
+async function applyExposureFilter(request, data) {
+  const apiKey = extractApiKeyFromRequest(request);
+  if (!apiKey) return data;
+  let keyConfig = null;
+  let settings = null;
+  try {
+    [keyConfig, settings] = await Promise.all([
+      getApiKeyConfigByValue(apiKey),
+      getSettings(),
+    ]);
+  } catch {
+    return data;
+  }
+  if (!keyConfig) return data;
+  const exposure = resolveExposure(keyConfig, settings);
+  if (exposure.mode === "all") return data;
+
+  let allowedComboMembers = null;
+  if (exposure.mode === "combo" && exposure.combo) {
+    try {
+      const combo = await getComboByName(exposure.combo);
+      allowedComboMembers = combo?.models || [];
+    } catch { allowedComboMembers = []; }
+  }
+  const memberSet = new Set(allowedComboMembers || []);
+  return data.filter((m) => {
+    const isCombo = m.owned_by === "combo";
+    if (exposure.mode === "combo-only") return isCombo;
+    if (exposure.mode === "combo") {
+      if (isCombo) return m.id === exposure.combo;
+      return memberSet.has(m.id);
+    }
+    return true;
+  });
+}
+
 export async function GET(request) {
   try {
     const { searchParams } = new URL(request.url);
     const includeRemoteFetches = ["1", "true", "yes"].includes(String(searchParams.get("live") || "").toLowerCase());
-    const data = await buildModelsList([LLM_KIND], { includeRemoteFetches });
+    let data = await buildModelsList([LLM_KIND], { includeRemoteFetches });
+    data = await applyExposureFilter(request, data);
     return Response.json({ object: "list", data }, { headers: getCorsHeaders(request) });
   } catch (error) {
     console.log("Error fetching models:", error);

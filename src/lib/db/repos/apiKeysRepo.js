@@ -741,6 +741,16 @@ export async function resetApiKeyUsage(id, period = "all") {
   return result;
 }
 
+// Lightweight read of a key's structured config by key value (no usage scan).
+// Returns null when the key does not exist. Used by /v1/models exposure filter.
+export async function getApiKeyConfigByValue(keyValue) {
+  if (!keyValue) return null;
+  const db = await getAdapter();
+  const row = db.get(`SELECT * FROM apiKeys WHERE key = ?`, [keyValue]);
+  const key = rowToKey(row);
+  return key ? key.config : null;
+}
+
 export async function getApiKeyUsageSummary(keyValue) {
   const db = await getAdapter();
   const row = db.get(`SELECT * FROM apiKeys WHERE key = ?`, [keyValue]);
