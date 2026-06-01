@@ -2,23 +2,24 @@ import { NextResponse } from "next/server";
 import { getApiKeyBrief, getSettings, getComboByName } from "@/lib/localDb";
 import { buildModelsList } from "@/app/api/v1/models/route.js";
 import { resolveExposure, effectiveTokenSaver } from "@/lib/keyPolicy.js";
-import { checkLock, recordFail, recordSuccess, getClientIp, checkGlobalLock, recordGlobalFail } from "@/lib/auth/loginLimiter";
+import { checkLookup, recordLookup, recordInvalid, getClientIp } from "@/lib/auth/apiKeyLookupLimiter";
 
 export const dynamic = "force-dynamic";
 
 // POST /api/apikey/info  body: { key }
 // Public, key-as-login: returns a read-only brief for the supplied API key only.
-// Rate-limited (per-IP + global backstop) to deter key enumeration.
+// Rate-limited via a DEDICATED limiter (never the dashboard login limiter) so it
+// cannot clear/trip admin login lockouts. Never reveals whether other keys exist.
 export async function POST(request) {
   const ip = getClientIp(request);
-  const globalLock = checkGlobalLock();
-  if (globalLock.locked) {
-    return NextResponse.json({ error: "Too many attempts. Try again later." }, { status: 429, headers: { "Retry-After": String(globalLock.retryAfter) } });
+  const limited = checkLookup(ip);
+  if (limited.limited) {
+    return NextResponse.json(
+      { error: "Too many requests. Try again later." },
+      { status: 429, headers: { "Retry-After": String(limited.retryAfter) } },
+    );
   }
-  const lock = checkLock(ip);
-  if (lock.locked) {
-    return NextResponse.json({ error: "Too many attempts. Try again later." }, { status: 429, headers: { "Retry-After": String(lock.retryAfter) } });
-  }
+  recordLookup(ip);
 
   let key;
   try {
@@ -32,11 +33,9 @@ export async function POST(request) {
 
   const brief = await getApiKeyBrief(key.trim());
   if (!brief) {
-    recordGlobalFail();
-    recordFail(ip);
+    recordInvalid(ip);
     return NextResponse.json({ error: "Invalid API key" }, { status: 401 });
   }
-  recordSuccess(ip);
 
   const settings = await getSettings();
   const exposure = resolveExposure(brief.config, settings);
