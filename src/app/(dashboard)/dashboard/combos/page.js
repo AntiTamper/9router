@@ -19,6 +19,7 @@ export default function CombosPage() {
   const [editingCombo, setEditingCombo] = useState(null);
   const [activeProviders, setActiveProviders] = useState([]);
   const [comboStrategies, setComboStrategies] = useState({});
+  const [comboExposureMode, setComboExposureMode] = useState("all-prefixed");
   const [confirmState, setConfirmState] = useState(null);
   const { copied, copy } = useCopyToClipboard();
 
@@ -43,6 +44,7 @@ export default function CombosPage() {
         setActiveProviders(providersData.connections || []);
       }
       setComboStrategies(settingsData.comboStrategies || {});
+      setComboExposureMode(settingsData.comboExposureMode === "combo-only" ? "combo-only" : "all-prefixed");
     } catch (error) {
       console.log("Error fetching data:", error);
     } finally {
@@ -50,6 +52,18 @@ export default function CombosPage() {
     }
   };
 
+  const patchComboExposure = async (mode) => {
+    setComboExposureMode(mode);
+    try {
+      await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ comboExposureMode: mode }),
+      });
+    } catch (error) {
+      console.log("Error updating combo exposure:", error);
+    }
+  };
   const handleCreate = async (data) => {
     try {
       const res = await fetch("/api/combos", {
@@ -151,6 +165,31 @@ export default function CombosPage() {
         </Button>
       </div>
 
+      {/* Combo exposure — how combos reach API keys */}
+      <Card padding="sm">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <p className="font-medium text-text-main">Combo exposure default</p>
+            <p className="text-sm text-text-muted">
+              {comboExposureMode === "combo-only"
+                ? "Keys see only combos. Users set the combo name as their model and configure just the provider link."
+                : "Keys see every provider model by prefix plus combos. Per-key exposure can override this."}
+            </p>
+          </div>
+          <div className="flex rounded-[10px] border border-border-subtle overflow-hidden shrink-0">
+            {[["all-prefixed", "All models"], ["combo-only", "Combos only"]].map(([val, label]) => (
+              <button
+                key={val}
+                type="button"
+                onClick={() => patchComboExposure(val)}
+                className={"px-3 py-1.5 text-sm font-medium transition-colors " + (comboExposureMode === val ? "bg-brand-500 text-white" : "bg-surface text-text-muted hover:text-text-main")}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </Card>
       {/* Combos List */}
       {combos.length === 0 ? (
         <Card>
