@@ -743,6 +743,30 @@ export async function resetApiKeyUsage(id, period = "all") {
 
 // Lightweight read of a key's structured config by key value (no usage scan).
 // Returns null when the key does not exist. Used by /v1/models exposure filter.
+// Public-safe brief for the /apikey page. Looks a key up by value and returns
+// only display-safe fields (no key string, no machineId). Returns null when
+// the key does not exist.
+export async function getApiKeyBrief(keyValue) {
+  if (!keyValue) return null;
+  const db = await getAdapter();
+  await cleanupExpiredApiKeys();
+  const row = db.get(`SELECT * FROM apiKeys WHERE key = ?`, [keyValue]);
+  const key = rowToKey(row);
+  if (!key) return null;
+  const usage = buildUsageSummary(db, key);
+  const status = getKeyStatus(key, usage);
+  return {
+    name: key.name || null,
+    isActive: key.isActive,
+    status,
+    limitMode: key.limitMode,
+    expiresAt: key.expiresAt,
+    createdAt: key.createdAt,
+    usage,
+    config: key.config,
+  };
+}
+
 export async function getApiKeyConfigByValue(keyValue) {
   if (!keyValue) return null;
   const db = await getAdapter();

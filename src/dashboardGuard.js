@@ -29,6 +29,7 @@ const PUBLIC_API_PATHS = [
   "/api/auth/oidc",
   "/api/version",
   "/api/settings/require-login",
+  "/api/apikey",
 ];
 
 // Public top-level prefixes (LLM API endpoints with their own API key auth).
@@ -255,7 +256,7 @@ export async function proxy(request) {
 
   // Redirect / to /dashboard if logged in, or /dashboard if it's the root
   if (pathname === "/") {
-    return NextResponse.redirect(new URL("/dashboard", request.url));
+    return NextResponse.redirect(new URL("/apikey", request.url));
   }
 
   return NextResponse.next();

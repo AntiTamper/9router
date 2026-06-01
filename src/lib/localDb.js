@@ -14,7 +14,7 @@ export {
   getProxyPools, getProxyPoolById,
   createProxyPool, updateProxyPool, deleteProxyPool,
   getApiKeys, getApiKeyById, createApiKey, updateApiKey, deleteApiKey,
-  validateApiKey, checkApiKeyAccess, getApiKeyUsageSummary, getApiKeyConfigByValue, resetApiKeyUsage, cleanupExpiredApiKeys,
+  validateApiKey, checkApiKeyAccess, getApiKeyUsageSummary, getApiKeyConfigByValue, getApiKeyBrief, resetApiKeyUsage, cleanupExpiredApiKeys,
   getCombos, getComboById, getComboByName,
   createCombo, updateCombo, deleteCombo,
   getModelAliases, setModelAlias, deleteModelAlias,
