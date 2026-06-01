@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { deleteApiKey, getApiKeyById, updateApiKey } from "@/lib/localDb";
+import { parseStructuredConfig, parseKeyTimers } from "../keyConfigInput";
 
 const LIMIT_MODES = new Set(["unlimited", "daily", "weekly", "daily_weekly", "hard"]);
 
@@ -10,7 +11,8 @@ function parseOptionalPositiveInt(value) {
   return n;
 }
 
-function parseUpdates(body = {}) {
+// Legacy update fields (limitMode + *TokenLimit + expiry + flags).
+function parseLegacyUpdates(body = {}) {
   const updates = {};
 
   if (Object.prototype.hasOwnProperty.call(body, "isActive")) {
@@ -62,6 +64,28 @@ function parseUpdates(body = {}) {
   return { updates };
 }
 
+// Builds updateApiKey() input. Structured path when body.config is present
+// (fusion limits, timers, exposure, token-saver, overage); else legacy fields.
+function buildUpdates(body = {}) {
+  if (body.config !== undefined) {
+    const updates = {};
+    if (Object.prototype.hasOwnProperty.call(body, "isActive")) updates.isActive = body.isActive === true;
+    if (Object.prototype.hasOwnProperty.call(body, "name")) {
+      const name = String(body.name || "").trim();
+      if (!name) return { error: "Name is required" };
+      updates.name = name;
+    }
+    const parsed = parseStructuredConfig(body.config);
+    if (parsed.error) return { error: parsed.error };
+    updates.config = parsed.config;
+    const timers = parseKeyTimers(body);
+    if (timers.error) return { error: timers.error };
+    Object.assign(updates, timers.options);
+    return { updates };
+  }
+  return parseLegacyUpdates(body);
+}
+
 // GET /api/keys/[id] - Get single key
 export async function GET(request, { params }) {
   try {
@@ -88,19 +112,23 @@ export async function PUT(request, { params }) {
       return NextResponse.json({ error: "Key not found" }, { status: 404 });
     }
 
-    const parsed = parseUpdates(body);
+    const parsed = buildUpdates(body);
     if (parsed.error) {
       return NextResponse.json({ error: parsed.error }, { status: 400 });
     }
-    const effectiveMode = parsed.updates.limitMode ?? existing.limitMode ?? "unlimited";
-    const effectiveLimit = parsed.updates.tokenLimit ?? existing.tokenLimit;
-    const effectiveDailyLimit = parsed.updates.dailyTokenLimit ?? existing.dailyTokenLimit;
-    const effectiveWeeklyLimit = parsed.updates.weeklyTokenLimit ?? existing.weeklyTokenLimit;
-    if (effectiveMode === "daily_weekly" && (!Number.isFinite(Number(effectiveDailyLimit)) || Number(effectiveDailyLimit) <= 0 || !Number.isFinite(Number(effectiveWeeklyLimit)) || Number(effectiveWeeklyLimit) <= 0)) {
-      return NextResponse.json({ error: "Daily and weekly token limits are required for daily/weekly mode" }, { status: 400 });
-    }
-    if (!["unlimited", "daily_weekly"].includes(effectiveMode) && (!Number.isFinite(Number(effectiveLimit)) || Number(effectiveLimit) <= 0)) {
-      return NextResponse.json({ error: "Token limit is required for limited keys" }, { status: 400 });
+
+    // Legacy validation only applies to the legacy field path.
+    if (body.config === undefined) {
+      const effectiveMode = parsed.updates.limitMode ?? existing.limitMode ?? "unlimited";
+      const effectiveLimit = parsed.updates.tokenLimit ?? existing.tokenLimit;
+      const effectiveDailyLimit = parsed.updates.dailyTokenLimit ?? existing.dailyTokenLimit;
+      const effectiveWeeklyLimit = parsed.updates.weeklyTokenLimit ?? existing.weeklyTokenLimit;
+      if (effectiveMode === "daily_weekly" && (!Number.isFinite(Number(effectiveDailyLimit)) || Number(effectiveDailyLimit) <= 0 || !Number.isFinite(Number(effectiveWeeklyLimit)) || Number(effectiveWeeklyLimit) <= 0)) {
+        return NextResponse.json({ error: "Daily and weekly token limits are required for daily/weekly mode" }, { status: 400 });
+      }
+      if (!["unlimited", "daily_weekly"].includes(effectiveMode) && (!Number.isFinite(Number(effectiveLimit)) || Number(effectiveLimit) <= 0)) {
+        return NextResponse.json({ error: "Token limit is required for limited keys" }, { status: 400 });
+      }
     }
 
     const updated = await updateApiKey(id, parsed.updates);

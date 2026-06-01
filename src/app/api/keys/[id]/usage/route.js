@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { resetApiKeyUsage } from "@/lib/localDb";
 
-const PERIODS = new Set(["all", "daily", "weekly"]);
+const PERIODS = new Set(["all", "daily", "weekly", "monthly", "hard", "overage"]);
 
 export async function DELETE(request, { params }) {
   try {

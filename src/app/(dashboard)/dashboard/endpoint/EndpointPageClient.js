@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import PropTypes from "prop-types";
 import { Card, Button, Input, Modal, CardSkeleton, Toggle, ConfirmModal } from "@/shared/components";
+import ApiKeyConfigModal from "./ApiKeyConfigModal";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 
 const TUNNEL_BENEFITS = [
@@ -290,18 +291,13 @@ export default function APIPageClient({ machineId }) {
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showKeyManager, setShowKeyManager] = useState(false);
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [newKeyName, setNewKeyName] = useState("");
-  const [newKeyLimitMode, setNewKeyLimitMode] = useState("unlimited");
-  const [newKeyTokenLimit, setNewKeyTokenLimit] = useState("");
-  const [newKeyDailyTokenLimit, setNewKeyDailyTokenLimit] = useState("");
-  const [newKeyWeeklyTokenLimit, setNewKeyWeeklyTokenLimit] = useState("");
-  const [newKeyExpiresInHours, setNewKeyExpiresInHours] = useState("");
-  const [createdKey, setCreatedKey] = useState(null);
+ const [createdKey, setCreatedKey] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
   const [settingsKeyId, setSettingsKeyId] = useState(null);
-  const [keyEdits, setKeyEdits] = useState({});
-  const [savingKeyId, setSavingKeyId] = useState(null);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [combos, setCombos] = useState([]);
+  const [tokenSaverMode, setTokenSaverMode] = useState("global");
+  const [comboExposureMode, setComboExposureMode] = useState("all-prefixed");
 
   const [requireApiKey, setRequireApiKey] = useState(false);
   const [requireLogin, setRequireLogin] = useState(true);
@@ -495,6 +491,8 @@ export default function APIPageClient({ machineId }) {
         setToonEnabled(!!data.toonEnabled);
         setCavemanEnabled(!!data.cavemanEnabled);
         setCavemanLevel(data.cavemanLevel || "full");
+        setTokenSaverMode(data.tokenSaverMode === "individual" ? "individual" : "global");
+        setComboExposureMode(data.comboExposureMode === "combo-only" ? "combo-only" : "all-prefixed");
       }
       if (statusRes.ok) {
         const data = await statusRes.json();
@@ -641,10 +639,17 @@ export default function APIPageClient({ machineId }) {
 
   const fetchData = async () => {
     try {
-      const keysRes = await fetch("/api/keys");
+      const [keysRes, combosRes] = await Promise.all([
+        fetch("/api/keys"),
+        fetch("/api/combos").catch(() => null),
+      ]);
       const keysData = await keysRes.json();
       if (keysRes.ok) {
         setKeys(keysData.keys || []);
+      }
+      if (combosRes && combosRes.ok) {
+        const cData = await combosRes.json().catch(() => ({}));
+        setCombos(Array.isArray(cData) ? cData : (cData.combos || []));
       }
     } catch (error) {
       console.log("Error fetching data:", error);
@@ -999,39 +1004,6 @@ export default function APIPageClient({ machineId }) {
     }
   };
 
-  const handleCreateKey = async () => {
-    if (!newKeyName.trim()) return;
-
-    try {
-      const res = await fetch("/api/keys", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: newKeyName,
-          limitMode: newKeyLimitMode,
-          tokenLimit: newKeyLimitMode === "unlimited" || newKeyLimitMode === DUAL_LIMIT_MODE ? null : Number(newKeyTokenLimit),
-          dailyTokenLimit: newKeyLimitMode === DUAL_LIMIT_MODE ? Number(newKeyDailyTokenLimit) : null,
-          weeklyTokenLimit: newKeyLimitMode === DUAL_LIMIT_MODE ? Number(newKeyWeeklyTokenLimit) : null,
-          expiresInMs: newKeyExpiresInHours ? Number(newKeyExpiresInHours) * 60 * 60 * 1000 : null,
-        }),
-      });
-      const data = await res.json();
-
-      if (res.ok) {
-        setCreatedKey(data.key);
-        await fetchData();
-        setNewKeyName("");
-        setNewKeyLimitMode("unlimited");
-        setNewKeyTokenLimit("");
-        setNewKeyDailyTokenLimit("");
-        setNewKeyWeeklyTokenLimit("");
-        setNewKeyExpiresInHours("");
-        setShowAddModal(false);
-      }
-    } catch (error) {
-      console.log("Error creating key:", error);
-    }
-  };
 
   const handleDeleteKey = async (id) => {
     setConfirmState({
@@ -1072,56 +1044,6 @@ export default function APIPageClient({ machineId }) {
     }
   };
 
-  const getKeyEdit = (key) => ({
-    limitMode: key.limitMode || "unlimited",
-    tokenLimit: key.tokenLimit || "",
-    dailyTokenLimit: key.dailyTokenLimit || "",
-    weeklyTokenLimit: key.weeklyTokenLimit || "",
-    expiresAt: toDateTimeLocal(key.expiresAt),
-    autoDeleteExpired: key.autoDeleteExpired !== false,
-    ...(keyEdits[key.id] || {}),
-  });
-
-  const updateKeyEdit = (keyId, patch) => {
-    setKeyEdits((prev) => ({
-      ...prev,
-      [keyId]: { ...(prev[keyId] || {}), ...patch },
-    }));
-  };
-
-  const saveKeyConfig = async (key) => {
-    const edit = getKeyEdit(key);
-    setSavingKeyId(key.id);
-    try {
-      const body = {
-        limitMode: edit.limitMode || "unlimited",
-        tokenLimit: edit.limitMode === "unlimited" || edit.limitMode === DUAL_LIMIT_MODE ? null : Number(edit.tokenLimit),
-        dailyTokenLimit: edit.limitMode === DUAL_LIMIT_MODE ? Number(edit.dailyTokenLimit) : null,
-        weeklyTokenLimit: edit.limitMode === DUAL_LIMIT_MODE ? Number(edit.weeklyTokenLimit) : null,
-        expiresAt: fromDateTimeLocal(edit.expiresAt),
-        autoDeleteExpired: edit.autoDeleteExpired !== false,
-      };
-      const res = await fetch(`/api/keys/${key.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setKeys((prev) => prev.map((k) => k.id === key.id ? data.key : k));
-        setKeyEdits((prev) => {
-          const next = { ...prev };
-          delete next[key.id];
-          return next;
-        });
-        setSettingsKeyId(null);
-      }
-    } catch (error) {
-      console.log("Error saving key config:", error);
-    } finally {
-      setSavingKeyId(null);
-    }
-  };
 
   const resetKeyUsage = async (key, period) => {
     const label = period === "all" ? "all-time" : period;
@@ -1196,8 +1118,6 @@ export default function APIPageClient({ machineId }) {
   const limitedKeys = keys.filter((key) => key.limitMode !== "unlimited");
   const previewKeys = keys.filter((k) => k && k.enabled !== false);
   const hiddenPreviewKeyCount = 0;
-  const needsCreateTokenLimit = newKeyLimitMode !== "unlimited" && newKeyLimitMode !== DUAL_LIMIT_MODE && !newKeyTokenLimit;
-  const needsCreateDualLimits = newKeyLimitMode === DUAL_LIMIT_MODE && (!newKeyDailyTokenLimit || !newKeyWeeklyTokenLimit);
   const cavemanSelection = getCavemanSelection(cavemanLevel);
   const cavemanIntensityIndex = Math.max(0, CAVEMAN_INTENSITIES.findIndex((item) => item.id === cavemanSelection.intensity));
 
@@ -1502,6 +1422,44 @@ export default function APIPageClient({ machineId }) {
             Token Saver
           </h2>
         </div>
+        <div className="flex flex-col gap-3 pb-4 mb-2 border-b border-border">
+          <div className="flex items-center justify-between gap-4 flex-wrap">
+            <div className="min-w-0">
+              <p className="font-medium">Token saver scope</p>
+              <p className="text-sm text-text-muted">Global applies these settings to every key. Individual lets each key use its own token-saver config.</p>
+            </div>
+            <div className="flex rounded-[10px] border border-border-subtle overflow-hidden shrink-0">
+              {[["global", "Global"], ["individual", "Individual"]].map(([val, label]) => (
+                <button
+                  key={val}
+                  type="button"
+                  onClick={() => { setTokenSaverMode(val); patchSetting({ tokenSaverMode: val }); }}
+                  className={"px-3 py-1.5 text-sm font-medium transition-colors " + (tokenSaverMode === val ? "bg-brand-500 text-white" : "bg-surface text-text-muted hover:text-text-main")}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex items-center justify-between gap-4 flex-wrap">
+            <div className="min-w-0">
+              <p className="font-medium">Combo exposure default</p>
+              <p className="text-sm text-text-muted">For keys with no per-key exposure: expose all models by prefix, or only combos. Per-key exposure overrides this.</p>
+            </div>
+            <div className="flex rounded-[10px] border border-border-subtle overflow-hidden shrink-0">
+              {[["all-prefixed", "All models"], ["combo-only", "Combos only"]].map(([val, label]) => (
+                <button
+                  key={val}
+                  type="button"
+                  onClick={() => { setComboExposureMode(val); patchSetting({ comboExposureMode: val }); }}
+                  className={"px-3 py-1.5 text-sm font-medium transition-colors " + (comboExposureMode === val ? "bg-brand-500 text-white" : "bg-surface text-text-muted hover:text-text-main")}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
         <div className="flex items-center justify-between pt-2 pb-4 border-b border-border gap-4">
           <div className="min-w-0 flex-1">
             <p className="font-medium">
@@ -1697,7 +1655,7 @@ export default function APIPageClient({ machineId }) {
               <p className="text-sm font-medium text-text-main">{keys.length} keys</p>
               <p className="text-xs text-text-muted">Use the cog on each key to edit limits, expiry, or reset usage.</p>
             </div>
-            <Button icon="add" onClick={() => setShowAddModal(true)}>Create Key</Button>
+            <Button icon="add" onClick={() => setShowCreateModal(true)}>Create Key</Button>
           </div>
 
           {keys.length === 0 ? (
@@ -1707,7 +1665,7 @@ export default function APIPageClient({ machineId }) {
               </div>
               <p className="text-text-main font-medium mb-1">No API keys yet</p>
               <p className="text-sm text-text-muted mb-4">Create your first API key to get started</p>
-              <Button icon="add" onClick={() => setShowAddModal(true)}>Create Key</Button>
+              <Button icon="add" onClick={() => setShowCreateModal(true)}>Create Key</Button>
             </div>
           ) : (
             <div className="flex flex-col gap-3">
@@ -1813,198 +1771,36 @@ export default function APIPageClient({ machineId }) {
         </div>
       </Modal>
 
-      <Modal
+      <ApiKeyConfigModal
         isOpen={!!settingsKey}
-        title={settingsKey ? `Key Settings: ${settingsKey.name}` : "Key Settings"}
+        mode="edit"
+        apiKey={settingsKey}
+        combos={combos}
+        tokenSaverMode={tokenSaverMode}
         onClose={() => setSettingsKeyId(null)}
-      >
-        {settingsKey && (() => {
-          const edit = getKeyEdit(settingsKey);
-          const isDual = edit.limitMode === DUAL_LIMIT_MODE;
-          const saveDisabled = savingKeyId === settingsKey.id
-            || (isDual && (!edit.dailyTokenLimit || !edit.weeklyTokenLimit))
-            || (!["unlimited", DUAL_LIMIT_MODE].includes(edit.limitMode) && !edit.tokenLimit);
-          return (
-            <div className="flex flex-col gap-4">
-              <label className="text-sm text-text-muted">
-                <span className="block mb-1 font-medium text-text-primary">Mode</span>
-                <select
-                  value={edit.limitMode}
-                  onChange={(e) => updateKeyEdit(settingsKey.id, { limitMode: e.target.value })}
-                  className="h-10 w-full rounded-[10px] border border-border bg-surface px-3 text-sm text-text-primary"
-                >
-                  {API_KEY_LIMIT_MODES.map((mode) => (
-                    <option key={mode.id} value={mode.id}>{mode.label}</option>
-                  ))}
-                </select>
-              </label>
-              <Input
-                label="Token limit"
-                type="number"
-                min="1"
-                value={edit.tokenLimit}
-                disabled={edit.limitMode === "unlimited" || isDual}
-                onChange={(e) => updateKeyEdit(settingsKey.id, { tokenLimit: e.target.value })}
-              />
-              {isDual && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <Input
-                    label="Daily token limit"
-                    type="number"
-                    min="1"
-                    value={edit.dailyTokenLimit}
-                    onChange={(e) => updateKeyEdit(settingsKey.id, { dailyTokenLimit: e.target.value })}
-                  />
-                  <Input
-                    label="Weekly token limit"
-                    type="number"
-                    min="1"
-                    value={edit.weeklyTokenLimit}
-                    onChange={(e) => updateKeyEdit(settingsKey.id, { weeklyTokenLimit: e.target.value })}
-                  />
-                </div>
-              )}
-              <Input
-                label="Expires"
-                type="datetime-local"
-                value={edit.expiresAt}
-                onChange={(e) => updateKeyEdit(settingsKey.id, { expiresAt: e.target.value })}
-              />
-              <div className="flex items-center justify-between rounded-[10px] border border-border-subtle bg-bg px-3 py-2">
-                <span className="text-sm font-medium text-text-main">Auto-delete expired</span>
-                <Toggle
-                  size="sm"
-                  checked={edit.autoDeleteExpired !== false}
-                  onChange={(checked) => updateKeyEdit(settingsKey.id, { autoDeleteExpired: checked })}
-                />
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                <Button variant="outline" size="sm" onClick={() => resetKeyUsage(settingsKey, "daily")}>Reset Daily</Button>
-                <Button variant="outline" size="sm" onClick={() => resetKeyUsage(settingsKey, "weekly")}>Reset Weekly</Button>
-                <Button variant="danger" size="sm" onClick={() => resetKeyUsage(settingsKey, "all")}>Reset All</Button>
-              </div>
-              <Button
-                onClick={() => saveKeyConfig(settingsKey)}
-                disabled={saveDisabled}
-              >
-                {savingKeyId === settingsKey.id ? "Saving..." : "Save Settings"}
-              </Button>
-            </div>
-          );
-        })()}
-      </Modal>
-
-      {/* Add Key Modal */}
-      <Modal
-        isOpen={showAddModal}
-        title="Create API Key"
-        onClose={() => {
-          setShowAddModal(false);
-          setNewKeyName("");
-          setNewKeyLimitMode("unlimited");
-          setNewKeyTokenLimit("");
-          setNewKeyDailyTokenLimit("");
-          setNewKeyWeeklyTokenLimit("");
-          setNewKeyExpiresInHours("");
+        onReset={(key, period) => resetKeyUsage(key, period)}
+        onSaved={(updated) => {
+          if (updated && updated.id) {
+            setKeys((prev) => prev.map((k) => (k.id === updated.id ? updated : k)));
+          } else {
+            fetchData();
+          }
+          setSettingsKeyId(null);
         }}
-      >
-        <div className="flex flex-col gap-4">
-          <Input
-            label="Key Name"
-            value={newKeyName}
-            onChange={(e) => setNewKeyName(e.target.value)}
-            placeholder="Production Key"
-          />
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <label className="text-sm text-text-muted">
-              <span className="block mb-1 font-medium text-text-primary">Token mode</span>
-              <select
-                value={newKeyLimitMode}
-                onChange={(e) => setNewKeyLimitMode(e.target.value)}
-                className="h-10 w-full rounded border border-border bg-surface px-3 text-sm text-text-primary"
-              >
-                {API_KEY_LIMIT_MODES.map((mode) => (
-                  <option key={mode.id} value={mode.id}>{mode.label}</option>
-                ))}
-              </select>
-            </label>
-            <label className="text-sm text-text-muted">
-              <span className="block mb-1 font-medium text-text-primary">Token limit</span>
-              <input
-                type="number"
-                min="1"
-                value={newKeyTokenLimit}
-                disabled={newKeyLimitMode === "unlimited" || newKeyLimitMode === DUAL_LIMIT_MODE}
-                onChange={(e) => setNewKeyTokenLimit(e.target.value)}
-                placeholder="100000"
-                className="h-10 w-full rounded border border-border bg-surface px-3 text-sm text-text-primary disabled:opacity-50"
-              />
-            </label>
-          </div>
-          {newKeyLimitMode === DUAL_LIMIT_MODE && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <label className="text-sm text-text-muted">
-                <span className="block mb-1 font-medium text-text-primary">Daily token limit</span>
-                <input
-                  type="number"
-                  min="1"
-                  value={newKeyDailyTokenLimit}
-                  onChange={(e) => setNewKeyDailyTokenLimit(e.target.value)}
-                  placeholder="5000000"
-                  className="h-10 w-full rounded border border-border bg-surface px-3 text-sm text-text-primary"
-                />
-              </label>
-              <label className="text-sm text-text-muted">
-                <span className="block mb-1 font-medium text-text-primary">Weekly token limit</span>
-                <input
-                  type="number"
-                  min="1"
-                  value={newKeyWeeklyTokenLimit}
-                  onChange={(e) => setNewKeyWeeklyTokenLimit(e.target.value)}
-                  placeholder="20000000"
-                  className="h-10 w-full rounded border border-border bg-surface px-3 text-sm text-text-primary"
-                />
-              </label>
-            </div>
-          )}
-          <label className="text-sm text-text-muted">
-            <span className="block mb-1 font-medium text-text-primary">Expire after hours</span>
-            <input
-              type="number"
-              min="1"
-              value={newKeyExpiresInHours}
-              onChange={(e) => setNewKeyExpiresInHours(e.target.value)}
-              placeholder="Blank = permanent"
-              className="h-10 w-full rounded border border-border bg-surface px-3 text-sm text-text-primary"
-            />
-          </label>
-          <div className="flex gap-2">
-            <Button
-              onClick={handleCreateKey}
-              fullWidth
-              disabled={!newKeyName.trim() || needsCreateTokenLimit || needsCreateDualLimits}
-            >
-              Create
-            </Button>
-            <Button
-              onClick={() => {
-                setShowAddModal(false);
-                setNewKeyName("");
-                setNewKeyLimitMode("unlimited");
-                setNewKeyTokenLimit("");
-                setNewKeyDailyTokenLimit("");
-                setNewKeyWeeklyTokenLimit("");
-                setNewKeyExpiresInHours("");
-              }}
-              variant="ghost"
-              fullWidth
-            >
-              Cancel
-            </Button>
-          </div>
-        </div>
-      </Modal>
+      />
 
+      <ApiKeyConfigModal
+        isOpen={showCreateModal}
+        mode="create"
+        combos={combos}
+        tokenSaverMode={tokenSaverMode}
+        onClose={() => setShowCreateModal(false)}
+        onSaved={(created) => {
+          if (created && created.key) setCreatedKey(created.key);
+          setShowCreateModal(false);
+          fetchData();
+        }}
+      />
       {/* Created Key Modal */}
       <Modal
         isOpen={!!createdKey}

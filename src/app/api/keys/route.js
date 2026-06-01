@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getApiKeys, createApiKey } from "@/lib/localDb";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
+import { parseStructuredConfig, parseKeyTimers } from "./keyConfigInput";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +13,8 @@ function parsePositiveInt(value) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-function parseKeyConfig(body = {}) {
+// Legacy create payload (limitMode + *TokenLimit). Kept for old API callers.
+function parseLegacyConfig(body = {}) {
   const limitMode = LIMIT_MODES.has(String(body.limitMode || "unlimited").toLowerCase())
     ? String(body.limitMode || "unlimited").toLowerCase()
     : "unlimited";
@@ -52,6 +54,22 @@ function parseKeyConfig(body = {}) {
   return config;
 }
 
+// Builds the createApiKey options. When body.config is present we use the
+// structured path (fusion limits, timers, exposure, token-saver, overage);
+// otherwise we fall back to the legacy limitMode payload.
+function buildCreateOptions(body = {}) {
+  if (body.config !== undefined) {
+    const parsed = parseStructuredConfig(body.config);
+    if (parsed.error) return { error: parsed.error };
+    const timers = parseKeyTimers(body);
+    if (timers.error) return { error: timers.error };
+    return { options: { config: parsed.config, ...timers.options } };
+  }
+  const legacy = parseLegacyConfig(body);
+  if (legacy.error) return { error: legacy.error };
+  return { options: legacy };
+}
+
 // GET /api/keys - List API keys
 export async function GET() {
   try {
@@ -73,14 +91,14 @@ export async function POST(request) {
       return NextResponse.json({ error: "Name is required" }, { status: 400 });
     }
 
-    const config = parseKeyConfig(body);
-    if (config.error) {
-      return NextResponse.json({ error: config.error }, { status: 400 });
+    const built = buildCreateOptions(body);
+    if (built.error) {
+      return NextResponse.json({ error: built.error }, { status: 400 });
     }
 
     // Always get machineId from server
     const machineId = await getConsistentMachineId();
-    const apiKey = await createApiKey(name, machineId, config);
+    const apiKey = await createApiKey(name, machineId, built.options);
 
     return NextResponse.json({
       key: apiKey.key,
@@ -92,6 +110,7 @@ export async function POST(request) {
       dailyTokenLimit: apiKey.dailyTokenLimit,
       weeklyTokenLimit: apiKey.weeklyTokenLimit,
       expiresAt: apiKey.expiresAt,
+      config: apiKey.config,
       usage: apiKey.usage,
       status: apiKey.status,
     }, { status: 201 });
