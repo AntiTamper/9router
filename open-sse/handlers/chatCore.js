@@ -20,6 +20,7 @@ import { detectClientTool, isNativePassthrough } from "../utils/clientDetector.j
 import { dedupeTools } from "../utils/toolDeduper.js";
 import { sanitizeSystemRole } from "../translator/helpers/claudeHelper.js";
 import { injectCaveman } from "../rtk/caveman.js";
+import { injectCustomInstruction } from "../rtk/customInstruction.js";
 import { compressMessages, formatRtkLog } from "../rtk/index.js";
 import { applyToon, formatToonLog } from "../rtk/toon.js";
 
@@ -30,7 +31,7 @@ import { applyToon, formatToonLog } from "../rtk/toon.js";
  * @param {object} options.credentials - Provider credentials
  * @param {string} options.sourceFormatOverride - Override detected source format (e.g. "openai-responses")
  */
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, codexUsageEnabled, rtkEnabled, toonEnabled, cavemanEnabled, cavemanLevel, sourceFormatOverride, providerThinking }) {
+export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, codexUsageEnabled, rtkEnabled, toonEnabled, cavemanEnabled, cavemanLevel, customInstructionEnabled, customInstructionText, customInstructionMode, sourceFormatOverride, providerThinking }) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
 
@@ -145,6 +146,13 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   if (cavemanEnabled && cavemanLevel) {
     injectCaveman(translatedBody, finalFormat, cavemanLevel);
     log?.debug?.("CAVEMAN", `${cavemanLevel} | ${finalFormat}`);
+  }
+
+  // Custom system instruction: operator-defined prompt injected into the
+  // system message (global or per-key, like the token saver).
+  if (customInstructionEnabled && typeof customInstructionText === "string" && customInstructionText.trim()) {
+    injectCustomInstruction(translatedBody, finalFormat, customInstructionText, customInstructionMode);
+    log?.debug?.("CUSTOM_INSTRUCTION", `${customInstructionMode || "append"} | ${finalFormat}`);
   }
 
   // Codex usage forwarding: inject stream_options.include_usage ONLY when

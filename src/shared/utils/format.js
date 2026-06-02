@@ -64,3 +64,18 @@ export function localInputToIso(value) {
   if (Number.isNaN(d.getTime())) return null;
   return d.toISOString();
 }
+// Canonical caveman level ids (single source of truth for label parsing).
+export const CAVEMAN_LEVEL_IDS = [
+  "lite", "full", "ultra", "wenyan-lite", "wenyan-full", "wenyan-ultra",
+];
+
+// Parse a caveman level id into a readable label, e.g. "wenyan-ultra" ->
+// "Wenyan · Ultra", "lite" -> "Lite". Returns "" for empty input so callers
+// can decide whether to show a tag at all (no hardcoded default text).
+export function formatCavemanLevel(level) {
+  if (!level || typeof level !== "string") return "";
+  const wenyan = level.startsWith("wenyan-");
+  const intensity = wenyan ? level.slice("wenyan-".length) : level;
+  const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+  return wenyan ? `Wenyan · ${cap(intensity)}` : cap(intensity);
+}

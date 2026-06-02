@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import PropTypes from "prop-types";
 import { Card, Button, Input, Modal, CardSkeleton, Toggle, ConfirmModal } from "@/shared/components";
+import Pagination from "@/shared/components/Pagination";
 import ApiKeyConfigModal from "./ApiKeyConfigModal";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 
@@ -157,21 +158,6 @@ function clampPercentage(value) {
   return Math.max(0, Math.min(100, Math.round(n)));
 }
 
-function usageProgress(key, usage = {}) {
-  const limit = usage.limit ?? key.tokenLimit ?? null;
-  const used = usage.used ?? 0;
-  const remaining = limit ? Math.max(0, limit - used) : null;
-  const remainingPercentage = limit
-    ? clampPercentage(usage.remainingPercentage ?? ((remaining / limit) * 100))
-    : null;
-  return {
-    limit,
-    used,
-    remaining,
-    remainingPercentage,
-  };
-}
-
 function getLimitProgress(key, usage, period) {
   const limit = usage.limits?.[period]?.limit ?? (
     key.limitMode === DUAL_LIMIT_MODE
@@ -221,22 +207,28 @@ function getLimitModeLabel(mode) {
   return API_KEY_LIMIT_MODES.find((item) => item.id === mode)?.label || "Unlimited";
 }
 
+const QUOTA_TIERS = [
+  { period: "daily", label: "Daily limit" },
+  { period: "weekly", label: "Weekly limit" },
+  { period: "monthly", label: "Monthly limit" },
+  { period: "hard", label: "Hard cap" },
+];
+
 function ApiKeyUsageBar({ apiKey, className = "" }) {
   const usage = apiKey.usage || {};
-  const active = usageProgress(apiKey, usage);
-  const remainingPercentage = active.limit ? active.remainingPercentage : 0;
-  const tone = active.limit ? barTone(remainingPercentage, apiKey.status === "exhausted") : "bg-primary";
-  const resetText = apiKey.limitMode === "daily" || apiKey.limitMode === "weekly"
-    ? formatKeyReset(usage.resetAt)
-    : "no reset";
-  const isDual = apiKey.limitMode === DUAL_LIMIT_MODE;
-  const dailyLimit = getLimitProgress(apiKey, usage, "daily");
-  const weeklyLimit = getLimitProgress(apiKey, usage, "weekly");
-  const renderLine = (label, item) => {
+  const exhausted = apiKey.status === "exhausted";
+
+  // Build a line per quota tier that actually has a limit (supports any
+  // combination: daily+weekly+monthly+hard, etc.). Hard cap has no reset.
+  const tiers = QUOTA_TIERS
+    .map((t) => ({ ...t, item: getLimitProgress(apiKey, usage, t.period) }))
+    .filter((t) => t.item.limit != null);
+
+  const renderLine = (label, item, showReset) => {
     const percentage = item.limit ? item.remainingPercentage : 0;
-    const lineTone = item.limit ? barTone(percentage, apiKey.status === "exhausted") : "bg-primary";
+    const lineTone = item.limit ? barTone(percentage, exhausted) : "bg-primary";
     return (
-      <div className="mt-2">
+      <div className="mt-2" key={label}>
         <div className="mb-1 flex items-center justify-between text-[11px] text-text-muted">
           <span>{label}</span>
           <span>{item.limit ? `${formatTokens(item.remaining)} / ${formatTokens(item.limit)} left` : "unlimited"}</span>
@@ -246,11 +238,13 @@ function ApiKeyUsageBar({ apiKey, className = "" }) {
         </div>
         <div className="mt-1 flex justify-between text-[11px] text-text-muted">
           <span>{item.limit ? `${percentage}% remaining` : "unlimited"}</span>
-          <span>{formatKeyReset(item.resetAt)}</span>
+          <span>{showReset ? formatKeyReset(item.resetAt) : "no reset"}</span>
         </div>
       </div>
     );
   };
+
+  const multi = tiers.length > 0;
 
   return (
     <div className={`w-full min-w-0 rounded-[10px] border border-border-subtle bg-surface px-3 py-2 ${className}`}>
@@ -261,43 +255,48 @@ function ApiKeyUsageBar({ apiKey, className = "" }) {
             {getLimitModeLabel(apiKey.limitMode)}
           </span>
         </div>
-        {!isDual && (
-          <span className="shrink-0 text-right">
-            {active.limit ? `${formatTokens(active.remaining)} / ${formatTokens(active.limit)} left` : "unlimited"}
-          </span>
-        )}
       </div>
-      {isDual ? (
-        <>
-          {renderLine("Daily limit", dailyLimit)}
-          {renderLine("Weekly limit", weeklyLimit)}
-        </>
+      {multi ? (
+        tiers.map((t) => renderLine(t.label, t.item, t.period !== "hard"))
       ) : (
         <>
+          <div className="mb-1 flex items-center justify-end text-[11px] text-text-muted">
+            <span>unlimited</span>
+          </div>
           <div className="h-2 overflow-hidden rounded-full bg-black/5 dark:bg-white/10">
-            <div className={`h-full ${tone}`} style={{ width: `${remainingPercentage}%` }} />
+            <div className="h-full bg-primary" style={{ width: "100%" }} />
           </div>
           <div className="mt-1 flex items-center justify-between text-[11px] text-text-muted">
-            <span>{active.limit ? `${remainingPercentage}% remaining` : "unlimited"}</span>
-            <span>{resetText}</span>
+            <span>unlimited</span>
+            <span>no reset</span>
           </div>
         </>
       )}
     </div>
   );
 }
-
 export default function APIPageClient({ machineId }) {
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showKeyManager, setShowKeyManager] = useState(false);
+  const [keyManagerPage, setKeyManagerPage] = useState(1);
  const [createdKey, setCreatedKey] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
   const [settingsKeyId, setSettingsKeyId] = useState(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [selectedKeyIds, setSelectedKeyIds] = useState(() => new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
   const [combos, setCombos] = useState([]);
   const [tokenSaverMode, setTokenSaverMode] = useState("global");
   const [comboExposureMode, setComboExposureMode] = useState("all-prefixed");
+  const [globalDefaultsOpen, setGlobalDefaultsOpen] = useState(false);
+  const [customInstructionMode, setCustomInstructionMode] = useState("global");
+  const [customInstructionEnabled, setCustomInstructionEnabled] = useState(false);
+  const [customInstructionText, setCustomInstructionText] = useState("");
+  const [customInstructionInjectMode, setCustomInstructionInjectMode] = useState("append");
+  const [allowKeyHolderCustomInstruction, setAllowKeyHolderCustomInstruction] = useState(false);
+  const [allowKeyHolderTokenSaver, setAllowKeyHolderTokenSaver] = useState(false);
+  const [allowKeyHolderOverage, setAllowKeyHolderOverage] = useState(false);
 
   const [requireApiKey, setRequireApiKey] = useState(false);
   const [requireLogin, setRequireLogin] = useState(true);
@@ -493,6 +492,13 @@ export default function APIPageClient({ machineId }) {
         setCavemanLevel(data.cavemanLevel || "full");
         setTokenSaverMode(data.tokenSaverMode === "individual" ? "individual" : "global");
         setComboExposureMode(data.comboExposureMode === "combo-only" ? "combo-only" : "all-prefixed");
+        setCustomInstructionMode(data.customInstructionMode === "individual" ? "individual" : "global");
+        setCustomInstructionEnabled(!!data.customInstructionEnabled);
+        setCustomInstructionText(typeof data.customInstructionText === "string" ? data.customInstructionText : "");
+        setCustomInstructionInjectMode(["append","prepend","replace"].includes(data.customInstructionInjectMode) ? data.customInstructionInjectMode : "append");
+        setAllowKeyHolderCustomInstruction(!!data.allowKeyHolderCustomInstruction);
+        setAllowKeyHolderTokenSaver(!!data.allowKeyHolderTokenSaver);
+        setAllowKeyHolderOverage(!!data.allowKeyHolderOverage);
       }
       if (statusRes.ok) {
         const data = await statusRes.json();
@@ -1045,6 +1051,70 @@ export default function APIPageClient({ machineId }) {
   };
 
 
+  const toggleSelectKey = (id) => {
+    setSelectedKeyIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  // Select-all operates on the CURRENTLY VISIBLE page only, so a bulk action
+  // never silently touches keys the user cannot see. Toggles: if every key on
+  // the page is already selected, clear them; otherwise add them.
+  const toggleSelectAllKeys = () => {
+    const pageSize = KEY_MANAGER_PAGE_SIZE;
+    const totalPages = Math.max(1, Math.ceil(keys.length / pageSize));
+    const page = Math.min(keyManagerPage, totalPages);
+    const visible = keys.slice((page - 1) * pageSize, page * pageSize);
+    const visibleIds = visible.map((k) => k.id);
+    setSelectedKeyIds((prev) => {
+      const next = new Set(prev);
+      const allSelected = visibleIds.length > 0 && visibleIds.every((id) => next.has(id));
+      if (allSelected) visibleIds.forEach((id) => next.delete(id));
+      else visibleIds.forEach((id) => next.add(id));
+      return next;
+    });
+  };
+
+  const bulkSetActive = async (isActive) => {
+    const ids = Array.from(selectedKeyIds);
+    if (ids.length === 0) return;
+    setBulkBusy(true);
+    try {
+      await Promise.allSettled(ids.map((id) => fetch(`/api/keys/${id}`, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ isActive }),
+      })));
+      setKeys((prev) => prev.map((k) => (selectedKeyIds.has(k.id) ? { ...k, isActive } : k)));
+    } catch (error) {
+      console.log("Error in bulk active update:", error);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const bulkDelete = () => {
+    const ids = Array.from(selectedKeyIds);
+    if (ids.length === 0) return;
+    setConfirmState({
+      title: "Delete API Keys",
+      message: `Delete ${ids.length} selected API key${ids.length === 1 ? "" : "s"}? This cannot be undone.`,
+      onConfirm: async () => {
+        setConfirmState(null);
+        setBulkBusy(true);
+        try {
+          await Promise.allSettled(ids.map((id) => fetch(`/api/keys/${id}`, { method: "DELETE" })));
+          setKeys((prev) => prev.filter((k) => !selectedKeyIds.has(k.id)));
+          setSelectedKeyIds(new Set());
+        } catch (error) {
+          console.log("Error in bulk delete:", error);
+        } finally {
+          setBulkBusy(false);
+        }
+      },
+    });
+  };
+
   const resetKeyUsage = async (key, period) => {
     const label = period === "all" ? "all-time" : period;
     setConfirmState({
@@ -1117,6 +1187,10 @@ export default function APIPageClient({ machineId }) {
   const settingsKey = settingsKeyId ? keys.find((key) => key.id === settingsKeyId) : null;
   const limitedKeys = keys.filter((key) => key.limitMode !== "unlimited");
   const previewKeys = keys.filter((k) => k && k.enabled !== false);
+  const KEY_MANAGER_PAGE_SIZE = 8;
+  const keyManagerTotalPages = Math.max(1, Math.ceil(keys.length / KEY_MANAGER_PAGE_SIZE));
+  const safeKeyManagerPage = Math.min(keyManagerPage, keyManagerTotalPages);
+  const pagedKeys = keys.slice((safeKeyManagerPage - 1) * KEY_MANAGER_PAGE_SIZE, safeKeyManagerPage * KEY_MANAGER_PAGE_SIZE);
   const hiddenPreviewKeyCount = 0;
   const cavemanSelection = getCavemanSelection(cavemanLevel);
   const cavemanIntensityIndex = Math.max(0, CAVEMAN_INTENSITIES.findIndex((item) => item.id === cavemanSelection.intensity));
@@ -1140,6 +1214,17 @@ export default function APIPageClient({ machineId }) {
             copied={copied}
             onCopy={copy}
           />
+          {/* Custom domain (shown alongside Local when configured + enabled) */}
+          {customDomainEnabled && customDomain && (
+            <EndpointRow
+              label="Domain"
+              url={`https://${customDomain.replace(/^https?:\/\//, "").replace(/\/+$/, "")}/v1`}
+              copyId="custom_domain_url"
+              copied={copied}
+              onCopy={copy}
+              badge="CF"
+            />
+          )}
           {/* Current origin (when opened via a remote host that is not the
               tunnel/tailscale URL already shown below) */}
           {remoteOriginUrl
@@ -1422,44 +1507,6 @@ export default function APIPageClient({ machineId }) {
             Token Saver
           </h2>
         </div>
-        <div className="flex flex-col gap-3 pb-4 mb-2 border-b border-border">
-          <div className="flex items-center justify-between gap-4 flex-wrap">
-            <div className="min-w-0">
-              <p className="font-medium">Token saver scope</p>
-              <p className="text-sm text-text-muted">Global applies these settings to every key. Individual lets each key use its own token-saver config.</p>
-            </div>
-            <div className="flex rounded-[10px] border border-border-subtle overflow-hidden shrink-0">
-              {[["global", "Global"], ["individual", "Individual"]].map(([val, label]) => (
-                <button
-                  key={val}
-                  type="button"
-                  onClick={() => { setTokenSaverMode(val); patchSetting({ tokenSaverMode: val }); }}
-                  className={"px-3 py-1.5 text-sm font-medium transition-colors " + (tokenSaverMode === val ? "bg-brand-500 text-white" : "bg-surface text-text-muted hover:text-text-main")}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="flex items-center justify-between gap-4 flex-wrap">
-            <div className="min-w-0">
-              <p className="font-medium">Combo exposure default</p>
-              <p className="text-sm text-text-muted">For keys with no per-key exposure: expose all models by prefix, or only combos. Per-key exposure overrides this.</p>
-            </div>
-            <div className="flex rounded-[10px] border border-border-subtle overflow-hidden shrink-0">
-              {[["all-prefixed", "All models"], ["combo-only", "Combos only"]].map(([val, label]) => (
-                <button
-                  key={val}
-                  type="button"
-                  onClick={() => { setComboExposureMode(val); patchSetting({ comboExposureMode: val }); }}
-                  className={"px-3 py-1.5 text-sm font-medium transition-colors " + (comboExposureMode === val ? "bg-brand-500 text-white" : "bg-surface text-text-muted hover:text-text-main")}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
         <div className="flex items-center justify-between pt-2 pb-4 border-b border-border gap-4">
           <div className="min-w-0 flex-1">
             <p className="font-medium">
@@ -1586,12 +1633,20 @@ export default function APIPageClient({ machineId }) {
           </h2>
           <button
             type="button"
-            onClick={() => setShowKeyManager(true)}
+            onClick={() => { setKeyManagerPage(1); setShowKeyManager(true); }}
             className="flex size-9 items-center justify-center rounded-[10px] border border-border text-text-muted hover:bg-surface-2 hover:text-primary transition-colors"
             title="Open API key manager"
           >
             <span className="material-symbols-outlined text-[20px]">settings</span>
           </button>
+        </div>
+
+        <div className="flex items-center justify-between rounded-[10px] border border-border-subtle bg-bg px-4 py-3 mb-4">
+          <div>
+            <p className="font-medium">Require API key</p>
+            <p className="text-sm text-text-muted">Requests without a valid key will be rejected</p>
+          </div>
+          <Toggle checked={requireApiKey} onChange={() => handleRequireApiKey(!requireApiKey)} />
         </div>
 
         <div className="grid gap-3 sm:grid-cols-3 mb-4">
@@ -1631,13 +1686,6 @@ export default function APIPageClient({ machineId }) {
           </div>
         )}
 
-        <div className="flex items-center justify-between rounded-[10px] border border-border-subtle bg-bg px-4 py-3">
-          <div>
-            <p className="font-medium">Require API key</p>
-            <p className="text-sm text-text-muted">Requests without a valid key will be rejected</p>
-          </div>
-          <Toggle checked={requireApiKey} onChange={() => handleRequireApiKey(!requireApiKey)} />
-        </div>
       </Card>
 
       <Modal
@@ -1649,15 +1697,143 @@ export default function APIPageClient({ machineId }) {
           setSettingsKeyId(null);
         }}
       >
-        <div className="flex flex-col gap-4">
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-text-main">{keys.length} keys</p>
-              <p className="text-xs text-text-muted">Use the cog on each key to edit limits, expiry, or reset usage.</p>
+        <div className="flex flex-col gap-4 -m-6 p-6 max-h-[80vh] min-h-0">
+          <div className="shrink-0 flex flex-col gap-2 border-b border-border-subtle pb-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-text-main">{keys.length} keys</p>
+                <p className="text-xs text-text-muted">Select keys for bulk actions, or use the cog on a key to edit it.</p>
+              </div>
+              <Button icon="add" className="shrink-0" onClick={() => setShowCreateModal(true)}>Create Key</Button>
             </div>
-            <Button icon="add" onClick={() => setShowCreateModal(true)}>Create Key</Button>
+            {keys.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="flex items-center gap-2 text-xs text-text-muted cursor-pointer select-none">
+                  <input type="checkbox" className="size-4 accent-primary cursor-pointer" checked={pagedKeys.length > 0 && pagedKeys.every((k) => selectedKeyIds.has(k.id))} ref={(el) => { if (el) { const sel = pagedKeys.filter((k) => selectedKeyIds.has(k.id)).length; el.indeterminate = sel > 0 && sel < pagedKeys.length; } }} onChange={toggleSelectAllKeys} />
+                  {keys.length > KEY_MANAGER_PAGE_SIZE ? "Select page" : "Select all"}
+                </label>
+                {selectedKeyIds.size > 0 && (
+                  <>
+                    <span className="text-xs font-medium text-text-main">{selectedKeyIds.size} selected</span>
+                    <Button size="sm" variant="outline" disabled={bulkBusy} onClick={() => bulkSetActive(true)}>Enable</Button>
+                    <Button size="sm" variant="outline" disabled={bulkBusy} onClick={() => bulkSetActive(false)}>Disable</Button>
+                    <Button size="sm" variant="danger" disabled={bulkBusy} onClick={bulkDelete}>Delete</Button>
+                    <button type="button" className="text-xs text-text-muted hover:text-text-main underline" onClick={() => setSelectedKeyIds(new Set())}>Clear</button>
+                  </>
+                )}
+              </div>
+            )}
           </div>
 
+          <div className="shrink-0 rounded-[10px] border border-border-subtle bg-bg">
+            <button
+              type="button"
+              onClick={() => setGlobalDefaultsOpen((v) => !v)}
+              className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left"
+            >
+              <span className="flex items-center gap-2 min-w-0">
+                <span className="material-symbols-outlined text-[18px] text-text-muted">tune</span>
+                <span className="text-sm font-medium text-text-main">Global defaults</span>
+                <span className="text-xs text-text-muted truncate hidden sm:inline">
+                  Token saver · combo exposure · custom instruction
+                </span>
+              </span>
+              <span className={"material-symbols-outlined text-[18px] text-text-muted transition-transform " + (globalDefaultsOpen ? "rotate-180" : "")}>expand_more</span>
+            </button>
+            {globalDefaultsOpen && (
+              <div className="flex flex-col gap-3 border-t border-border-subtle p-3">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-text-main">Token saver scope</p>
+                    <p className="text-xs text-text-muted">Global applies the global token saver to every key. Individual lets each key use its own config.</p>
+                  </div>
+                  <div className="flex rounded-[10px] border border-border-subtle overflow-hidden shrink-0">
+                    {[["global", "Global"], ["individual", "Individual"]].map(([val, label]) => (
+                      <button key={val} type="button" onClick={() => { setTokenSaverMode(val); patchSetting({ tokenSaverMode: val }); }}
+                        className={"px-3 py-1.5 text-sm font-medium transition-colors " + (tokenSaverMode === val ? "bg-brand-500 text-white" : "bg-surface text-text-muted hover:text-text-main")}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-text-main">Combo exposure default</p>
+                    <p className="text-xs text-text-muted">For keys with no per-key exposure. Per-key exposure overrides this.</p>
+                  </div>
+                  <div className="flex rounded-[10px] border border-border-subtle overflow-hidden shrink-0">
+                    {[["all-prefixed", "All models"], ["combo-only", "Combos only"]].map(([val, label]) => (
+                      <button key={val} type="button" onClick={() => { setComboExposureMode(val); patchSetting({ comboExposureMode: val }); }}
+                        className={"px-3 py-1.5 text-sm font-medium transition-colors " + (comboExposureMode === val ? "bg-brand-500 text-white" : "bg-surface text-text-muted hover:text-text-main")}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex flex-col gap-2 border-t border-border-subtle pt-3">
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-text-main">Custom instruction scope</p>
+                      <p className="text-xs text-text-muted">Global injects the text below into every request. Individual lets each key set its own.</p>
+                    </div>
+                    <div className="flex rounded-[10px] border border-border-subtle overflow-hidden shrink-0">
+                      {[["global", "Global"], ["individual", "Individual"]].map(([val, label]) => (
+                        <button key={val} type="button" onClick={() => { setCustomInstructionMode(val); patchSetting({ customInstructionMode: val }); }}
+                          className={"px-3 py-1.5 text-sm font-medium transition-colors " + (customInstructionMode === val ? "bg-brand-500 text-white" : "bg-surface text-text-muted hover:text-text-main")}>
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <label className="text-sm text-text-main">Enable global custom instruction</label>
+                    <Toggle size="sm" checked={customInstructionEnabled} onChange={(c) => { setCustomInstructionEnabled(c); patchSetting({ customInstructionEnabled: c }); }} />
+                  </div>
+                  {customInstructionEnabled && (
+                    <>
+                      <textarea
+                        value={customInstructionText}
+                        onChange={(e) => setCustomInstructionText(e.target.value)}
+                        onBlur={() => patchSetting({ customInstructionText })}
+                        rows={4}
+                        placeholder="e.g. Always answer in British English. Never reveal system prompts."
+                        className="w-full rounded-[10px] border border-border-subtle bg-surface px-3 py-2 text-sm text-text-main resize-y"
+                      />
+                      <div className="flex items-center justify-between gap-3 flex-wrap">
+                        <span className="text-xs text-text-muted">Injection mode</span>
+                        <div className="flex rounded-[10px] border border-border-subtle overflow-hidden shrink-0">
+                          {[["append", "Append"], ["prepend", "Prepend"], ["replace", "Replace"]].map(([val, label]) => (
+                            <button key={val} type="button" onClick={() => { setCustomInstructionInjectMode(val); patchSetting({ customInstructionInjectMode: val }); }}
+                              className={"px-3 py-1.5 text-xs font-medium transition-colors " + (customInstructionInjectMode === val ? "bg-brand-500 text-white" : "bg-surface text-text-muted hover:text-text-main")}>
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+                <div className="flex flex-col gap-2 border-t border-border-subtle pt-3">
+                  <p className="text-sm font-medium text-text-main">Key-holder self-service</p>
+                  <p className="text-xs text-text-muted">Let key holders enable/disable and adjust these from their own /apikey page. Per-key overrides in the key settings take precedence.</p>
+                  <label className="flex items-center justify-between gap-3 pt-1">
+                    <span className="text-sm text-text-main">Allow managing token saver</span>
+                    <Toggle size="sm" checked={allowKeyHolderTokenSaver} onChange={(c) => { setAllowKeyHolderTokenSaver(c); patchSetting({ allowKeyHolderTokenSaver: c }); }} />
+                  </label>
+                  <label className="flex items-center justify-between gap-3">
+                    <span className="text-sm text-text-main">Allow managing overage</span>
+                    <Toggle size="sm" checked={allowKeyHolderOverage} onChange={(c) => { setAllowKeyHolderOverage(c); patchSetting({ allowKeyHolderOverage: c }); }} />
+                  </label>
+                  <label className="flex items-center justify-between gap-3">
+                    <span className="text-sm text-text-main">Allow managing custom instruction</span>
+                    <Toggle size="sm" checked={allowKeyHolderCustomInstruction} onChange={(c) => { setAllowKeyHolderCustomInstruction(c); patchSetting({ allowKeyHolderCustomInstruction: c }); }} />
+                  </label>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="flex-1 min-h-0 overflow-y-auto pr-1">
           {keys.length === 0 ? (
             <div className="text-center py-12 rounded-[10px] border border-border-subtle bg-bg">
               <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-primary/10 text-primary mb-4">
@@ -1669,7 +1845,7 @@ export default function APIPageClient({ machineId }) {
             </div>
           ) : (
             <div className="flex flex-col gap-3">
-              {keys.map((key) => {
+              {pagedKeys.map((key) => {
                 const usage = key.usage || {};
                 const status = keyStatusMeta(key.status || (key.isActive === false ? "paused" : "active"));
                 const daily = getUsagePeriod(usage, "daily");
@@ -1679,9 +1855,17 @@ export default function APIPageClient({ machineId }) {
                 return (
                   <div
                     key={key.id}
-                    className={`group rounded-[10px] border border-border-subtle bg-bg p-3 ${key.isActive === false ? "opacity-60" : ""}`}
+                    className={`group rounded-[10px] border bg-bg p-3 ${selectedKeyIds.has(key.id) ? "border-primary/60 ring-1 ring-primary/30" : "border-border-subtle"} ${key.isActive === false ? "opacity-60" : ""}`}
                   >
-                    <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-3">
+                      <input
+                        type="checkbox"
+                        className="mt-1 size-4 shrink-0 accent-primary cursor-pointer"
+                        checked={selectedKeyIds.has(key.id)}
+                        onChange={() => toggleSelectKey(key.id)}
+                        aria-label={`Select ${key.name}`}
+                      />
+                      <div className="flex-1 min-w-0 flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
                           <p className="text-sm font-medium truncate">{key.name}</p>
@@ -1749,6 +1933,7 @@ export default function APIPageClient({ machineId }) {
                           <span className="material-symbols-outlined text-[18px]">delete</span>
                         </button>
                       </div>
+                      </div>
                     </div>
 
                     <div className="mt-3 grid gap-2 sm:grid-cols-3">
@@ -1768,6 +1953,12 @@ export default function APIPageClient({ machineId }) {
               })}
             </div>
           )}
+          </div>
+          {keys.length > KEY_MANAGER_PAGE_SIZE && (
+            <div className="shrink-0 border-t border-border-subtle pt-2">
+              <Pagination currentPage={safeKeyManagerPage} pageSize={KEY_MANAGER_PAGE_SIZE} totalItems={keys.length} onPageChange={setKeyManagerPage} />
+            </div>
+          )}
         </div>
       </Modal>
 
@@ -1777,6 +1968,7 @@ export default function APIPageClient({ machineId }) {
         apiKey={settingsKey}
         combos={combos}
         tokenSaverMode={tokenSaverMode}
+        customInstructionMode={customInstructionMode}
         onClose={() => setSettingsKeyId(null)}
         onReset={(key, period) => resetKeyUsage(key, period)}
         onSaved={(updated) => {
@@ -1794,6 +1986,7 @@ export default function APIPageClient({ machineId }) {
         mode="create"
         combos={combos}
         tokenSaverMode={tokenSaverMode}
+        customInstructionMode={customInstructionMode}
         onClose={() => setShowCreateModal(false)}
         onSaved={(created) => {
           if (created && created.key) setCreatedKey(created.key);

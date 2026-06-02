@@ -10,7 +10,7 @@ import {
 import { cacheClaudeHeaders } from "open-sse/utils/claudeHeaderCache.js";
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo, getComboModels } from "../services/model.js";
-import { resolveExposure, isModelAllowed, effectiveTokenSaver } from "@/lib/keyPolicy.js";
+import { resolveExposure, isModelAllowed, effectiveTokenSaver, effectiveCustomInstruction } from "@/lib/keyPolicy.js";
 import { handleChatCore } from "open-sse/handlers/chatCore.js";
 import { errorResponse, unavailableResponse, isLocalProxyFailure } from "open-sse/utils/error.js";
 import { handleComboChat } from "open-sse/services/combo.js";
@@ -170,14 +170,36 @@ export async function handleChat(request, clientRawRequest = null) {
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, keyConfig = null) {
+const MAX_COMBO_DEPTH = 3;
+
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, keyConfig = null, comboDepth = 0) {
   const modelInfo = await getModelInfo(modelStr);
 
   // If provider is null, this might be a combo name - check and handle
   if (!modelInfo.provider) {
     const comboModels = await getComboModels(modelStr);
     if (comboModels) {
+      // Guard against combo-of-combo loops / unbounded recursion.
+      if (comboDepth >= MAX_COMBO_DEPTH) {
+        log.warn("COMBO", `Combo nesting too deep (>${MAX_COMBO_DEPTH}) at "${modelStr}"`);
+        return errorResponse(HTTP_STATUS.BAD_REQUEST, "Combo nesting too deep");
+      }
       const chatSettings = await getSettings();
+      // Re-check per-key exposure for this (nested) combo: the top-level guard
+      // only validated the originally requested model, not combos referenced
+      // by other combos.
+      if (keyConfig) {
+        const exposure = resolveExposure(keyConfig, chatSettings);
+        if (exposure.mode !== "all") {
+          const allowedComboMembers = exposure.mode === "combo" && exposure.combo
+            ? await getComboModels(exposure.combo)
+            : null;
+          if (!isModelAllowed(exposure, { modelStr, isCombo: true, allowedComboMembers })) {
+            log.warn("AUTH", `Nested combo ${modelStr} not exposed for this API key`);
+            return errorResponse(HTTP_STATUS.FORBIDDEN, "Model not permitted for this API key");
+          }
+        }
+      }
       // Check for combo-specific strategy first, fallback to global
       const comboStrategies = chatSettings.comboStrategies || {};
       const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
@@ -188,7 +210,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       return handleComboChat({
         body,
         models: comboModels,
-        handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, keyConfig),
+        handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, keyConfig, comboDepth + 1),
         log,
         comboName: modelStr,
         comboStrategy,
@@ -265,6 +287,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
     // Effective token saver: per-key when tokenSaverMode=individual, else global.
     const saver = effectiveTokenSaver(chatSettings, keyConfig);
+    const customInstruction = effectiveCustomInstruction(chatSettings, keyConfig);
     const result = await handleChatCore({
       body: { ...body, model: `${provider}/${model}` },
       modelInfo: { provider, model },
@@ -280,6 +303,9 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       toonEnabled: saver.toonEnabled,
       cavemanEnabled: saver.cavemanEnabled,
       cavemanLevel: saver.cavemanLevel,
+      customInstructionEnabled: customInstruction.enabled,
+      customInstructionText: customInstruction.text,
+      customInstructionMode: customInstruction.mode,
       providerThinking,
       // Detect source format by endpoint + body
       sourceFormatOverride: request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null,

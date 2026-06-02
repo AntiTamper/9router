@@ -103,6 +103,8 @@ function deriveConfig(row, parsedConfig) {
       }
     : null;
 
+  const customInstruction = normalizeCustomInstruction(cfg.customInstruction);
+
   const ex = cfg.exposure && typeof cfg.exposure === "object" ? cfg.exposure : null;
   const exposure = ex && (ex.mode === "combo" || ex.mode === "all")
     ? { mode: ex.mode, combo: ex.mode === "combo" && ex.combo ? String(ex.combo) : null }
@@ -115,6 +117,7 @@ function deriveConfig(row, parsedConfig) {
     overage = {
       enabled: true,
       limit: toIntOrNull(ov.limit),
+      maxLimit: toIntOrNull(ov.maxLimit ?? ov.limit),
       anchorAt: normalizeExpiresAt(ov.anchorAt) || null,
       window: ovWin && (ovWin.availableFrom || ovWin.availableUntil || ovWin.expiresAt)
         ? {
@@ -125,7 +128,35 @@ function deriveConfig(row, parsedConfig) {
     };
   }
 
-  return { limits, hardCapAnchorAt, dailyWindow, availability, tokenSaver, exposure, overage };
+  const permissions = derivePermissions(cfg.permissions);
+  return { limits, hardCapAnchorAt, dailyWindow, availability, tokenSaver, customInstruction, exposure, overage, permissions };
+}
+
+// Per-key self-service permission tri-state: true (on), false (off), or null
+// (inherit the global allowKeyHolder* default). Accepts "on"/"off"/"inherit".
+function normalizePermission(value) {
+  if (value === true || value === "on") return true;
+  if (value === false || value === "off") return false;
+  return null;
+}
+
+function derivePermissions(raw) {
+  const p = raw && typeof raw === "object" ? raw : {};
+  return {
+    tokenSaver: normalizePermission(p.tokenSaver),
+    overage: normalizePermission(p.overage),
+    customInstruction: normalizePermission(p.customInstruction),
+  };
+}
+
+// Per-key custom system instruction. Stored only when enabled with text;
+// otherwise null (inherits/uses global per customInstructionMode).
+function normalizeCustomInstruction(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const text = typeof raw.text === "string" ? raw.text : "";
+  const mode = raw.mode === "prepend" || raw.mode === "replace" ? raw.mode : "append";
+  if (raw.enabled !== true || !text.trim()) return null;
+  return { enabled: true, text, mode };
 }
 
 function rowToKey(row) {
@@ -277,29 +308,29 @@ function buildUsageSummary(db, key, now = new Date()) {
     hard: limitSummary(hardNorm, cfgLimits.hard),
   };
 
-  // Overage pool (above the timed limits). Counts overage-tagged usage since anchor.
-  let overage = null;
+  // Always report a structured overage object so consumers (dashboard + public
+  // /apikey page + API) can show overage state even when it is disabled.
   const ovCfg = cfg.overage;
-  if (ovCfg && ovCfg.enabled && ovCfg.limit) {
-    const ovAnchor = ovCfg.anchorAt ? new Date(ovCfg.anchorAt) : null;
-    const ovUsed = sumUsage(db, key.key, ovAnchor, null, "overage").tokens;
-    const windowActive = isOverageWindowActive(ovCfg.window, now);
-    overage = {
-      enabled: true,
-      limit: ovCfg.limit,
-      used: ovUsed,
-      remaining: Math.max(0, ovCfg.limit - ovUsed),
-      anchorAt: ovCfg.anchorAt || null,
-      window: ovCfg.window || null,
-      windowActive,
-      exhausted: ovUsed >= ovCfg.limit,
-    };
-  }
+  const ovEnabled = !!(ovCfg && ovCfg.enabled && ovCfg.limit);
+  const ovAnchor = ovEnabled && ovCfg.anchorAt ? new Date(ovCfg.anchorAt) : null;
+  const ovUsed = ovEnabled ? sumUsage(db, key.key, ovAnchor, null, "overage").tokens : 0;
+  const ovWindowActive = ovEnabled ? isOverageWindowActive(ovCfg.window, now) : false;
+  const overage = {
+    enabled: ovEnabled,
+    limit: ovEnabled ? ovCfg.limit : null,
+    maxLimit: ovCfg ? (toIntOrNull(ovCfg.maxLimit ?? ovCfg.limit)) : null,
+    used: ovUsed,
+    remaining: ovEnabled ? Math.max(0, ovCfg.limit - ovUsed) : null,
+    anchorAt: ovEnabled ? (ovCfg.anchorAt || null) : null,
+    window: ovEnabled ? (ovCfg.window || null) : null,
+    windowActive: ovWindowActive,
+    exhausted: ovEnabled ? ovUsed >= ovCfg.limit : false,
+  };
 
   const activeTimed = [limits.daily, limits.weekly, limits.monthly].filter((l) => l.limit !== null);
   const timedBlocked = activeTimed.some((l) => l.exhausted);
   const hardBlocked = limits.hard.limit !== null && limits.hard.exhausted;
-  const overageAvailable = !!(overage && overage.windowActive && !overage.exhausted);
+  const overageAvailable = !!(overage.enabled && overage.windowActive && !overage.exhausted);
   const blocked = hardBlocked || (timedBlocked && !overageAvailable);
   // A new request consumes overage when a timed limit blocks but overage saves it
   // (and the absolute hard cap is not itself blocking).
@@ -460,6 +491,9 @@ function buildStructuredConfig(input = {}, existing = {}) {
       }
     : null;
 
+  const ciIn = pick("customInstruction", existingCfg.customInstruction);
+  const customInstruction = normalizeCustomInstruction(ciIn);
+
   const exIn = pick("exposure", existingCfg.exposure);
   const exposure = exIn && (exIn.mode === "combo" || exIn.mode === "all")
     ? { mode: exIn.mode, combo: exIn.mode === "combo" && exIn.combo ? String(exIn.combo) : null }
@@ -475,6 +509,9 @@ function buildStructuredConfig(input = {}, existing = {}) {
     overage = {
       enabled: true,
       limit: toIntOrNull(ovIn.limit),
+      // Admin-defined ceiling: an explicit maxLimit (if provided) else the
+      // admin's own limit. Holders can never exceed this via self-service.
+      maxLimit: toIntOrNull(ovIn.maxLimit ?? ovIn.limit),
       anchorAt,
       window: ow && (ow.availableFrom || ow.availableUntil || ow.expiresAt)
         ? {
@@ -485,7 +522,8 @@ function buildStructuredConfig(input = {}, existing = {}) {
     };
   }
 
-  return { limits, hardCapAnchorAt, dailyWindow, availability, tokenSaver, exposure, overage };
+  const permissions = derivePermissions(pick("permissions", existingCfg.permissions));
+  return { limits, hardCapAnchorAt, dailyWindow, availability, tokenSaver, customInstruction, exposure, overage, permissions };
 }
 
 function buildKeyConfig(input = {}, existing = {}) {
@@ -628,6 +666,97 @@ export async function updateApiKey(id, data) {
   return result;
 }
 
+// --- Key-holder self-service updates (public /apikey page) -------------------
+// Authenticated by the key VALUE itself (not an admin id). Each helper edits
+// ONLY the scoped slice of the key's own config; all other config (limits,
+// exposure, expiry) is preserved by buildStructuredConfig's merge-with-existing.
+
+function findKeyRowByValue(db, keyValue) {
+  if (!keyValue) return null;
+  const row = db.get(`SELECT * FROM apiKeys WHERE key = ?`, [keyValue]);
+  return rowToKey(row);
+}
+
+// Update the per-key token-saver config. `tokenSaver` is the structured object
+// { rtk, toon, caveman, cavemanLevel, codexUsage } or null to clear.
+export async function updateApiKeyTokenSaverByValue(keyValue, tokenSaver) {
+  const db = await getAdapter();
+  const key = findKeyRowByValue(db, keyValue);
+  if (!key) return null;
+  const ts = tokenSaver && typeof tokenSaver === "object"
+    ? {
+        rtk: tokenSaver.rtk === true,
+        toon: tokenSaver.toon === true,
+        caveman: tokenSaver.caveman === true,
+        cavemanLevel: typeof tokenSaver.cavemanLevel === "string" ? tokenSaver.cavemanLevel : "full",
+        codexUsage: tokenSaver.codexUsage !== false,
+      }
+    : null;
+  const nextConfig = { ...(key.config || {}), tokenSaver: ts };
+  return updateApiKey(key.id, { config: nextConfig });
+}
+
+// Set/clear the per-key custom system instruction. `ci` is { enabled, text?, mode? }.
+// Disabling (or empty text) clears it so the key inherits/uses the global config.
+export async function updateApiKeyCustomInstructionByValue(keyValue, ci) {
+  const db = await getAdapter();
+  const key = findKeyRowByValue(db, keyValue);
+  if (!key) return null;
+  let next = null;
+  if (ci && ci.enabled === true) {
+    const text = typeof ci.text === "string" ? ci.text.trim() : "";
+    if (!text) return { error: "Custom instruction text is required" };
+    const mode = ci.mode === "prepend" || ci.mode === "replace" ? ci.mode : "append";
+    next = { enabled: true, text, mode };
+  }
+  const nextConfig = { ...(key.config || {}), customInstruction: next };
+  return updateApiKey(key.id, { config: nextConfig });
+}
+// Enable/disable the per-key overage pool. `overage` is { enabled, limit?, window? }.
+// When enabling, a limit is required. Other config preserved.
+//
+// `opts.selfService` marks a key-holder (non-admin) write: the holder may only
+// toggle enabled and adjust the limit DOWNWARD, never above the admin-defined
+// ceiling (`overage.maxLimit`, falling back to the current admin `limit`). The
+// admin ceiling + window are always preserved. On the disabled->enabled
+// transition the overage pool is (re)anchored to now so usage counts forward.
+export async function updateApiKeyOverageByValue(keyValue, overage, opts = {}) {
+  const selfService = opts?.selfService === true;
+  const db = await getAdapter();
+  const key = findKeyRowByValue(db, keyValue);
+  if (!key) return null;
+  const existingOv = key.config?.overage || {};
+  const wasEnabled = existingOv.enabled === true;
+  // Admin ceiling: explicit maxLimit, else the existing admin-set limit.
+  const ceiling = toIntOrNull(existingOv.maxLimit ?? existingOv.limit);
+  let ov = null;
+  if (overage && overage.enabled === true) {
+    let limit = toIntOrNull(overage.limit ?? existingOv.limit);
+    if (!limit || limit <= 0) return { error: "Overage limit must be a positive number" };
+    if (selfService) {
+      if (ceiling == null) {
+        return { error: "Overage is not configured for this key" };
+      }
+      // Holders can never raise the pool above the admin ceiling.
+      if (limit > ceiling) limit = ceiling;
+    }
+    const nextMax = ceiling != null ? ceiling : limit;
+    ov = {
+      enabled: true,
+      limit,
+      maxLimit: nextMax,
+      anchorAt: wasEnabled ? (existingOv.anchorAt || new Date().toISOString()) : new Date().toISOString(),
+      window: existingOv.window || null,
+    };
+  } else {
+    // Preserve the admin ceiling + window so a later re-enable stays bounded.
+    ov = { enabled: false };
+    if (ceiling != null) ov.maxLimit = ceiling;
+    if (existingOv.window) ov.window = existingOv.window;
+  }
+  const nextConfig = { ...(key.config || {}), overage: ov };
+  return updateApiKey(key.id, { config: nextConfig });
+}
 export async function deleteApiKey(id) {
   const db = await getAdapter();
   const res = db.run(`DELETE FROM apiKeys WHERE id = ?`, [id]);

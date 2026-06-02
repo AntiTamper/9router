@@ -855,7 +855,7 @@ export default function ProviderLimits() {
             <select
               value={refreshIntervalMs}
               onChange={(event) => setRefreshIntervalMs(Number(event.target.value))}
-              className="bg-transparent text-xs focus:outline-none"
+              className="h-full cursor-pointer bg-transparent text-xs focus:outline-none"
               title="Quota refresh interval"
             >
               {REFRESH_INTERVAL_OPTIONS.map((option) => (

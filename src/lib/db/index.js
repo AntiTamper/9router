@@ -33,7 +33,7 @@ export {
 // API keys
 export {
   getApiKeys, getApiKeyById, createApiKey, updateApiKey, deleteApiKey,
-  validateApiKey, checkApiKeyAccess, getApiKeyUsageSummary, getApiKeyConfigByValue, getApiKeyBrief, resetApiKeyUsage, cleanupExpiredApiKeys,
+  validateApiKey, checkApiKeyAccess, getApiKeyUsageSummary, getApiKeyConfigByValue, getApiKeyBrief, updateApiKeyTokenSaverByValue, updateApiKeyOverageByValue, updateApiKeyCustomInstructionByValue, resetApiKeyUsage, cleanupExpiredApiKeys,
 } from "./repos/apiKeysRepo.js";
 
 // Combos

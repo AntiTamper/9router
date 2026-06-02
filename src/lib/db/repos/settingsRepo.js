@@ -56,6 +56,19 @@ const DEFAULT_SETTINGS = {
   // "all-prefixed" exposes every provider model by prefix; "combo-only"
   // exposes only combos. Per-key exposure overrides this default.
   comboExposureMode: "all-prefixed",
+  // Self-service permissions for public /apikey key holders. When enabled, a
+  // key holder authenticated by their own key may edit that key's own settings
+  // via POST /api/apikey/settings. Default OFF (admin-only).
+  allowKeyHolderTokenSaver: false,
+  allowKeyHolderOverage: false,
+  // Custom system-instruction injection (mirrors token saver). When enabled,
+  // the text is injected into the system message of every request. Mode picks
+  // how it combines with the client's own system prompt.
+  customInstructionEnabled: false,
+  customInstructionText: "",
+  customInstructionMode: "global", // "global" | "individual"
+  customInstructionInjectMode: "append", // "append" | "prepend" | "replace"
+  allowKeyHolderCustomInstruction: false,
   quotaAutoToggleEnabled: true,
   quotaRefreshIntervalMs: null,
 };

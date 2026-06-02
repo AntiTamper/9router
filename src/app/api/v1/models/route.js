@@ -6,7 +6,7 @@ import {
   isAnthropicCompatibleProvider,
   isOpenAICompatibleProvider,
 } from "@/shared/constants/providers";
-import { getProviderConnections, getCombos, getCustomModels, getModelAliases, getComboByName, getSettings, getApiKeyConfigByValue } from "@/lib/localDb";
+import { getProviderConnections, getCombos, getCustomModels, getModelAliases, getSettings, getApiKeyConfigByValue } from "@/lib/localDb";
 import { getDisabledModels } from "@/lib/disabledModelsDb";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
 import { resolveKimiModels } from "open-sse/services/kimiModels.js";
@@ -15,6 +15,7 @@ import { getStaticContextWindow } from "open-sse/config/providerModels.js";
 import { guardedFetch } from "@/lib/security/urlGuard";
 import { updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { resolveExposure } from "@/lib/keyPolicy.js";
+import { getComboModels } from "@/sse/services/model.js";
 
 function alignLiveModelsWithStaticIds(providerId, liveModels) {
   const staticAlias = PROVIDER_ID_TO_ALIAS[providerId] || providerId;
@@ -531,8 +532,9 @@ async function applyExposureFilter(request, data) {
   let allowedComboMembers = null;
   if (exposure.mode === "combo" && exposure.combo) {
     try {
-      const combo = await getComboByName(exposure.combo);
-      allowedComboMembers = combo?.models || [];
+      // Use the enabled-only member list so the catalog matches chat
+      // enforcement (which also skips disabled combo members).
+      allowedComboMembers = (await getComboModels(exposure.combo)) || [];
     } catch { allowedComboMembers = []; }
   }
   const memberSet = new Set(allowedComboMembers || []);

@@ -22,6 +22,9 @@ function initState(key) {
   const ts = cfg.tokenSaver || null;
   const ex = cfg.exposure || { mode: "all", combo: null };
   const ov = cfg.overage || null;
+  const ci = cfg.customInstruction || null;
+  const pm = cfg.permissions || {};
+  const permVal = (v) => (v === true ? "on" : v === false ? "off" : "inherit");
   return {
     name: key?.name || "",
     isActive: key?.isActive !== false,
@@ -51,6 +54,12 @@ function initState(key) {
     exposureCombo: ex.combo || "",
     overageOn: !!(ov && ov.enabled),
     overageLimit: ov?.limit != null ? String(ov.limit) : "",
+    permTokenSaver: permVal(pm.tokenSaver),
+    permOverage: permVal(pm.overage),
+    permCustomInstruction: permVal(pm.customInstruction),
+    ciOn: !!(ci && ci.enabled),
+    ciText: ci?.text || "",
+    ciMode: ["append","prepend","replace"].includes(ci?.mode) ? ci.mode : "append",
   };
 }
 
@@ -75,6 +84,10 @@ function buildPayload(s, { create }) {
       ? { mode: "combo", combo: s.exposureCombo }
       : { mode: "all", combo: null },
     overage: s.overageOn ? { enabled: true, limit: toInt(s.overageLimit) } : null,
+    customInstruction: s.ciOn && s.ciText.trim()
+      ? { enabled: true, text: s.ciText.trim(), mode: s.ciMode }
+      : null,
+    permissions: { tokenSaver: s.permTokenSaver, overage: s.permOverage, customInstruction: s.permCustomInstruction },
   };
   const payload = { name: s.name.trim(), config, autoDeleteExpired: s.autoDeleteExpired };
   if (!create) payload.isActive = s.isActive;
@@ -112,6 +125,25 @@ function Section({ title, hint, children }) {
   );
 }
 
+// Tri-state self-service permission selector (Default / On / Off), styled as a
+// segmented pill control matching the Global/Individual + Wenyan/Normal look.
+function PermissionRow({ label, value, onChange }) {
+  const opts = [["inherit", "Default"], ["on", "On"], ["off", "Off"]];
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-sm text-text-main">{label}</span>
+      <div className="flex rounded-[10px] border border-border-subtle overflow-hidden shrink-0">
+        {opts.map(([val, lbl]) => (
+          <button key={val} type="button" onClick={() => onChange(val)}
+            className={"px-3 py-1.5 text-xs font-medium transition-colors " + (value === val ? "bg-brand-500 text-white" : "bg-surface text-text-muted hover:text-text-main")}>
+            {lbl}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // A token-limit row: a toggle to enable, plus a formatted number input.
 function LimitRow({ label, on, onToggle, value, onValue, placeholder }) {
   const preview = on && value ? formatNumber(String(value).replace(/[, ]/g, "")) : null;
@@ -138,7 +170,7 @@ function LimitRow({ label, on, onToggle, value, onValue, placeholder }) {
 // Structured create/edit modal for an API key. `mode` is "create" or "edit".
 // `combos` is the list of combo objects ({name,...}) for the exposure picker.
 // onSaved(updatedOrCreatedKey, { created }) fires after a successful save.
-export default function ApiKeyConfigModal({ isOpen, mode, apiKey, combos = [], tokenSaverMode = "global", onClose, onSaved, onReset }) {
+export default function ApiKeyConfigModal({ isOpen, mode, apiKey, combos = [], tokenSaverMode = "global", customInstructionMode = "global", onClose, onSaved, onReset }) {
   const create = mode === "create";
   const [s, setS] = useState(() => initState(apiKey));
   const [err, setErr] = useState("");
@@ -291,6 +323,41 @@ export default function ApiKeyConfigModal({ isOpen, mode, apiKey, combos = [], t
               <label className="flex items-center gap-2 text-sm text-text-main"><input type="checkbox" checked={s.tsCodexUsage} onChange={(e) => set({ tsCodexUsage: e.target.checked })} /> Forward Codex usage</label>
             </div>
           )}
+        </Section>
+
+        <Section title="Custom instruction" hint={customInstructionMode === "individual"
+          ? "Individual mode is active globally - this per-key instruction is injected into the system message."
+          : "Global mode is active - this per-key instruction is stored but only used when the global custom-instruction mode is Individual."}>
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-text-main">Use per-key custom instruction</span>
+            <Toggle size="sm" checked={s.ciOn} onChange={(c) => set({ ciOn: c })} />
+          </div>
+          {s.ciOn && (
+            <div className="flex flex-col gap-2 pl-1">
+              <textarea
+                value={s.ciText}
+                onChange={(e) => set({ ciText: e.target.value })}
+                rows={4}
+                placeholder="e.g. Always answer in British English."
+                className="w-full rounded-[8px] border border-border bg-surface px-3 py-2 text-sm text-text-main resize-y"
+              />
+              <div className="flex items-center gap-2 flex-wrap">
+                {[["append", "Append"], ["prepend", "Prepend"], ["replace", "Replace"]].map(([val, label]) => (
+                  <button key={val} type="button" onClick={() => set({ ciMode: val })}
+                    className={"px-3 py-1.5 rounded-full text-xs font-medium border transition-colors " +
+                      (s.ciMode === val ? "bg-brand-500 text-white border-brand-500" : "bg-surface text-text-muted border-border-subtle hover:border-brand-500/40")}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </Section>
+
+        <Section title="Key-holder self-service" hint="Let this key's holder change these from the public /apikey page. Default follows the global setting; On/Off overrides it for this key.">
+          <PermissionRow label="Edit token saver" value={s.permTokenSaver} onChange={(v) => set({ permTokenSaver: v })} />
+          <PermissionRow label="Manage overage" value={s.permOverage} onChange={(v) => set({ permOverage: v })} />
+          <PermissionRow label="Edit custom instruction" value={s.permCustomInstruction} onChange={(v) => set({ permCustomInstruction: v })} />
         </Section>
 
         {!create && (

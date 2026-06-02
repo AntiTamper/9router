@@ -114,6 +114,18 @@ export function parseStructuredConfig(raw) {
     }
   }
 
+  if (raw.permissions !== undefined) {
+    const pm = raw.permissions;
+    if (pm === null) {
+      out.permissions = { tokenSaver: null, overage: null };
+    } else if (pm && typeof pm === "object") {
+      const tri = (v) => (v === true || v === "on" ? true : v === false || v === "off" ? false : null);
+      out.permissions = { tokenSaver: tri(pm.tokenSaver), overage: tri(pm.overage) };
+    } else {
+      return { error: "Invalid permissions" };
+    }
+  }
+
   return { config: out };
 }
 
