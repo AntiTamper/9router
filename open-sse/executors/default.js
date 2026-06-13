@@ -16,6 +16,10 @@ export class DefaultExecutor extends BaseExecutor {
   transformRequest(model, body, stream = true, credentials = null, requestContext = null) {
     let transformed = this.applyJsonSchemaFallback(body);
     transformed = injectReasoningContent({ provider: this.provider, model, body: transformed });
+    // Cerebras/Mistral reject unsupported client_metadata on downstream requests.
+    if (transformed && typeof transformed === "object" && (this.provider === "cerebras" || this.provider === "mistral")) {
+      delete transformed.client_metadata;
+    }
     if (this.provider === "kimi" || this.provider === "kimi-coding") {
       const alias = this.provider === "kimi-coding" ? "kmc" : "kimi";
       const upstreamModel = getModelUpstreamId(alias, transformed?.model || model);
@@ -198,6 +202,11 @@ export class DefaultExecutor extends BaseExecutor {
       const baseUrl = credentials?.providerSpecificData?.baseUrl || "";
       const isOfficialAnthropic = baseUrl === "" || baseUrl.includes("api.anthropic.com");
       if (!isOfficialAnthropic) {
+        // Some third-party Anthropic-compatible gateways require Bearer auth in
+        // addition to x-api-key; send both so gateways reading either succeed.
+        if (credentials.apiKey && !headers["Authorization"]) {
+          headers["Authorization"] = `Bearer ${credentials.apiKey}`;
+        }
         delete headers["anthropic-dangerous-direct-browser-access"];
         delete headers["Anthropic-Dangerous-Direct-Browser-Access"];
         delete headers["x-app"];

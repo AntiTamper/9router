@@ -215,7 +215,16 @@ export const PROVIDERS = {
     clientId: "Iv1.b507a08c87ecfe98"
   },
   kiro: {
-    baseUrl: "https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse",
+    // All three hosts resolve to the same regional CodeWhisperer streaming service.
+    // Alternate DNS surfaces, NOT separate quota buckets — AWS throttles per identity
+    // (token + profileArn), not per hostname. baseUrls enables edge-level failover only;
+    // account rotation in the chat handler spreads real 429 load.
+    baseUrl: "https://runtime.us-east-1.kiro.dev/generateAssistantResponse",
+    baseUrls: [
+      "https://runtime.us-east-1.kiro.dev/generateAssistantResponse",
+      "https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse",
+      "https://q.us-east-1.amazonaws.com/generateAssistantResponse",
+    ],
     format: "kiro",
     retry: { 429: 2 },
     headers: {
@@ -330,7 +339,7 @@ export const PROVIDERS = {
     format: "openai"
   },
   siliconflow: {
-    baseUrl: "https://api.siliconflow.cn/v1/chat/completions",
+    baseUrl: "https://api.siliconflow.com/v1/chat/completions",
     format: "openai"
   },
   hyperbolic: {

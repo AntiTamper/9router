@@ -92,7 +92,9 @@ export function geminiToOpenAIResponse(chunk, state) {
         continue;
       }
 
-      // Text content (non-thinking)
+      // Text content. Gemini marks model-internal thinking with `thought: true`.
+      // Thought parts may stream WITHOUT a thoughtSignature; those must surface as
+      // reasoning_content, not as normal assistant content.
       if (part.text !== undefined && part.text !== "") {
         results.push({
           id: `chatcmpl-${state.messageId}`,
@@ -101,7 +103,9 @@ export function geminiToOpenAIResponse(chunk, state) {
           model: state.model,
           choices: [{
             index: 0,
-            delta: { content: part.text },
+            delta: isThought
+              ? { reasoning_content: part.text }
+              : { content: part.text },
             finish_reason: null
           }]
         });

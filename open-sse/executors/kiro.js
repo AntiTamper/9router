@@ -2,8 +2,6 @@ import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
 import { v4 as uuidv4 } from "uuid";
 import { refreshKiroToken } from "../services/tokenRefresh.js";
-import { proxyAwareFetch } from "../utils/proxyFetch.js";
-import { HTTP_STATUS, RETRY_CONFIG, DEFAULT_RETRY_CONFIG, resolveRetryEntry } from "../config/runtimeConfig.js";
 
 /**
  * KiroExecutor - Executor for Kiro AI (AWS CodeWhisperer)
@@ -33,45 +31,18 @@ export class KiroExecutor extends BaseExecutor {
   }
 
   /**
-   * Custom execute for Kiro - handles AWS EventStream binary response with retry support
+   * Kiro execute — delegate to BaseExecutor for endpoint fallback + retry, then
+   * transform the binary AWS EventStream into OpenAI-shaped SSE on success.
+   * BaseExecutor.execute() walks config.baseUrls (runtime.us-east-1.kiro.dev →
+   * codewhisperer → q), advancing on 429 and network/5xx. Errors are returned
+   * untransformed so the upstream handler can classify status + trigger fallback.
    */
-  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
-    const url = this.buildUrl(model, stream, 0);
-    const transformedBody = this.transformRequest(model, body, stream, credentials);
-    
-    // Merge default retry config with provider-specific config
-    const retryConfig = { ...DEFAULT_RETRY_CONFIG, ...this.config.retry };
-    let retryAttempts = 0;
-
-    while (true) {
-      const headers = this.buildHeaders(credentials, stream);
-      
-      const response = await proxyAwareFetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(transformedBody),
-        signal
-      }, proxyOptions);
-
-      // Check if should retry based on status code
-      const { attempts: maxRetries, delayMs } = resolveRetryEntry(retryConfig[response.status]);
-      if (!response.ok && maxRetries > 0 && retryAttempts < maxRetries) {
-        retryAttempts++;
-        log?.debug?.("RETRY", `${response.status} retry ${retryAttempts}/${maxRetries} after ${delayMs / 1000}s`);
-        await new Promise(resolve => setTimeout(resolve, delayMs));
-        continue;
-      }
-
-      if (!response.ok) {
-        return { response, url, headers, transformedBody };
-      }
-
-      // Success - transform and return
-      // For Kiro, we need to transform the binary EventStream to SSE
-      // Create a TransformStream to convert binary to SSE text
-      const transformedResponse = this.transformEventStreamToSSE(response, model);
-      return { response: transformedResponse, url, headers, transformedBody };
+  async execute(args) {
+    const result = await super.execute(args);
+    if (result?.response?.ok) {
+      result.response = this.transformEventStreamToSSE(result.response, args.model);
     }
+    return result;
   }
 
   /**

@@ -19,6 +19,19 @@ export class CommandCodeExecutor extends BaseExecutor {
     super("commandcode", PROVIDERS.commandcode);
   }
 
+  transformRequest(model, body, stream, credentials) {
+
+    // CommandCode upstream only speaks NDJSON streaming; force stream so non-stream
+
+    // client requests still produce a parseable upstream stream (aggregated downstream).
+
+    body.stream = true;
+
+    return body;
+
+  }
+
+
   buildHeaders(credentials, stream = true) {
     const headers = {
       "Content-Type": "application/json",

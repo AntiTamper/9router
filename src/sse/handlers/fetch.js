@@ -13,6 +13,7 @@ import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { handleComboChat, getComboModelsFromData } from "open-sse/services/combo.js";
+import { assertPublicUrl } from "@/shared/utils/ssrfGuard.js";
 
 /**
  * Handle web fetch (URL extraction) request for the SSE/Next.js server.
@@ -76,6 +77,14 @@ export async function handleFetch(request) {
   } catch {
     log.warn("FETCH", "Invalid URL", { url: targetUrl });
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid URL format");
+  }
+
+  // SSRF guard: reject internal/private/metadata targets (GHSA-qj3v-64wj-q825)
+  try {
+    assertPublicUrl(targetUrl);
+  } catch (e) {
+    log.warn("FETCH", "Blocked SSRF target", { url: targetUrl, reason: e.message });
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, e.message || "Blocked URL");
   }
 
   // Combo expansion: providerInput may be a combo name → run fallback/round-robin across providers

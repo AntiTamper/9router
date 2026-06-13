@@ -42,6 +42,20 @@ export function sanitizeSystemRole(body) {
   };
 }
 
+// Models that reject thinking.type "adaptive" (only Sonnet/Opus support it).
+const ADAPTIVE_THINKING_UNSUPPORTED = /haiku/i;
+
+// Downgrade adaptive thinking for models that don't support it (e.g. Haiku).
+// Newer Cowork/Claude Code clients emit thinking.type "adaptive" which OAuth
+// endpoints reject for Haiku models. Mutates body in place.
+export function downgradeAdaptiveThinking(body, model = "") {
+  if (!body || typeof body !== "object") return body;
+  if (body.thinking?.type === "adaptive" && ADAPTIVE_THINKING_UNSUPPORTED.test(model)) {
+    body.thinking = { type: "enabled", budget_tokens: 10000 };
+  }
+  return body;
+}
+
 // Check if message has valid non-empty content
 export function hasValidContent(msg) {
   if (typeof msg.content === "string" && msg.content.trim()) return true;

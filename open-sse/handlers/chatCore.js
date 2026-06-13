@@ -18,7 +18,7 @@ import { handleNonStreamingResponse } from "./chatCore/nonStreamingHandler.js";
 import { handleStreamingResponse, buildOnStreamComplete } from "./chatCore/streamingHandler.js";
 import { detectClientTool, isNativePassthrough } from "../utils/clientDetector.js";
 import { dedupeTools } from "../utils/toolDeduper.js";
-import { sanitizeSystemRole } from "../translator/helpers/claudeHelper.js";
+import { sanitizeSystemRole, downgradeAdaptiveThinking } from "../translator/helpers/claudeHelper.js";
 import { injectCaveman } from "../rtk/caveman.js";
 import { injectCustomInstruction } from "../rtk/customInstruction.js";
 import { compressMessages, formatRtkLog } from "../rtk/index.js";
@@ -97,6 +97,8 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     // `system` field to avoid a 400 from cc/* Claude models (#1580).
     if (provider === "claude" || provider?.startsWith("anthropic-compatible")) {
       translatedBody = sanitizeSystemRole(translatedBody);
+      // Downgrade thinking.type "adaptive" → "enabled" for Haiku (unsupported on OAuth endpoints)
+      translatedBody = downgradeAdaptiveThinking(translatedBody, model);
     }
   } else {
     const translated = translateProviderRequest({
