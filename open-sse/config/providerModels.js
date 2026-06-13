@@ -206,6 +206,7 @@ export const PROVIDER_MODELS = {
   ],
   kmc: [  // Kimi Coding
     { id: "kimi-for-coding", name: "Kimi for Coding", contextWindow: 262144 },
+    { id: "kimi-k2.7-code", name: "Kimi K2.7 Code", contextWindow: 262144 },
     { id: "kimi-k2.6", name: "Kimi K2.6", upstreamModelId: "kimi-for-coding", contextWindow: 262144 },
     { id: "kimi-k2.5", name: "Kimi K2.5" },
     { id: "kimi-k2.5-thinking", name: "Kimi K2.5 Thinking" },
@@ -361,9 +362,11 @@ export const PROVIDER_MODELS = {
     { id: "glm-4.5-air", name: "GLM-4.5-Air" },
   ],
   kimi: [
-    { id: "kimi-k2.6", name: "Kimi for Coding", upstreamModelId: "kimi-for-coding", contextWindow: 262144 },
+    { id: "kimi-for-coding", name: "Kimi for Coding", contextWindow: 262144 },
+    { id: "kimi-k2.6", name: "Kimi K2.6", upstreamModelId: "kimi-for-coding", contextWindow: 262144 },
   ],
   "kimi-api": [
+    { id: "kimi-k2.7-code", name: "Kimi K2.7 Code", contextWindow: 262144 },
     { id: "kimi-k2.6", name: "Kimi K2.6", contextWindow: 262144 },
     { id: "kimi-k2.5", name: "Kimi K2.5", contextWindow: 262144 },
     { id: "kimi-k2.5-thinking", name: "Kimi K2.5 Thinking", contextWindow: 262144 },

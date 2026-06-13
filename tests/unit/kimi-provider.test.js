@@ -37,8 +37,46 @@ describe("Kimi Code API key provider", () => {
     );
   });
 
-  it("exposes Kimi K2.6 while sending Kimi Code's stable upstream model ID", () => {
-    expect(getDefaultModel("kimi")).toBe("kimi-k2.6");
+  it("exposes Kimi Coding's default upstream model ID", () => {
+    expect(getDefaultModel("kimi")).toBe("kimi-for-coding");
+    expect(getModelUpstreamId("kimi", "kimi-for-coding")).toBe("kimi-for-coding");
+
+    const executor = new DefaultExecutor("kimi");
+    const transformed = executor.transformRequest("kimi-for-coding", {
+      model: "kimi-for-coding",
+      max_tokens: 1,
+      messages: [{ role: "user", content: "hi" }],
+    });
+
+    expect(transformed.model).toBe("kimi-for-coding");
+    expect(transformed.messages).toEqual([{ role: "user", content: "hi" }]);
+  });
+
+  it("keeps Kimi K2.7 Code available when explicitly requested", () => {
+    expect(getModelUpstreamId("kmc", "kimi-k2.7-code")).toBe("kimi-k2.7-code");
+
+    const executor = new DefaultExecutor("kimi");
+    const transformed = executor.transformRequest("kimi-k2.7-code", {
+      model: "kimi-k2.7-code",
+      max_tokens: 1,
+      temperature: 0.2,
+      top_p: 0.9,
+      thinking: { type: "enabled", budget_tokens: 10000 },
+      reasoning_effort: "high",
+      extra_body: { thinking: { type: "enabled" }, enable_thinking: true, keep: true },
+      messages: [{ role: "user", content: "hi" }],
+    });
+
+    expect(transformed.model).toBe("kimi-k2.7-code");
+    expect(transformed.temperature).toBeUndefined();
+    expect(transformed.top_p).toBeUndefined();
+    expect(transformed.thinking).toBeUndefined();
+    expect(transformed.reasoning_effort).toBeUndefined();
+    expect(transformed.extra_body).toEqual({ keep: true });
+    expect(transformed.messages).toEqual([{ role: "user", content: "hi" }]);
+  });
+
+  it("keeps the legacy Kimi K2.6 alias mapped to Kimi Code's stable upstream model ID", () => {
     expect(getModelUpstreamId("kimi", "kimi-k2.6")).toBe("kimi-for-coding");
     expect(getModelUpstreamId("kmc", "kimi-k2.6")).toBe("kimi-for-coding");
 
@@ -220,6 +258,6 @@ describe("Kimi Code API key provider", () => {
     expect(AI_PROVIDERS.kimi.serviceKinds).toEqual(["llm"]);
     expect(AI_PROVIDERS["kimi-api"].serviceKinds).toContain("webSearch");
     expect(CHAT_SEARCH_CONFIG.kimi).toBeUndefined();
-    expect(CHAT_SEARCH_CONFIG["kimi-api"].defaultModel).toBe("kimi-k2.6");
+    expect(CHAT_SEARCH_CONFIG["kimi-api"].defaultModel).toBe("kimi-k2.7-code");
   });
 });

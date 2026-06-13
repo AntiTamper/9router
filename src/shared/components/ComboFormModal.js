@@ -5,6 +5,7 @@ import Modal from "./Modal";
 import Input from "./Input";
 import Button from "./Button";
 import ModelSelectModal from "./ModelSelectModal";
+import ComboQuickAddByModel from "./ComboQuickAddByModel";
 
 const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/;
 
@@ -89,6 +90,14 @@ export default function ComboFormModal({ isOpen, combo, onClose, onSave, activeP
   const handleDeselectModel = (model) => {
     setModels(models.filter((m) => m !== model.value));
   };
+  const handleQuickAddModels = (nextModels) => setModels(nextModels);
+  const handleQuickAddName = (modelId) => {
+    if (isEdit || name.trim()) return;
+    let nextName = modelId;
+    if (forcePrefix && nextName.startsWith(forcePrefix)) nextName = nextName.slice(forcePrefix.length);
+    setName(nextName);
+    validateName(nextName);
+  };
   const handleRemoveModel = (i) => setModels(models.filter((_, idx) => idx !== i));
   const handleMoveUp = (i) => {
     if (i === 0) return;
@@ -130,6 +139,13 @@ export default function ComboFormModal({ isOpen, combo, onClose, onSave, activeP
               {forcePrefix ? `Auto-prefixed with "${forcePrefix}". ` : ""}Only letters, numbers, -, _ and . allowed
             </p>
           </div>
+
+          <ComboQuickAddByModel
+            models={models}
+            onModelsChange={handleQuickAddModels}
+            onNameCandidate={handleQuickAddName}
+            kindFilter={kindFilter}
+          />
 
           <div>
             <label className="text-sm font-medium mb-1.5 block">Models</label>

@@ -5,7 +5,7 @@ import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, us
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { restrictToVerticalAxis, restrictToParentElement } from "@dnd-kit/modifiers";
-import { Card, Button, Modal, Input, CardSkeleton, ModelSelectModal, Toggle, ConfirmModal } from "@/shared/components";
+import { Card, Button, Modal, Input, CardSkeleton, ModelSelectModal, Toggle, ConfirmModal, ComboQuickAddByModel } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
 
@@ -497,6 +497,12 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
     setModels(models.filter((m) => m !== model.value));
   };
 
+  const handleQuickAddName = (modelId) => {
+    if (isEdit || name.trim()) return;
+    setName(modelId);
+    validateName(modelId);
+  };
+
   const handleRemoveModel = (index) => {
     setModels(models.filter((_, i) => i !== index));
   };
@@ -545,6 +551,13 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
               Only letters, numbers, -, _ and . allowed
             </p>
           </div>
+
+          <ComboQuickAddByModel
+            models={models}
+            onModelsChange={setModels}
+            onNameCandidate={handleQuickAddName}
+            kindFilter={kindFilter}
+          />
 
           {/* Models */}
           <div>

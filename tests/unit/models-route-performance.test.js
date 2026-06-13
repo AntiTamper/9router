@@ -55,6 +55,14 @@ describe("/v1/models performance", () => {
     expect(mocks.guardedFetch).not.toHaveBeenCalled();
   });
 
+  it("can skip static fallback when a caller needs active providers only", async () => {
+    mocks.getProviderConnections.mockResolvedValue([]);
+
+    const models = await buildModelsList(["llm"], { staticFallbackOnNoConnections: false });
+
+    expect(models).toEqual([]);
+  });
+
   it("keeps remote model probing available behind the live option", async () => {
     const models = await buildModelsList(["llm"], { includeRemoteFetches: true });
 
@@ -64,7 +72,7 @@ describe("/v1/models performance", () => {
     ]);
   });
 
-  it("uses Kimi live context metadata without exposing raw upstream model IDs", async () => {
+  it("uses Kimi live context metadata while exposing the default upstream model ID", async () => {
     mocks.getProviderConnections.mockResolvedValue([
       { provider: "kimi", apiKey: "sk-kimi", isActive: true, providerSpecificData: {} },
     ]);
@@ -81,7 +89,7 @@ describe("/v1/models performance", () => {
     );
     expect(models).toEqual([
       {
-        id: "kimi/kimi-k2.6",
+        id: "kimi/kimi-for-coding",
         object: "model",
         owned_by: "kimi",
         context_window: 1048576,
@@ -89,5 +97,24 @@ describe("/v1/models performance", () => {
         max_input_tokens: 1044480,
       },
     ]);
+  });
+
+  it("exposes live Kimi K2.7 Code when the upstream catalog returns the real model ID", async () => {
+    mocks.getProviderConnections.mockResolvedValue([
+      { provider: "kimi", apiKey: "sk-kimi", isActive: true, providerSpecificData: {} },
+    ]);
+    mocks.resolveKimiModels.mockResolvedValue({
+      models: [{ id: "kimi-k2.7-code", upstreamModelId: "kimi-k2.7-code", contextWindow: 262144 }],
+    });
+
+    const models = await buildModelsList(["llm"], { includeRemoteFetches: true });
+
+    expect(models[0]).toMatchObject({
+      id: "kimi/kimi-k2.7-code",
+      object: "model",
+      owned_by: "kimi",
+      context_window: 262144,
+      max_input_tokens: 258048,
+    });
   });
 });

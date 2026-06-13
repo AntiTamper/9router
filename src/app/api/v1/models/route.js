@@ -237,6 +237,7 @@ function comboMatchesKinds(combo, kindFilter) {
  */
 export async function buildModelsList(kindFilter, options = {}) {
   const includeRemoteFetches = options.includeRemoteFetches === true;
+  const staticFallbackOnNoConnections = options.staticFallbackOnNoConnections !== false;
   // Aggregated live catalogs keyed by alias/providerId; populated below per provider.
   const liveCatalogs = {};
   // Parallel DB reads: was 5 sequential awaits (~5x slower).
@@ -286,6 +287,7 @@ export async function buildModelsList(kindFilter, options = {}) {
   }
 
   if (connections.length === 0) {
+    if (!staticFallbackOnNoConnections) return comboModels;
     // DB unavailable -> return static models, filtered by per-model kind
     const aliasToProviderId = Object.fromEntries(
       Object.entries(PROVIDER_ID_TO_ALIAS).map(([id, alias]) => [alias, id])

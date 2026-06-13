@@ -8,6 +8,41 @@ import { buildKimiOpenAICompatibilityHeaders } from "../utils/kimiCodingAgentHea
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 
+const KIMI_K27_CODE_MODEL = "kimi-k2.7-code";
+const KIMI_K27_UNSUPPORTED_PARAMS = [
+  "temperature",
+  "top_p",
+  "presence_penalty",
+  "frequency_penalty",
+  "thinking",
+  "reasoning",
+  "reasoning_effort",
+  "enable_thinking",
+];
+
+function stripKimiK27UnsupportedParams(body) {
+  if (!body || typeof body !== "object") return body;
+  let next = body;
+  for (const key of KIMI_K27_UNSUPPORTED_PARAMS) {
+    if (Object.prototype.hasOwnProperty.call(next, key)) {
+      if (next === body) next = { ...body };
+      delete next[key];
+    }
+  }
+  if (next.extra_body && typeof next.extra_body === "object") {
+    const extra = { ...next.extra_body };
+    let changed = false;
+    for (const key of ["thinking", "enable_thinking"]) {
+      if (Object.prototype.hasOwnProperty.call(extra, key)) {
+        delete extra[key];
+        changed = true;
+      }
+    }
+    if (changed) next = { ...next, extra_body: extra };
+  }
+  return next;
+}
+
 export class DefaultExecutor extends BaseExecutor {
   constructor(provider) {
     super(provider, PROVIDERS[provider] || PROVIDERS.openai);
@@ -20,11 +55,15 @@ export class DefaultExecutor extends BaseExecutor {
     if (transformed && typeof transformed === "object" && (this.provider === "cerebras" || this.provider === "mistral")) {
       delete transformed.client_metadata;
     }
-    if (this.provider === "kimi" || this.provider === "kimi-coding") {
-      const alias = this.provider === "kimi-coding" ? "kmc" : "kimi";
-      const upstreamModel = getModelUpstreamId(alias, transformed?.model || model);
+    if (this.provider === "kimi" || this.provider === "kimi-api" || this.provider === "kimi-coding") {
+      const alias = this.provider === "kimi-coding" ? "kmc" : this.provider;
+      const requestedModel = transformed?.model || model;
+      const upstreamModel = getModelUpstreamId(alias, requestedModel);
       if (upstreamModel && upstreamModel !== transformed?.model) {
-        return { ...transformed, model: upstreamModel };
+        transformed = { ...transformed, model: upstreamModel };
+      }
+      if ((upstreamModel || requestedModel) === KIMI_K27_CODE_MODEL) {
+        transformed = stripKimiK27UnsupportedParams(transformed);
       }
     }
     return transformed;
