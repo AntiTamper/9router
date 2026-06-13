@@ -223,11 +223,16 @@ function startWatchdog() {
 
 // ─── Network monitor: detect IPv4 fingerprint change + sleep/wake ────────────
 
+// Skip virtual/transient interfaces (tailscale utun, AirDrop awdl, bridges, docker/vmnet)
+// that flap and cause false netchange watchdog triggers (drops tunnel + rotates URL).
+const VIRTUAL_IFACE_REGEX = /^(utun|awdl|llw|anpi|bridge|gif|stf|ipsec|ap|tun|tap|vmnet|veth|docker)/i;
+
 function getNetworkFingerprint() {
   const interfaces = os.networkInterfaces();
   const active = [];
   for (const [name, addrs] of Object.entries(interfaces)) {
     if (!addrs) continue;
+    if (VIRTUAL_IFACE_REGEX.test(name)) continue;
     for (const addr of addrs) {
       if (!addr.internal && addr.family === "IPv4") {
         active.push(`${name}:${addr.address}`);

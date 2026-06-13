@@ -29,6 +29,8 @@ const ALIAS_TO_PROVIDER_ID = {
   moonshot: "kimi-api",
   minimax: "minimax",
   "minimax-cn": "minimax-cn",
+  hf: "huggingface",
+  huggingface: "huggingface",
   ds: "deepseek",
   deepseek: "deepseek",
   cmc: "commandcode",
