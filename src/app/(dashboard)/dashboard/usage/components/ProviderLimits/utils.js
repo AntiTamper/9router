@@ -411,10 +411,12 @@ export function parseQuotaData(provider, data) {
       case "github":
         if (data.quotas) {
           Object.entries(data.quotas).forEach(([name, quota]) => {
+            const total = Number(quota?.total || 0);
+            if (!quota || quota.unlimited === true || total <= 0) return;
             normalizedQuotas.push({
               name,
               used: quota.used || 0,
-              total: quota.total || 0,
+              total,
               resetAt: quota.resetAt || null,
             });
           });

@@ -10,51 +10,14 @@ const FAMILY_LABELS = {
 const FAMILY_ORDER = ["gemini", "claude_gpt"];
 
 const WINDOW_LABELS = {
+  five_hour: "Session Limit",
   weekly: "Weekly Limit",
-  five_hour: "Five Hour Limit",
 };
-const WINDOW_ORDER = ["weekly", "five_hour"];
-
-function formatResetTimeDisplay(resetTime) {
-  if (!resetTime) return null;
-  try {
-    const date = new Date(resetTime);
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-
-    let dayStr = "";
-    if (date >= today && date < tomorrow) {
-      dayStr = "Today";
-    } else if (
-      date >= tomorrow &&
-      date < new Date(tomorrow.getTime() + 24 * 60 * 60 * 1000)
-    ) {
-      dayStr = "Tomorrow";
-    } else {
-      dayStr = date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-    }
-    const timeStr = date.toLocaleTimeString("en-US", {
-      hour: "numeric",
-      minute: "2-digit",
-      hour12: true,
-    });
-    return `${dayStr}, ${timeStr}`;
-  } catch {
-    return null;
-  }
-}
-
-function getColorClasses(remainingPercentage) {
-  if (remainingPercentage >= 60) {
-    return { text: "text-green-600 dark:text-green-400", bg: "bg-green-500", bgLight: "bg-green-500/10" };
-  }
-  if (remainingPercentage > 20) {
-    return { text: "text-yellow-600 dark:text-yellow-400", bg: "bg-yellow-500", bgLight: "bg-yellow-500/10" };
-  }
-  return { text: "text-red-600 dark:text-red-400", bg: "bg-red-500", bgLight: "bg-red-500/10" };
-}
+const WINDOW_ORDER = ["five_hour", "weekly"];
+const WINDOW_MS = {
+  five_hour: 5 * 60 * 60 * 1000,
+  weekly: 7 * 24 * 60 * 60 * 1000,
+};
 
 function remainingOf(quota) {
   if (quota.remainingPercentage !== undefined && quota.remainingPercentage !== null) {
@@ -83,6 +46,20 @@ function buildGroups(quotas) {
       if (resetMs && (existing.resetMs == null || resetMs < existing.resetMs)) {
         existing.resetMs = resetMs;
         existing.resetAt = quota.resetAt;
+      }
+    }
+  }
+  for (const family of FAMILY_ORDER) {
+    if (!families.has(family)) continue;
+    const windows = families.get(family);
+    for (const win of WINDOW_ORDER) {
+      if (!windows.has(win)) {
+        windows.set(win, {
+          remaining: 100,
+          resetAt: new Date(Date.now() + WINDOW_MS[win]).toISOString(),
+          resetMs: Date.now() + WINDOW_MS[win],
+          inferred: true,
+        });
       }
     }
   }
