@@ -40,6 +40,9 @@ describe("toOpenAIFinish - claude", () => {
     ["end_turn", "stop"],
     ["max_tokens", "length"],
     ["tool_use", "tool_calls"],
+    ["stop_sequence", "stop"],
+    ["refusal", "content_filter"],
+    ["pause_turn", "stop"],
   ])("%s -> %s", (input, expected) => {
     expect(toOpenAIFinish(input, "claude")).toBe(expected);
   });

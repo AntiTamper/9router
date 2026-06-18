@@ -107,6 +107,8 @@ export function translateNonStreamingResponse(responseBody, targetFormat, source
     let finishReason = responseBody.stop_reason || "stop";
     if (finishReason === "end_turn") finishReason = "stop";
     if (finishReason === "tool_use") finishReason = "tool_calls";
+    if (finishReason === "refusal") finishReason = "content_filter";
+    if (finishReason === "pause_turn") finishReason = "stop";
 
     const result = {
       id: `chatcmpl-${responseBody.id || Date.now()}`,

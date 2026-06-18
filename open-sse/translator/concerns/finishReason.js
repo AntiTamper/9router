@@ -11,6 +11,8 @@ export function toOpenAIFinish(reason, format) {
         case CLAUDE_STOP.MAX_TOKENS: return OPENAI_FINISH.LENGTH;
         case CLAUDE_STOP.TOOL_USE: return OPENAI_FINISH.TOOL_CALLS;
         case CLAUDE_STOP.STOP_SEQUENCE: return OPENAI_FINISH.STOP;
+        case CLAUDE_STOP.REFUSAL: return OPENAI_FINISH.CONTENT_FILTER;
+        case CLAUDE_STOP.PAUSE_TURN: return OPENAI_FINISH.STOP;
         default: return OPENAI_FINISH.STOP;
       }
     case "commandcode":
