@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { buildGroups } from "../../src/app/(dashboard)/dashboard/usage/components/ProviderLimits/quotaGroups.js";
 import {
   runPerProviderRefreshQueue,
   runQuotaRefreshQueue,
@@ -182,5 +183,38 @@ describe("parseQuotaData antigravity grouping", () => {
 
     expect(parseQuotaMetadata("antigravity", data)).toEqual({ supportsSessionQuota: false });
     expect(parseQuotaData("antigravity", data)[0]).toMatchObject({ supportsSessionQuota: false });
+  });
+});
+
+describe("buildGroups (no fabricated windows)", () => {
+  it("does not invent a weekly window when only five_hour data exists", () => {
+    const quotas = [
+      { family: "gemini", window: "five_hour", remainingPercentage: 80, resetAt: "2030-01-01T00:00:00Z" },
+    ];
+    const families = buildGroups(quotas);
+    const gemini = families.get("gemini");
+    expect(gemini.has("five_hour")).toBe(true);
+    expect(gemini.has("weekly")).toBe(false);
+    expect(gemini.get("five_hour").inferred).toBeUndefined();
+  });
+
+  it("does not invent a five_hour window when only weekly data exists", () => {
+    const quotas = [
+      { family: "claude_gpt", window: "weekly", remainingPercentage: 86, resetAt: "2030-01-01T00:00:00Z" },
+    ];
+    const families = buildGroups(quotas);
+    const fam = families.get("claude_gpt");
+    expect(fam.has("weekly")).toBe(true);
+    expect(fam.has("five_hour")).toBe(false);
+    expect(fam.get("weekly").remaining).toBe(86);
+  });
+
+  it("keeps the real remaining percentage (worst-case) per family/window", () => {
+    const quotas = [
+      { family: "gemini", window: "weekly", remainingPercentage: 97, resetAt: "2030-01-02T00:00:00Z" },
+      { family: "gemini", window: "weekly", remainingPercentage: 90, resetAt: "2030-01-01T00:00:00Z" },
+    ];
+    const fam = buildGroups(quotas).get("gemini");
+    expect(fam.get("weekly").remaining).toBe(90);
   });
 });

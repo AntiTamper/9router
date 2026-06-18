@@ -214,7 +214,13 @@ export default function ProviderLimits() {
   const fetchQuota = useCallback(async (connection, { force = false } = {}) => {
     const connectionId = connection?.id;
     const provider = connection?.provider;
-    if (!connectionId || !provider) return;
+    if (!connectionId || !provider) {
+      // Defensive: never leave a connection stuck in the loading state.
+      if (connectionId && mountedRef.current) {
+        setLoading((prev) => ({ ...prev, [connectionId]: false }));
+      }
+      return;
+    }
     if (!mountedRef.current) return;
     if (!isPageVisible()) {
       setLoading((prev) => ({ ...prev, [connectionId]: false }));
@@ -521,22 +527,26 @@ export default function ProviderLimits() {
 
       // Filter eligible connections (OAuth + whitelisted apikey)
       const eligibleConnections = conns.filter(isUsageEligible);
+      // Only the connections we actually refresh this tick get a loading state.
+      // Throttled/skipped ones (e.g. Claude on non-Nth ticks) must NOT be marked
+      // loading, otherwise their spinner never clears (they are never enqueued).
+      const fetchTargets = eligibleConnections.filter(shouldFetch);
       setLoading((prev) => {
         const next = { ...prev };
-        eligibleConnections.forEach((conn) => {
+        fetchTargets.forEach((conn) => {
           next[conn.id] = true;
         });
         return next;
       });
       setQuotaCompleted((prev) => {
         const next = { ...prev };
-        eligibleConnections.forEach((conn) => {
+        fetchTargets.forEach((conn) => {
           next[conn.id] = false;
         });
         return next;
       });
 
-      startQuotaRefreshQueue(eligibleConnections.filter(shouldFetch), {
+      startQuotaRefreshQueue(fetchTargets, {
         force,
         refreshConnectionsWhenDone: true,
         replaceCurrent: true,

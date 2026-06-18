@@ -1,6 +1,7 @@
 "use client";
 
 import { QuotaBarRow } from "./QuotaTable";
+import { buildGroups, WINDOW_ORDER } from "./quotaGroups";
 
 // Family + window display metadata
 const FAMILY_LABELS = {
@@ -13,72 +14,8 @@ const WINDOW_LABELS = {
   five_hour: "Session Limit",
   weekly: "Weekly Limit",
 };
-const WINDOW_ORDER = ["five_hour", "weekly"];
-const WINDOW_MS = {
-  five_hour: 5 * 60 * 60 * 1000,
-  weekly: 7 * 24 * 60 * 60 * 1000,
-};
 
-function remainingOf(quota) {
-  if (quota.remainingPercentage !== undefined && quota.remainingPercentage !== null) {
-    return Math.round(quota.remainingPercentage);
-  }
-  if (quota.total > 0) return Math.round(((quota.total - quota.used) / quota.total) * 100);
-  return 0;
-}
-
-// Aggregate quotas into family -> window -> { remaining (min/worst-case), resetAt (earliest) }
-export function buildGroups(quotas, metadata = {}) {
-  const families = new Map();
-  let supportsSessionQuota = metadata?.supportsSessionQuota === true;
-  for (const quota of quotas) {
-    const family = quota.family || "claude_gpt";
-    const win = quota.window || "weekly";
-    if (quota.supportsSessionQuota === true || win === "five_hour") supportsSessionQuota = true;
-    if (!families.has(family)) families.set(family, new Map());
-    const windows = families.get(family);
-
-    const remaining = remainingOf(quota);
-    const resetMs = quota.resetAt ? new Date(quota.resetAt).getTime() : null;
-    const existing = windows.get(win);
-    if (!existing) {
-      windows.set(win, { remaining, resetAt: quota.resetAt || null, resetMs });
-    } else {
-      if (remaining < existing.remaining) existing.remaining = remaining;
-      if (resetMs && (existing.resetMs == null || resetMs < existing.resetMs)) {
-        existing.resetMs = resetMs;
-        existing.resetAt = quota.resetAt;
-      }
-    }
-  }
-  const presentWindows = new Set();
-  for (const windows of families.values()) {
-    for (const win of windows.keys()) presentWindows.add(win);
-  }
-  const accountWindows = supportsSessionQuota || presentWindows.has("five_hour")
-    ? ["five_hour", "weekly"]
-    : ["weekly"];
-
-  for (const family of FAMILY_ORDER) {
-    if (!families.has(family)) continue;
-    const windows = families.get(family);
-    for (const win of accountWindows) {
-      if (!windows.has(win)) {
-        const resetMs = Date.now() + WINDOW_MS[win];
-        windows.set(win, {
-          remaining: 100,
-          resetAt: new Date(resetMs).toISOString(),
-          resetMs,
-          inferred: true,
-        });
-      }
-    }
-    for (const win of Array.from(windows.keys())) {
-      if (!accountWindows.includes(win)) windows.delete(win);
-    }
-  }
-  return families;
-}
+export { buildGroups };
 
 function formatCreditAmount(amount) {
   const n = Number(amount);
