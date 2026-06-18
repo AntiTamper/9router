@@ -15,6 +15,7 @@ import {
 } from "@/lib/tunnel";
 import { getMitmStatus, startMitm, loadEncryptedPassword, initDbHooks, restoreToolDNS, removeAllDNSEntriesSync } from "@/mitm/manager";
 import { startClaudeAutoPing } from "@/shared/services/claudeAutoPing";
+import { startCodexOAuthEvergreenSteward } from "@/sse/services/codexOAuthRefresh";
 import { syncToJson as syncMitmAliasCache } from "@/lib/mitmAliasCache";
 
 // Inject correct paths and DB hooks into manager.js (CJS) from ESM context
