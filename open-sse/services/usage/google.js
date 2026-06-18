@@ -113,6 +113,44 @@ async function getGeminiSubscriptionInfo(accessToken, proxyOptions = null) {
   }
 }
 
+// Group antigravity models into UI families (matches dashboard cards).
+// Gemini* -> "gemini" card; claude*/gpt* (and anything else) -> "claude_gpt" card.
+function classifyAntigravityFamily(modelKey) {
+  const key = String(modelKey || "").toLowerCase();
+  if (key.startsWith("gemini")) return "gemini";
+  return "claude_gpt";
+}
+
+// Derive the quota window for an antigravity bucket.
+// Free-tier "Antigravity" plan exposes only a weekly window; paid tiers may
+// also expose a five-hour window. Prefer an explicit window/limit hint from the
+// API; otherwise infer from the reset horizon (>24h out => weekly, else 5h).
+function classifyAntigravityWindow(quotaInfo, resetAt) {
+  const hint = String(
+    quotaInfo?.tokenType
+      || quotaInfo?.quotaType
+      || quotaInfo?.limitType
+      || quotaInfo?.window
+      || "",
+  ).toLowerCase();
+  if (hint.includes("week") || hint === "wtus" || hint.includes("7")) return "weekly";
+  if (hint.includes("hour") || hint.includes("5h") || hint.includes("five")) return "five_hour";
+
+  if (resetAt) {
+    const ms = new Date(resetAt).getTime() - Date.now();
+    if (Number.isFinite(ms) && ms > 0 && ms <= 24 * 60 * 60 * 1000) return "five_hour";
+  }
+  return "weekly";
+}
+
+function getAntigravityQuotaEntries(info) {
+  const source = info?.quotaInfos || info?.quotas || info?.quotaInfo;
+  if (!source) return [];
+  if (Array.isArray(source)) return source.map((quotaInfo, index) => [String(quotaInfo?.window || quotaInfo?.quotaType || index), quotaInfo]);
+  if (source.remainingFraction != null || source.resetTime) return [[String(source.window || source.quotaType || "quota"), source]];
+  if (typeof source === "object") return Object.entries(source).map(([key, quotaInfo]) => [key, quotaInfo]);
+  return [];
+}
 /**
  * Antigravity Usage - Fetch quota from Google Cloud Code API
  */
@@ -174,33 +212,37 @@ export async function getAntigravityUsage(accessToken, providerSpecificData, pro
       ];
 
       for (const [modelKey, info] of Object.entries(data.models)) {
-        // Skip models without quota info
-        if (!info.quotaInfo) {
-          continue;
-        }
-
         // Skip internal models and non-important models
         if (info.isInternal || !importantModels.includes(modelKey)) {
           continue;
         }
 
-        const remainingFraction = info.quotaInfo.remainingFraction || 0;
-        const remainingPercentage = remainingFraction * 100;
+        const quotaEntries = getAntigravityQuotaEntries(info);
+        if (quotaEntries.length === 0) continue;
 
-        // Convert percentage to used/total for UI compatibility
-        const total = 1000; // Normalized base
-        const remaining = Math.round(total * remainingFraction);
-        const used = total - remaining;
+        for (const [bucketKey, quotaInfo] of quotaEntries) {
+          const remainingFraction = quotaInfo?.remainingFraction || 0;
+          const remainingPercentage = remainingFraction * 100;
 
-        // Use modelKey as key (matches PROVIDER_MODELS id)
-        quotas[modelKey] = {
-          used,
-          total,
-          resetAt: parseResetTime(info.quotaInfo.resetTime),
-          remainingPercentage,
-          unlimited: false,
-          displayName: info.displayName || modelKey,
-        };
+          // Convert percentage to used/total for UI compatibility
+          const total = 1000; // Normalized base
+          const remaining = Math.round(total * remainingFraction);
+          const used = total - remaining;
+          const resetAt = parseResetTime(quotaInfo?.resetTime);
+          const window = classifyAntigravityWindow({ ...(quotaInfo || {}), window: quotaInfo?.window || bucketKey }, resetAt);
+
+          quotas[`${modelKey}:${window}`] = {
+            used,
+            total,
+            resetAt,
+            remainingPercentage,
+            unlimited: false,
+            displayName: info.displayName || modelKey,
+            family: classifyAntigravityFamily(modelKey),
+            window,
+            modelKey,
+          };
+        }
       }
     }
 

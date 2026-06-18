@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getProviderConnectionById } from "@/models";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
-import { GEMINI_CONFIG } from "@/lib/oauth/constants/oauth";
+import { GEMINI_CONFIG, ANTIGRAVITY_CONFIG } from "@/lib/oauth/constants/oauth";
 import { refreshGoogleToken, updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { resolveOllamaLocalHost } from "open-sse/config/providers.js";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
@@ -232,7 +232,10 @@ const PROVIDER_MODELS_CONFIG = {
       "https://api.moonshot.cn/v1/models",
     ])
   },
-  openrouter: createOpenAIModelsConfig("https://openrouter.ai/api/v1/models"),
+  openrouter: {
+    ...createOpenAIModelsConfig("https://openrouter.ai/api/v1/models"),
+    parseResponse: (data) => parseOpenAIStyleModels(data).filter((m) => String(m?.id || m?.slug || m?.model || m?.name || "").endsWith(":free")),
+  },
   anthropic: {
     url: "https://api.anthropic.com/v1/models",
     method: "GET",

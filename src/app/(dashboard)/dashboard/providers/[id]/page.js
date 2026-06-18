@@ -21,6 +21,18 @@ import AddCustomModelModal from "./AddCustomModelModal";
 
 const ONE_BY_ONE_DELAY_MS = 1000;
 
+const WARMUP_PROVIDER_CONFIG = {
+  claude: { settingsKey: "claudeAutoPing", title: "Claude Code Warmup", defaultModel: "claude-haiku-4-5-20251001", defaultTrigger: "out-of-quota" },
+  antigravity: { settingsKey: "antigravityAutoPing", title: "Antigravity Warmup", defaultModel: "gemini-3-flash", defaultTrigger: "not-counting-down-or-out-of-quota" },
+};
+
+const ACCOUNT_MODEL_QUERY_PROVIDERS = new Set(["codex", "kiro", "openrouter"]);
+
+function getWarmupDefaults(providerId) {
+  const cfg = WARMUP_PROVIDER_CONFIG[providerId];
+  return { enabled: false, warmupModel: cfg?.defaultModel || "", warmupTrigger: cfg?.defaultTrigger || "out-of-quota", connections: {}, overrides: {} };
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -54,7 +66,9 @@ export default function ProviderDetailPage() {
   const [connectionPage, setConnectionPage] = useState(1);
   const [connectionPageSize, setConnectionPageSize] = useState(10);
   const [thinkingMode, setThinkingMode] = useState("auto");
-  const [autoPing, setAutoPing] = useState({ enabled: false, connections: {} });
+  const warmupProvider = WARMUP_PROVIDER_CONFIG[providerId] || null;
+  const [autoPing, setAutoPing] = useState(() => getWarmupDefaults(providerId));
+  const [warmupModels, setWarmupModels] = useState([]);
   const [suggestedModels, setSuggestedModels] = useState([]);
   const [kiloFreeModels, setKiloFreeModels] = useState([]);
   const [disabledModelIds, setDisabledModelIds] = useState([]);
@@ -229,6 +243,25 @@ export default function ProviderDetailPage() {
       .then((data) => { if (data.models?.length) setKiloFreeModels(data.models); })
       .catch(() => {});
   }, [providerId]);
+  useEffect(() => {
+    if (!warmupProvider) {
+      setWarmupModels([]);
+      return;
+    }
+    const staticModels = getModelsByProviderId(providerId).filter((m) => (m.kind || "llm") === "llm");
+    setWarmupModels(staticModels);
+    const conn = connections.find((c) => c.isActive !== false && (c.authType === "oauth" || c.authType === "apikey" || c.authType === "api_key"));
+    if (!conn) return;
+    fetch(`/api/providers/${conn.id}/models`, { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        const remote = (data?.models || [])
+          .map((m) => ({ id: m.id || m.model || m.slug || m.name, name: m.name || m.display_name || m.displayName || m.id || m.model }))
+          .filter((m) => m.id && (!m.id.includes(":") || providerId === "openrouter"));
+        if (remote.length) setWarmupModels(remote);
+      })
+      .catch(() => {});
+  }, [providerId, warmupProvider, connections]);
 
   const fetchConnections = useCallback(async () => {
     try {
@@ -255,8 +288,19 @@ export default function ProviderDetailPage() {
       // Load per-provider thinking config
       const thinkingCfg = (settingsData.providerThinking || {})[providerId] || {};
       setThinkingMode(thinkingCfg.mode || "auto");
-      const apCfg = settingsData.claudeAutoPing || {};
-      setAutoPing({ enabled: apCfg.enabled === true, connections: apCfg.connections || {} });
+      const warmupMeta = WARMUP_PROVIDER_CONFIG[providerId];
+      if (warmupMeta) {
+        const apCfg = settingsData[warmupMeta.settingsKey] || {};
+        setAutoPing({
+          enabled: apCfg.enabled === true,
+          warmupModel: apCfg.warmupModel || warmupMeta.defaultModel,
+          warmupTrigger: apCfg.warmupTrigger || warmupMeta.defaultTrigger,
+          connections: apCfg.connections || {},
+          overrides: apCfg.overrides || {},
+        });
+      } else {
+        setAutoPing(getWarmupDefaults(providerId));
+      }
       if (nodesRes.ok) {
         let node = (nodesData.nodes || []).find((entry) => entry.id === providerId) || null;
 
@@ -360,20 +404,45 @@ export default function ProviderDetailPage() {
   };
 
   const saveAutoPing = async (next) => {
+    if (!warmupProvider) return;
     setAutoPing(next);
     try {
       await fetch("/api/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ claudeAutoPing: next }),
+        body: JSON.stringify({ [warmupProvider.settingsKey]: next }),
       });
     } catch (error) {
-      console.log("Error saving auto-ping config:", error);
+      console.log("Error saving warmup config:", error);
     }
   };
 
   const handleAutoPingConnection = (connectionId, on) => {
     saveAutoPing({ ...autoPing, connections: { ...autoPing.connections, [connectionId]: on } });
+  };
+
+  const handleAutoPingEnabled = (enabled) => {
+    saveAutoPing({ ...autoPing, enabled });
+  };
+
+  const handleAutoPingModel = (warmupModel) => {
+    saveAutoPing({ ...autoPing, warmupModel });
+  };
+
+  const handleAutoPingTrigger = (warmupTrigger) => {
+    saveAutoPing({ ...autoPing, warmupTrigger });
+  };
+
+  const handleAutoPingOverride = (connectionId, patch) => {
+    const current = autoPing.overrides?.[connectionId] || {};
+    const nextOverride = { ...current, ...patch };
+    Object.keys(nextOverride).forEach((k) => {
+      if (nextOverride[k] === "" || nextOverride[k] == null) delete nextOverride[k];
+    });
+    const overrides = { ...(autoPing.overrides || {}) };
+    if (Object.keys(nextOverride).length === 0) delete overrides[connectionId];
+    else overrides[connectionId] = nextOverride;
+    saveAutoPing({ ...autoPing, overrides });
   };
 
   useEffect(() => {
@@ -385,9 +454,32 @@ export default function ProviderDetailPage() {
   // Fetch suggested models from provider's public API (if configured)
   useEffect(() => {
     const fetcher = (OAUTH_PROVIDERS[providerId] || APIKEY_PROVIDERS[providerId] || FREE_PROVIDERS[providerId] || FREE_TIER_PROVIDERS[providerId])?.modelsFetcher;
-    if (!fetcher) return;
+    if (!fetcher || ACCOUNT_MODEL_QUERY_PROVIDERS.has(providerId)) return;
     fetchSuggestedModels(fetcher).then(setSuggestedModels);
   }, [providerId]);
+
+  // Account-backed model discovery for providers whose models vary by account/key.
+  useEffect(() => {
+    if (!ACCOUNT_MODEL_QUERY_PROVIDERS.has(providerId)) return;
+    const conn = connections.find((c) => c.isActive !== false && (c.authType === "oauth" || c.authType === "apikey" || c.authType === "api_key"));
+    if (!conn) {
+      setSuggestedModels([]);
+      return;
+    }
+    fetch(`/api/providers/${conn.id}/models`, { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        const remote = (data?.models || [])
+          .map((m) => ({
+            id: m.id || m.model || m.slug || m.name,
+            name: m.name || m.display_name || m.displayName || m.id || m.model,
+            contextLength: m.contextLength || m.context_length || m.contextWindow || 0,
+          }))
+          .filter((m) => m.id);
+        setSuggestedModels(remote);
+      })
+      .catch(() => {});
+  }, [providerId, connections]);
 
   const handleSetAlias = async (modelId, alias, providerAliasOverride = providerAlias) => {
     const fullModel = `${providerAliasOverride}/${modelId}`;
@@ -783,6 +875,61 @@ export default function ProviderDetailPage() {
     </>
   );
 
+  const effectiveWarmupModels = warmupModels.length ? warmupModels : getModelsByProviderId(providerId);
+  const warmupConfigCard = warmupProvider ? (
+    <Card className="mb-3 p-4">
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-sm font-semibold text-text-primary">
+              <span className="material-symbols-outlined text-[18px] text-primary">bolt</span>
+              {warmupProvider.title}
+            </div>
+            <p className="mt-0.5 text-xs text-text-muted">
+              Auto-sends a minimal request to start a quota countdown. Pick the warmup model and trigger. Enable per account with the Warmup toggle.
+            </p>
+          </div>
+          <label className="flex shrink-0 cursor-pointer items-center gap-2">
+            <input
+              type="checkbox"
+              checked={autoPing.enabled === true}
+              onChange={(e) => handleAutoPingEnabled(e.target.checked)}
+              className="h-4 w-4 accent-primary"
+            />
+            <span className="text-xs font-medium text-text-primary">Enabled</span>
+          </label>
+        </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-text-muted">Warmup model</span>
+            <select
+              value={autoPing.warmupModel}
+              onChange={(e) => handleAutoPingModel(e.target.value)}
+              className="rounded-lg border border-black/10 bg-transparent px-2 py-1.5 text-sm dark:border-white/10"
+            >
+              {effectiveWarmupModels.map((m) => (
+                <option key={m.id} value={m.id}>{m.name || m.id}</option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-text-muted">Trigger</span>
+            <select
+              value={autoPing.warmupTrigger}
+              onChange={(e) => handleAutoPingTrigger(e.target.value)}
+              className="rounded-lg border border-black/10 bg-transparent px-2 py-1.5 text-sm dark:border-white/10"
+            >
+              <option value="not-counting-down-or-out-of-quota">Countdown not started or exhausted</option>
+              <option value="out-of-quota">Quota exhausted</option>
+              <option value="not-counting-down">Countdown not started</option>
+              <option value="on-reset">Right after reset</option>
+            </select>
+          </label>
+        </div>
+      </div>
+    </Card>
+  ) : null;
+
   const connectionsList = (
     <div className="flex min-w-0 flex-col divide-y divide-black/[0.03] dark:divide-white/[0.03]">
       {paginatedConnections
@@ -800,9 +947,18 @@ export default function ProviderDetailPage() {
                 onMoveUp={() => handleSwapPriority(index, index - 1)}
                 onMoveDown={() => handleSwapPriority(index, index + 1)}
                 onToggleActive={(isActive) => handleUpdateConnectionStatus(conn.id, isActive)}
-                autoPing={providerId === "claude" && conn.authType === "oauth" ? {
+                autoPing={warmupProvider && conn.authType === "oauth" ? {
                   on: autoPing.connections[conn.id] === true,
                   onToggle: (on) => handleAutoPingConnection(conn.id, on),
+                  models: effectiveWarmupModels,
+                  globalModel: autoPing.warmupModel,
+                  globalTrigger: autoPing.warmupTrigger,
+                  overrideModel: autoPing.overrides?.[conn.id]?.warmupModel || "",
+                  overrideTrigger: autoPing.overrides?.[conn.id]?.warmupTrigger || "",
+                  onOverride: (patch) => handleAutoPingOverride(conn.id, patch),
+                  tooltip: providerId === "antigravity"
+                    ? "Starts Antigravity weekly or 5h quota countdown with a minimal request when the selected trigger fires."
+                    : "Starts the Claude Code 5h quota countdown with a minimal request when the selected trigger fires.",
                 } : null}
                 onUpdateProxy={async (proxyPoolId) => {
                   try {
@@ -1014,7 +1170,7 @@ export default function ProviderDetailPage() {
           if (notAdded.length === 0) return null;
           return (
             <div className="w-full mt-2">
-              <p className="text-xs text-text-muted mb-2">Suggested free models (≥200k context):</p>
+              <p className="text-xs text-text-muted mb-2">{providerId === "openrouter" ? "Available free models from account:" : ACCOUNT_MODEL_QUERY_PROVIDERS.has(providerId) ? "Available models from account:" : "Suggested free models (>=200k context):"}</p>
               <div className="flex flex-wrap gap-2">
                 {notAdded.map((m) => (
                   <button
@@ -1024,7 +1180,7 @@ export default function ProviderDetailPage() {
                       await handleSetAlias(m.id, alias, providerStorageAlias);
                     }}
                     className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-black/10 dark:border-white/10 text-xs text-text-muted hover:text-primary hover:border-primary/40 hover:bg-primary/5 transition-colors"
-                    title={`${m.name} · ${(m.contextLength / 1000).toFixed(0)}k ctx`}
+                    title={m.contextLength ? `${m.name} · ${(m.contextLength / 1000).toFixed(0)}k ctx` : (m.name || m.id)}
                   >
                     <span className="material-symbols-outlined text-[13px]">add</span>
                     {m.id.split("/").pop()}
@@ -1338,6 +1494,7 @@ export default function ProviderDetailPage() {
                   </div>
                 </div>
               )}
+              {warmupConfigCard}
               {connectionsList}
               <Pagination
                 currentPage={currentConnectionPage}

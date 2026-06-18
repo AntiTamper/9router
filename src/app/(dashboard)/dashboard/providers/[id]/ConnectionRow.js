@@ -140,6 +140,7 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
   };
 
   return (
+    <div className="flex min-w-0 flex-col">
     <div className={`group flex min-w-0 flex-col gap-3 rounded-lg p-2 transition-colors hover:bg-black/[0.02] dark:hover:bg-white/[0.02] sm:flex-row sm:items-center sm:justify-between ${connection.isActive === false ? "opacity-60" : ""}`}>
       <div className="flex min-w-0 flex-1 items-start gap-2 sm:items-center sm:gap-3">
         {/* Priority arrows */}
@@ -253,13 +254,13 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
             </div>
           )}
           {autoPing && (
-            <Tooltip text="When your 5h quota runs out, auto-sends a request the moment it resets so a new window starts right away.">
+            <Tooltip text={autoPing.tooltip || "Auto-sends a minimal request when the configured quota trigger fires."}>
               <button
                 onClick={() => autoPing.onToggle(!autoPing.on)}
                 className={`flex w-full flex-col items-center rounded px-2 py-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 ${autoPing.on ? "text-primary" : "text-text-muted hover:text-primary"}`}
               >
                 <span className="material-symbols-outlined text-[18px]">bolt</span>
-                <span className="text-[10px] leading-tight">Auto-ping</span>
+                <span className="text-[10px] leading-tight">Warmup</span>
               </button>
             </Tooltip>
           )}
@@ -279,6 +280,35 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
           title={(connection.isActive ?? true) ? "Disable connection" : "Enable connection"}
         />
       </div>
+    </div>
+    {autoPing && autoPing.on && (
+      <div className="flex flex-wrap items-center gap-2 px-2 pb-1 text-[11px] text-text-muted">
+        <span className="font-medium">Warmup:</span>
+        <select
+          value={autoPing.overrideModel || ""}
+          onChange={(e) => autoPing.onOverride?.({ warmupModel: e.target.value })}
+          className="rounded border border-black/10 bg-transparent px-1.5 py-0.5 text-[11px] dark:border-white/10"
+          title="Override warmup model for this account"
+        >
+          <option value="">Model: global</option>
+          {(autoPing.models || []).map((m) => (
+            <option key={m.id} value={m.id}>{m.name || m.id}</option>
+          ))}
+        </select>
+        <select
+          value={autoPing.overrideTrigger || ""}
+          onChange={(e) => autoPing.onOverride?.({ warmupTrigger: e.target.value })}
+          className="rounded border border-black/10 bg-transparent px-1.5 py-0.5 text-[11px] dark:border-white/10"
+          title="Override warmup trigger for this account"
+        >
+          <option value="">Trigger: global</option>
+          <option value="not-counting-down-or-out-of-quota">Not started or exhausted</option>
+          <option value="out-of-quota">Out of quota</option>
+          <option value="not-counting-down">Not counting down</option>
+          <option value="on-reset">On reset</option>
+        </select>
+      </div>
+    )}
     </div>
   );
 }
@@ -322,5 +352,11 @@ ConnectionRow.propTypes = {
   autoPing: PropTypes.shape({
     on: PropTypes.bool,
     onToggle: PropTypes.func,
+    models: PropTypes.array,
+    globalModel: PropTypes.string,
+    globalTrigger: PropTypes.string,
+    overrideModel: PropTypes.string,
+    overrideTrigger: PropTypes.string,
+    onOverride: PropTypes.func,
   }),
 };

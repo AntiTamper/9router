@@ -92,3 +92,66 @@ export function runQuotaRefreshQueue(items, worker, options = {}) {
     },
   };
 }
+
+/**
+ * Per-provider refresh: each provider's connections are processed sequentially
+ * (one-by-one) while different providers run in parallel. This lets each
+ * provider card fill independently and fast instead of waiting on one global
+ * mixed queue.
+ *
+ * Returns the same { done, cancel } shape as runQuotaRefreshQueue.
+ */
+export function runPerProviderRefreshQueue(items, worker, options = {}) {
+  const queueItems = Array.isArray(items) ? items : [];
+  const shouldContinue = typeof options.shouldContinue === "function"
+    ? options.shouldContinue
+    : () => true;
+  const onItemSettled = typeof options.onItemSettled === "function"
+    ? options.onItemSettled
+    : () => {};
+  const onError = typeof options.onError === "function"
+    ? options.onError
+    : () => {};
+
+  // Group connections by provider, preserving input order within each group.
+  const groups = new Map();
+  for (const item of queueItems) {
+    const provider = item?.provider || "__unknown__";
+    if (!groups.has(provider)) groups.set(provider, []);
+    groups.get(provider).push(item);
+  }
+
+  let cancelled = false;
+
+  async function runProviderGroup(group) {
+    for (const item of group) {
+      if (cancelled || !shouldContinue()) {
+        cancelled = true;
+        return;
+      }
+      try {
+        await worker(item);
+      } catch (error) {
+        try { onError(error, item); } catch {}
+      } finally {
+        try { onItemSettled(item); } catch {}
+      }
+    }
+  }
+
+  const groupPromises = Array.from(groups.values()).map((group) =>
+    runProviderGroup(group).catch(() => {}),
+  );
+
+  const done = Promise.all(groupPromises).then(() => ({
+    cancelled,
+    total: queueItems.length,
+  }));
+
+  return {
+    done,
+    cancel() {
+      cancelled = true;
+    },
+  };
+}

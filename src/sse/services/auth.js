@@ -156,7 +156,16 @@ function pickQuotaConnection(availableConnections, direction) {
 
 function pickRandomConnection(availableConnections) {
   if (availableConnections.length === 0) return null;
-  return availableConnections[Math.floor(Math.random() * availableConnections.length)] || availableConnections[0];
+  if (availableConnections.length === 1) return availableConnections[0];
+
+  const lastUsedMs = (conn) => {
+    const ms = conn.lastUsedAt ? new Date(conn.lastUsedAt).getTime() : 0;
+    return Number.isFinite(ms) ? ms : 0;
+  };
+  const newest = Math.max(...availableConnections.map(lastUsedMs));
+  const candidates = availableConnections.filter((conn) => lastUsedMs(conn) < newest);
+  const pool = candidates.length > 0 ? candidates : availableConnections;
+  return pool[Math.floor(Math.random() * pool.length)] || pool[0];
 }
 
 /**

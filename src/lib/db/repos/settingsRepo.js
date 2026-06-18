@@ -44,6 +44,29 @@ const DEFAULT_SETTINGS = {
   codexOAuthRefreshMinIntervalHours: 12,
   codexOAuthKeepAliveHours: 72,
   codexOAuthRefreshLeadHours: 24,
+  // Claude Code warmup (auto-ping): sends a minimal request so a fresh quota
+  // window starts when the configured trigger condition is met.
+  //  - enabled: master switch
+  //  - warmupModel: claude model id used for the warmup ping
+  //  - warmupTrigger: "out-of-quota" (fire when 5h window exhausted) |
+  //                   "not-counting-down" (fire when window idle / no countdown) |
+  //                   "on-reset" (legacy: fire right after the window flips)
+  //  - connections: { [connectionId]: true } accounts opted in
+  //  - overrides: { [connectionId]: { warmupModel?, warmupTrigger? } } per-conn override
+  claudeAutoPing: {
+    enabled: false,
+    warmupModel: "claude-haiku-4-5-20251001",
+    warmupTrigger: "out-of-quota",
+    connections: {},
+    overrides: {},
+  },
+  antigravityAutoPing: {
+    enabled: false,
+    warmupModel: "gemini-3-flash",
+    warmupTrigger: "not-counting-down-or-out-of-quota",
+    connections: {},
+    overrides: {},
+  },
   rtkEnabled: true,
   toonEnabled: false,
   cavemanEnabled: false,

@@ -354,7 +354,7 @@ export class CodexExecutor extends BaseExecutor {
     }
 
     // Priority: explicit reasoning.effort > reasoning_effort param > model suffix > default (medium)
-    if (!body.reasoning) {
+    if (!body.reasoning || typeof body.reasoning !== "object" || Array.isArray(body.reasoning)) {
       const effort = body.reasoning_effort || modelEffort || 'low';
       body.reasoning = { effort, summary: "auto" };
     } else if (!body.reasoning.summary) {

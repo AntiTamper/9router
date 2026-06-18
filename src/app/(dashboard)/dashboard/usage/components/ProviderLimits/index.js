@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import QuotaTable from "./QuotaTable";
+import QuotaTableGrouped from "./QuotaTableGrouped";
 import Toggle from "@/shared/components/Toggle";
 import {
   parseQuotaData,
@@ -35,7 +36,7 @@ import {
   getCachedQuotaDataForConnections,
   removeQuotaCacheEntries,
 } from "./quotaCache";
-import { runQuotaRefreshQueue } from "./quotaRefreshQueue";
+import { runPerProviderRefreshQueue } from "./quotaRefreshQueue";
 import Card from "@/shared/components/Card";
 import Tooltip from "@/shared/components/Tooltip";
 import { ConfirmModal, EditConnectionModal } from "@/shared/components";
@@ -467,7 +468,7 @@ export default function ProviderLimits() {
         return null;
       }
 
-      const queue = runQuotaRefreshQueue(
+      const queue = runPerProviderRefreshQueue(
         eligibleConnections,
         (conn) => fetchQuota(conn, { force }),
         {
@@ -613,25 +614,30 @@ export default function ProviderLimits() {
     );
   }, [providerFilter, expiringFirst, collapsedProviders]);
 
-  // Load Claude auto-ping per-connection map
+  // Load provider warmup per-connection map
   useEffect(() => {
     fetch("/api/settings", { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : {}))
-      .then((s) => setAutoPingMap(s?.claudeAutoPing?.connections || {}))
+      .then((s) => setAutoPingMap({
+        ...(s?.claudeAutoPing?.connections || {}),
+        ...(s?.antigravityAutoPing?.connections || {}),
+      }))
       .catch(() => {});
   }, []);
 
-  const toggleAutoPing = useCallback(async (connectionId, on) => {
+  const toggleAutoPing = useCallback(async (provider, connectionId, on) => {
     const next = { ...autoPingMap, [connectionId]: on };
     setAutoPingMap(next);
+    const settingsKey = provider === "antigravity" ? "antigravityAutoPing" : "claudeAutoPing";
     try {
       const r = await fetch("/api/settings", { cache: "no-store" });
       const s = r.ok ? await r.json() : {};
-      const cfg = { ...(s.claudeAutoPing || {}), connections: next };
+      const providerConnections = { ...(s?.[settingsKey]?.connections || {}), [connectionId]: on };
+      const cfg = { ...(s?.[settingsKey] || {}), connections: providerConnections };
       await fetch("/api/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ claudeAutoPing: cfg }),
+        body: JSON.stringify({ [settingsKey]: cfg }),
       });
     } catch {
       setAutoPingMap(autoPingMap);
@@ -1331,12 +1337,12 @@ export default function ProviderLimits() {
                         </button>
                       </Tooltip>
                     )}
-                    {conn.provider === "claude" && conn.authType === "oauth" && (
-                      <Tooltip text="When your 5h quota runs out, auto-sends a request the moment it resets so a new window starts right away.">
+                    {["claude", "antigravity"].includes(conn.provider) && conn.authType === "oauth" && (
+                      <Tooltip text="Sends a minimal warmup request when this account matches its configured quota trigger.">
                         <button
                           type="button"
-                          onClick={() => toggleAutoPing(conn.id, !(autoPingMap[conn.id] === true))}
-                          aria-label="Toggle auto-ping"
+                          onClick={() => toggleAutoPing(conn.provider, conn.id, !(autoPingMap[conn.id] === true))}
+                          aria-label="Toggle warmup"
                           className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-black/5 dark:hover:bg-white/5 ${autoPingMap[conn.id] === true ? "text-primary" : "text-text-muted"}`}
                         >
                           <span className="material-symbols-outlined text-[18px]">bolt</span>
@@ -1422,6 +1428,8 @@ export default function ProviderLimits() {
                   <div className="text-center py-5">
                     <p className="text-xs text-text-muted">{quota.message}</p>
                   </div>
+                ) : conn.provider === "antigravity" ? (
+                  <QuotaTableGrouped quotas={quota?.quotas} />
                 ) : (
                   <QuotaTable quotas={quota?.quotas} compact />
                 )}
