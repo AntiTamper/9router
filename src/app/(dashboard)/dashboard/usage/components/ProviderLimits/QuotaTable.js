@@ -32,23 +32,23 @@ function inferResetTime(resetTime, label) {
 function formatCountdown(resetTime) {
   if (!resetTime) return "";
   const diffMs = new Date(resetTime).getTime() - Date.now();
-  if (!Number.isFinite(diffMs) || diffMs <= 0) return "00:00:00";
+  if (!Number.isFinite(diffMs) || diffMs <= 0) return "00d 00h 00m";
   const totalMinutes = Math.ceil(diffMs / 60000);
   const days = Math.floor(totalMinutes / 1440);
   const hours = Math.floor((totalMinutes % 1440) / 60);
   const minutes = totalMinutes % 60;
-  return `${String(days).padStart(2, "0")}:${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+  return `${String(days).padStart(2, "0")}d ${String(hours).padStart(2, "0")}h ${String(minutes).padStart(2, "0")}m`;
 }
 
 function formatResetDate(resetTime) {
   if (!resetTime) return "";
   const date = new Date(resetTime);
   if (!Number.isFinite(date.getTime())) return "";
-  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const month = date.toLocaleString("en-US", { month: "long" });
   const day = String(date.getDate()).padStart(2, "0");
   const hour = String(date.getHours()).padStart(2, "0");
   const minute = String(date.getMinutes()).padStart(2, "0");
-  return `${month}/${day}, ${hour}:${minute}`;
+  return `${month} ${day} ${hour}:${minute}`;
 }
 
 function getColorClasses(remainingPercentage) {

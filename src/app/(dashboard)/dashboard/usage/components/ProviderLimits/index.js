@@ -1429,7 +1429,7 @@ export default function ProviderLimits() {
                     <p className="text-xs text-text-muted">{quota.message}</p>
                   </div>
                 ) : conn.provider === "antigravity" ? (
-                  <QuotaTableGrouped quotas={quota?.quotas} />
+                  <QuotaTableGrouped quotas={quota?.quotas} metadata={quota?.metadata} />
                 ) : (
                   <QuotaTable quotas={quota?.quotas} compact />
                 )}

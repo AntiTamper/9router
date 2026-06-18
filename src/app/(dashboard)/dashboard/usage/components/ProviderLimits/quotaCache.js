@@ -1,8 +1,8 @@
 "use client";
 
-import { parseQuotaData } from "./utils";
+import { parseQuotaData, parseQuotaMetadata } from "./utils";
 
-export const PROVIDER_QUOTA_CACHE_KEY = "providerQuotaSnapshots:v1";
+export const PROVIDER_QUOTA_CACHE_KEY = "providerQuotaSnapshots:v2";
 export const PROVIDER_QUOTA_CACHE_TTL_MS = 15 * 60 * 1000;
 export const PROVIDER_QUOTA_FETCH_TIMEOUT_MS = 12 * 1000;
 
@@ -24,6 +24,7 @@ function normalizeCacheEntry(entry, fallbackSavedAt = getNow()) {
     quotas: Array.isArray(entry.quotas) ? entry.quotas : [],
     plan: entry.plan || null,
     message: entry.message || null,
+    metadata: entry.metadata && typeof entry.metadata === "object" ? entry.metadata : {},
     savedAt: Number(entry.savedAt || fallbackSavedAt || getNow()),
   };
 }
@@ -185,6 +186,7 @@ export async function fetchQuotaWithCache(connection, { force = false } = {}) {
         quotas: parseQuotaData(connection.provider, data),
         plan: data.plan || null,
         message: data.message || null,
+        metadata: parseQuotaMetadata(connection.provider, data),
       });
 
       mergeQuotaCacheEntries({ [connection.id]: entry });

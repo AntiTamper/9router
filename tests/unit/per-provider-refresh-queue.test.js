@@ -3,7 +3,7 @@ import {
   runPerProviderRefreshQueue,
   runQuotaRefreshQueue,
 } from "@/app/(dashboard)/dashboard/usage/components/ProviderLimits/quotaRefreshQueue.js";
-import { parseQuotaData } from "@/app/(dashboard)/dashboard/usage/components/ProviderLimits/utils.js";
+import { parseQuotaData, parseQuotaMetadata } from "@/app/(dashboard)/dashboard/usage/components/ProviderLimits/utils.js";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -131,5 +131,56 @@ describe("parseQuotaData antigravity grouping", () => {
       quotas: { "x": { used: 0, total: 1000 } },
     });
     expect(parsed[0]).toMatchObject({ family: null, window: null });
+  });
+
+  it("marks paid Antigravity accounts as session-capable and exposes AI credits", () => {
+    const data = {
+      subscriptionInfo: {
+        paidTier: {
+          id: "g1-pro-tier",
+          availableCredits: [{ creditType: "GOOGLE_ONE_AI", creditAmount: "113", minimumCreditAmountForUsage: "50" }],
+        },
+      },
+      quotas: {
+        "gemini-3-flash": {
+          displayName: "Gemini 3 Flash",
+          used: 30,
+          total: 1000,
+          remainingPercentage: 97,
+          family: "gemini",
+          window: "weekly",
+        },
+      },
+    };
+
+    expect(parseQuotaMetadata("antigravity", data)).toMatchObject({
+      supportsSessionQuota: true,
+      aiCredits: { amount: 113, minimumForUsage: 50, type: "GOOGLE_ONE_AI" },
+    });
+    expect(parseQuotaData("antigravity", data)[0]).toMatchObject({
+      remainingPercentage: 97,
+      supportsSessionQuota: true,
+    });
+  });
+
+  it("does not synthesize session support for free weekly-only Antigravity accounts", () => {
+    const data = {
+      subscriptionInfo: {
+        currentTier: { id: "free-tier" },
+        paidTier: { id: "free-tier", availableCredits: [{ creditType: "GOOGLE_ONE_AI", minimumCreditAmountForUsage: "50" }] },
+      },
+      quotas: {
+        "claude-sonnet-4-6": {
+          used: 0,
+          total: 1000,
+          remainingPercentage: 100,
+          family: "claude_gpt",
+          window: "weekly",
+        },
+      },
+    };
+
+    expect(parseQuotaMetadata("antigravity", data)).toEqual({ supportsSessionQuota: false });
+    expect(parseQuotaData("antigravity", data)[0]).toMatchObject({ supportsSessionQuota: false });
   });
 });

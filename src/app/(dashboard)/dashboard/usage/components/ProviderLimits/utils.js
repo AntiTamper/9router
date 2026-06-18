@@ -297,6 +297,60 @@ function quotaRemainingPercentage(quota) {
   return clampPercentage(calculatePercentage(quota.used, quota.total));
 }
 
+function antigravityCreditSummary(subscriptionInfo) {
+  const tiers = [
+    subscriptionInfo?.currentTier,
+    subscriptionInfo?.paidTier,
+    ...(Array.isArray(subscriptionInfo?.allowedTiers) ? subscriptionInfo.allowedTiers : []),
+  ].filter(Boolean);
+
+  const credits = [];
+  for (const tier of tiers) {
+    if (!Array.isArray(tier?.availableCredits)) continue;
+    for (const credit of tier.availableCredits) {
+      const amount = Number(credit?.creditAmount);
+      if (!Number.isFinite(amount)) continue;
+      credits.push({
+        type: credit.creditType || "AI credits",
+        amount,
+        minimumForUsage: Number.isFinite(Number(credit.minimumCreditAmountForUsage))
+          ? Number(credit.minimumCreditAmountForUsage)
+          : null,
+      });
+    }
+  }
+
+  if (credits.length === 0) return null;
+  const total = credits.reduce((sum, credit) => sum + credit.amount, 0);
+  const minimumForUsage = credits
+    .map((credit) => credit.minimumForUsage)
+    .find((amount) => Number.isFinite(amount));
+  return { amount: total, minimumForUsage, type: credits[0]?.type || "AI credits" };
+}
+
+function antigravitySupportsSessionQuota(data) {
+  const quotas = Object.values(data?.quotas || {});
+  if (quotas.some((quota) => quota?.window === "five_hour")) return true;
+
+  const subscriptionInfo = data?.subscriptionInfo || {};
+  const tierIds = [subscriptionInfo?.currentTier?.id, subscriptionInfo?.paidTier?.id]
+    .filter(Boolean)
+    .map((id) => String(id).toLowerCase());
+  if (tierIds.some((id) => id && id !== "free-tier")) return true;
+
+  return !!antigravityCreditSummary(subscriptionInfo)?.amount;
+}
+
+export function parseQuotaMetadata(provider, data) {
+  if (!data || typeof data !== "object") return {};
+  if (provider?.toLowerCase() !== "antigravity") return {};
+  const aiCredits = antigravityCreditSummary(data.subscriptionInfo);
+  return {
+    supportsSessionQuota: antigravitySupportsSessionQuota(data),
+    ...(aiCredits ? { aiCredits } : {}),
+  };
+}
+
 function isSessionQuotaRow(quota) {
   const label = String(
     quota?.name ?? quota?.label ?? quota?.window ?? quota?.type ?? "",
@@ -425,6 +479,7 @@ export function parseQuotaData(provider, data) {
 
       case "antigravity":
         if (data.quotas) {
+          const metadata = parseQuotaMetadata("antigravity", data);
           Object.entries(data.quotas).forEach(([modelKey, quota]) => {
             normalizedQuotas.push({
               name: quota.displayName || modelKey,
@@ -435,6 +490,7 @@ export function parseQuotaData(provider, data) {
               remainingPercentage: quota.remainingPercentage,
               family: quota.family || null,
               window: quota.window || null,
+              supportsSessionQuota: metadata.supportsSessionQuota === true,
             });
           });
         }
