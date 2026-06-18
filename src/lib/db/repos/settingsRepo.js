@@ -1,5 +1,6 @@
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { normalizeAccountRoutingMode } from "../../../shared/utils/accountRouting.js";
 
 const DEFAULT_MITM_ROUTER_BASE = "http://localhost:20128";
 
@@ -10,6 +11,10 @@ const DEFAULT_SETTINGS = {
   tunnelProvider: "cloudflare",
   tailscaleEnabled: false,
   tailscaleUrl: "",
+  customDomainEnabled: false,
+  customDomain: "",
+  customDomainDashboardAccess: false,
+  fallbackStrategy: "cycle",
   stickyRoundRobinLimit: 3,
   providerStrategies: {},
   comboStrategy: "fallback",
@@ -33,9 +38,39 @@ const DEFAULT_SETTINGS = {
   outboundNoProxy: "",
   mitmRouterBaseUrl: DEFAULT_MITM_ROUTER_BASE,
   dnsToolEnabled: {},
+  codexUsageEnabled: true,
+  codexOAuthEvergreenEnabled: true,
+  codexOAuthRefreshConcurrency: 1,
+  codexOAuthRefreshMinIntervalHours: 12,
+  codexOAuthKeepAliveHours: 72,
+  codexOAuthRefreshLeadHours: 24,
   rtkEnabled: true,
+  toonEnabled: false,
   cavemanEnabled: false,
   cavemanLevel: "full",
+  // Token saver scope: "global" applies the settings above to every key;
+  // "individual" lets each API key carry its own tokenSaver config (falling
+  // back to global when a key has none).
+  tokenSaverMode: "global",
+  // Combo exposure default for keys with no explicit per-key exposure:
+  // "all-prefixed" exposes every provider model by prefix; "combo-only"
+  // exposes only combos. Per-key exposure overrides this default.
+  comboExposureMode: "all-prefixed",
+  // Self-service permissions for public /apikey key holders. When enabled, a
+  // key holder authenticated by their own key may edit that key's own settings
+  // via POST /api/apikey/settings. Default OFF (admin-only).
+  allowKeyHolderTokenSaver: false,
+  allowKeyHolderOverage: false,
+  // Custom system-instruction injection (mirrors token saver). When enabled,
+  // the text is injected into the system message of every request. Mode picks
+  // how it combines with the client's own system prompt.
+  customInstructionEnabled: false,
+  customInstructionText: "",
+  customInstructionMode: "global", // "global" | "individual"
+  customInstructionInjectMode: "append", // "append" | "prepend" | "replace"
+  allowKeyHolderCustomInstruction: false,
+  quotaAutoToggleEnabled: true,
+  quotaRefreshIntervalMs: null,
 };
 
 async function readRaw() {
@@ -59,6 +94,23 @@ function mergeWithDefaults(raw) {
         merged[key] = defVal;
       }
     }
+  }
+  merged.fallbackStrategy = normalizeAccountRoutingMode(merged.fallbackStrategy);
+  if (merged.providerStrategies && typeof merged.providerStrategies === "object") {
+    merged.providerStrategies = Object.fromEntries(
+      Object.entries(merged.providerStrategies).map(([providerId, override]) => {
+        if (!override || typeof override !== "object") return [providerId, override];
+        return [
+          providerId,
+          {
+            ...override,
+            ...(override.fallbackStrategy
+              ? { fallbackStrategy: normalizeAccountRoutingMode(override.fallbackStrategy) }
+              : {}),
+          },
+        ];
+      }),
+    );
   }
   return merged;
 }

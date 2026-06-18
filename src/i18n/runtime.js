@@ -82,19 +82,24 @@ function processTextNode(node) {
   
   if (skipTags.includes(tagName)) return;
   
-  // Store original text if not already stored
-  if (!node._originalText) {
-    node._originalText = node.nodeValue;
+  const currentText = node.nodeValue;
+
+  if (currentLocale === "en") {
+    node._originalText = currentText;
+    node._lastTranslatedText = null;
+    return;
   }
-  
-  // Use original text for translation
-  const original = node._originalText;
-  const translated = translate(original);
-  
-  // Only update if different to avoid unnecessary DOM mutations
-  if (translated !== node.nodeValue) {
+
+  if (!node._originalText || (node._lastTranslatedText && currentText !== node._lastTranslatedText)) {
+    node._originalText = currentText;
+  }
+
+  const translated = translate(node._originalText);
+
+  if (translated !== currentText) {
     node.nodeValue = translated;
   }
+  node._lastTranslatedText = translated;
 }
 
 // Process all text nodes in element
@@ -159,4 +164,19 @@ export async function reloadTranslations() {
   
   // Re-process entire DOM (will use stored original text)
   processElement(document.body);
+}
+
+export function __setRuntimeI18nForTests(locale = DEFAULT_LOCALE, map = {}) {
+  currentLocale = normalizeLocale(locale);
+  translationMap = { ...map };
+}
+
+export function __resetRuntimeI18nForTests() {
+  currentLocale = DEFAULT_LOCALE;
+  translationMap = {};
+  reloadCallbacks = [];
+}
+
+export function __processTextNodeForTests(node) {
+  return processTextNode(node);
 }

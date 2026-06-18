@@ -1,11 +1,96 @@
 import { NextResponse } from "next/server";
 import { deleteApiKey, getApiKeyById, updateApiKey } from "@/lib/localDb";
+import { parseStructuredConfig, parseKeyTimers } from "../keyConfigInput";
+
+const LIMIT_MODES = new Set(["unlimited", "daily", "weekly", "daily_weekly", "hard"]);
+
+function parseOptionalPositiveInt(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return n;
+}
+
+// Legacy update fields (limitMode + *TokenLimit + expiry + flags).
+function parseLegacyUpdates(body = {}) {
+  const updates = {};
+
+  if (Object.prototype.hasOwnProperty.call(body, "isActive")) {
+    updates.isActive = body.isActive === true;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "name")) {
+    const name = String(body.name || "").trim();
+    if (!name) return { error: "Name is required" };
+    updates.name = name;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "limitMode")) {
+    const mode = String(body.limitMode || "unlimited").toLowerCase();
+    if (!LIMIT_MODES.has(mode)) return { error: "Invalid limit mode" };
+    updates.limitMode = mode;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "tokenLimit")) {
+    const limit = parseOptionalPositiveInt(body.tokenLimit);
+    if (limit === undefined) return { error: "Invalid token limit" };
+    updates.tokenLimit = limit;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "dailyTokenLimit")) {
+    const limit = parseOptionalPositiveInt(body.dailyTokenLimit);
+    if (limit === undefined) return { error: "Invalid daily token limit" };
+    updates.dailyTokenLimit = limit;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "weeklyTokenLimit")) {
+    const limit = parseOptionalPositiveInt(body.weeklyTokenLimit);
+    if (limit === undefined) return { error: "Invalid weekly token limit" };
+    updates.weeklyTokenLimit = limit;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "expiresAt")) {
+    if (!body.expiresAt) {
+      updates.expiresAt = null;
+    } else {
+      const expiry = new Date(body.expiresAt);
+      if (!Number.isFinite(expiry.getTime())) return { error: "Invalid expiry time" };
+      updates.expiresAt = expiry.toISOString();
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "expiresInMs")) {
+    const duration = Math.floor(Number(body.expiresInMs));
+    if (!Number.isFinite(duration) || duration <= 0) return { error: "Invalid expiry duration" };
+    updates.expiresInMs = duration;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "autoDeleteExpired")) {
+    updates.autoDeleteExpired = body.autoDeleteExpired !== false;
+  }
+
+  return { updates };
+}
+
+// Builds updateApiKey() input. Structured path when body.config is present
+// (fusion limits, timers, exposure, token-saver, overage); else legacy fields.
+function buildUpdates(body = {}) {
+  if (body.config !== undefined) {
+    const updates = {};
+    if (Object.prototype.hasOwnProperty.call(body, "isActive")) updates.isActive = body.isActive === true;
+    if (Object.prototype.hasOwnProperty.call(body, "name")) {
+      const name = String(body.name || "").trim();
+      if (!name) return { error: "Name is required" };
+      updates.name = name;
+    }
+    const parsed = parseStructuredConfig(body.config);
+    if (parsed.error) return { error: parsed.error };
+    updates.config = parsed.config;
+    const timers = parseKeyTimers(body);
+    if (timers.error) return { error: timers.error };
+    Object.assign(updates, timers.options);
+    return { updates };
+  }
+  return parseLegacyUpdates(body);
+}
 
 // GET /api/keys/[id] - Get single key
 export async function GET(request, { params }) {
   try {
     const { id } = await params;
-    const key = await getApiKeyById(id);
+    const key = await getApiKeyById(id, { includeUsage: true });
     if (!key) {
       return NextResponse.json({ error: "Key not found" }, { status: 404 });
     }
@@ -21,17 +106,32 @@ export async function PUT(request, { params }) {
   try {
     const { id } = await params;
     const body = await request.json();
-    const { isActive } = body;
 
     const existing = await getApiKeyById(id);
     if (!existing) {
       return NextResponse.json({ error: "Key not found" }, { status: 404 });
     }
 
-    const updateData = {};
-    if (isActive !== undefined) updateData.isActive = isActive;
+    const parsed = buildUpdates(body);
+    if (parsed.error) {
+      return NextResponse.json({ error: parsed.error }, { status: 400 });
+    }
 
-    const updated = await updateApiKey(id, updateData);
+    // Legacy validation only applies to the legacy field path.
+    if (body.config === undefined) {
+      const effectiveMode = parsed.updates.limitMode ?? existing.limitMode ?? "unlimited";
+      const effectiveLimit = parsed.updates.tokenLimit ?? existing.tokenLimit;
+      const effectiveDailyLimit = parsed.updates.dailyTokenLimit ?? existing.dailyTokenLimit;
+      const effectiveWeeklyLimit = parsed.updates.weeklyTokenLimit ?? existing.weeklyTokenLimit;
+      if (effectiveMode === "daily_weekly" && (!Number.isFinite(Number(effectiveDailyLimit)) || Number(effectiveDailyLimit) <= 0 || !Number.isFinite(Number(effectiveWeeklyLimit)) || Number(effectiveWeeklyLimit) <= 0)) {
+        return NextResponse.json({ error: "Daily and weekly token limits are required for daily/weekly mode" }, { status: 400 });
+      }
+      if (!["unlimited", "daily_weekly"].includes(effectiveMode) && (!Number.isFinite(Number(effectiveLimit)) || Number(effectiveLimit) <= 0)) {
+        return NextResponse.json({ error: "Token limit is required for limited keys" }, { status: 400 });
+      }
+    }
+
+    const updated = await updateApiKey(id, parsed.updates);
 
     return NextResponse.json({ key: updated });
   } catch (error) {

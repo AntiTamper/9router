@@ -5,13 +5,14 @@ import {
   markAccountUnavailable,
   clearAccountError,
   extractApiKey,
-  isValidApiKey,
+  getApiKeyAccess,
 } from "../services/auth.js";
 import { cacheClaudeHeaders } from "open-sse/utils/claudeHeaderCache.js";
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo, getComboModels } from "../services/model.js";
+import { resolveExposure, isModelAllowed, effectiveTokenSaver, effectiveCustomInstruction } from "@/lib/keyPolicy.js";
 import { handleChatCore } from "open-sse/handlers/chatCore.js";
-import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
+import { errorResponse, unavailableResponse, isLocalProxyFailure } from "open-sse/utils/error.js";
 import { handleComboChat, handleFusionChat } from "open-sse/services/combo.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
@@ -20,12 +21,29 @@ import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 
+const MAX_ACCOUNT_FALLBACK_ATTEMPTS = Math.max(1, parseInt(process.env.MAX_ACCOUNT_FALLBACK_ATTEMPTS || "3", 10));
+// Hard cap on inbound request body to bound memory use / payload-flood DoS.
+// Generous default (LLM payloads carry large base64 images / long contexts);
+// override via env. 50MB headroom avoids truncating legitimate multimodal/big
+// requests while still bounding abuse (see #1572).
+const MAX_REQUEST_BODY_BYTES = Math.max(
+  64 * 1024,
+  parseInt(process.env.MAX_REQUEST_BODY_BYTES || String(50 * 1024 * 1024), 10),
+);
+const ACCOUNT_FALLBACK_DEADLINE_MS = Math.max(1000, parseInt(process.env.ACCOUNT_FALLBACK_DEADLINE_MS || "45000", 10));
+
 /**
  * Handle chat completion request
  * Supports: OpenAI, Claude, Gemini, OpenAI Responses API formats
  * Format detection and translation handled by translator
  */
 export async function handleChat(request, clientRawRequest = null) {
+  const declaredLength = parseInt(request.headers.get("content-length") || "", 10);
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_REQUEST_BODY_BYTES) {
+    log.warn("CHAT", `Request body too large: ${declaredLength} bytes`);
+    return errorResponse(413, "Request body too large");
+  }
+
   let body;
   try {
     body = await request.json();
@@ -65,23 +83,58 @@ export async function handleChat(request, clientRawRequest = null) {
     log.debug("AUTH", "No API key provided (local mode)");
   }
 
-  // Enforce API key if enabled in settings
+  // Enforce required keys, and always enforce limits for provided keys.
   const settings = await getSettings();
-  if (settings.requireApiKey) {
-    if (!apiKey) {
-      log.warn("AUTH", "Missing API key (requireApiKey=true)");
-      return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
-    }
-    const valid = await isValidApiKey(apiKey);
-    if (!valid) {
-      log.warn("AUTH", "Invalid API key (requireApiKey=true)");
+  if (settings.requireApiKey && !apiKey) {
+    log.warn("AUTH", "Missing API key (requireApiKey=true)");
+    return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
+  }
+  let keyConfig = null;
+  if (apiKey) {
+    const access = await getApiKeyAccess(apiKey);
+    if (!access.valid) {
+      const reason = access.reason || "invalid";
+      log.warn("AUTH", `Rejected API key (${reason})`);
+      if (reason === "token_limit_exceeded") {
+        const reset = access.resetAt ? ` Resets at ${access.resetAt}.` : "";
+        return errorResponse(HTTP_STATUS.RATE_LIMITED, `API key token limit exhausted.${reset}`);
+      }
+      if (reason === "expired") {
+        return errorResponse(HTTP_STATUS.UNAUTHORIZED, "API key expired");
+      }
+      if (reason === "paused") {
+        return errorResponse(HTTP_STATUS.UNAUTHORIZED, "API key paused");
+      }
+      if (reason === "outside_authorized_hours") {
+        return errorResponse(HTTP_STATUS.FORBIDDEN, "API key not authorized at this time");
+      }
+      if (reason === "not_yet_available") {
+        return errorResponse(HTTP_STATUS.FORBIDDEN, "API key not yet available");
+      }
       return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
     }
+    keyConfig = access.key?.config || null;
   }
 
   if (!modelStr) {
     log.warn("CHAT", "Missing model");
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
+  }
+
+  // Enforce per-key model/combo exposure (global default + per-key override).
+  if (keyConfig) {
+    const exposure = resolveExposure(keyConfig, settings);
+    if (exposure.mode !== "all") {
+      const requestedCombo = await getComboModels(modelStr);
+      const isCombo = requestedCombo !== null;
+      const allowedComboMembers = exposure.mode === "combo" && exposure.combo
+        ? await getComboModels(exposure.combo)
+        : null;
+      if (!isModelAllowed(exposure, { modelStr, isCombo, allowedComboMembers })) {
+        log.warn("AUTH", `Model ${modelStr} not exposed for this API key`);
+        return errorResponse(HTTP_STATUS.FORBIDDEN, "Model not permitted for this API key");
+      }
+    }
   }
 
   // Bypass naming/warmup requests before combo rotation to avoid wasting rotation slots
@@ -115,7 +168,7 @@ export async function handleChat(request, clientRawRequest = null) {
     return handleComboChat({
       body,
       models: comboModels,
-      handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+      handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, keyConfig),
       log,
       comboName: modelStr,
       comboStrategy,
@@ -124,20 +177,42 @@ export async function handleChat(request, clientRawRequest = null) {
   }
 
   // Single model request
-  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey);
+  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, keyConfig);
 }
 
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null) {
+const MAX_COMBO_DEPTH = 3;
+
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, keyConfig = null, comboDepth = 0) {
   const modelInfo = await getModelInfo(modelStr);
 
   // If provider is null, this might be a combo name - check and handle
   if (!modelInfo.provider) {
     const comboModels = await getComboModels(modelStr);
     if (comboModels) {
+      // Guard against combo-of-combo loops / unbounded recursion.
+      if (comboDepth >= MAX_COMBO_DEPTH) {
+        log.warn("COMBO", `Combo nesting too deep (>${MAX_COMBO_DEPTH}) at "${modelStr}"`);
+        return errorResponse(HTTP_STATUS.BAD_REQUEST, "Combo nesting too deep");
+      }
       const chatSettings = await getSettings();
+      // Re-check per-key exposure for this (nested) combo: the top-level guard
+      // only validated the originally requested model, not combos referenced
+      // by other combos.
+      if (keyConfig) {
+        const exposure = resolveExposure(keyConfig, chatSettings);
+        if (exposure.mode !== "all") {
+          const allowedComboMembers = exposure.mode === "combo" && exposure.combo
+            ? await getComboModels(exposure.combo)
+            : null;
+          if (!isModelAllowed(exposure, { modelStr, isCombo: true, allowedComboMembers })) {
+            log.warn("AUTH", `Nested combo ${modelStr} not exposed for this API key`);
+            return errorResponse(HTTP_STATUS.FORBIDDEN, "Model not permitted for this API key");
+          }
+        }
+      }
       // Check for combo-specific strategy first, fallback to global
       const comboStrategies = chatSettings.comboStrategies || {};
       const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
@@ -161,7 +236,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       return handleComboChat({
         body,
         models: comboModels,
-        handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+        handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, keyConfig, comboDepth + 1),
         log,
         comboName: modelStr,
         comboStrategy,
@@ -188,8 +263,18 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   const excludeConnectionIds = new Set();
   let lastError = null;
   let lastStatus = null;
+  const fallbackStartMs = Date.now();
 
   while (true) {
+    if (excludeConnectionIds.size >= MAX_ACCOUNT_FALLBACK_ATTEMPTS || Date.now() - fallbackStartMs > ACCOUNT_FALLBACK_DEADLINE_MS) {
+      const attempted = excludeConnectionIds.size;
+      const reason = attempted >= MAX_ACCOUNT_FALLBACK_ATTEMPTS
+        ? `account fallback capped after ${attempted} attempt${attempted === 1 ? "" : "s"}`
+        : `account fallback deadline ${ACCOUNT_FALLBACK_DEADLINE_MS}ms exceeded`;
+      log.warn("CHAT", `${provider}/${model} ${reason}`);
+      return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError ? `${lastError} (${reason})` : reason);
+    }
+
     const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
 
     // All accounts unavailable
@@ -226,6 +311,9 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     // Use shared chatCore
     const chatSettings = await getSettings();
     const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
+    // Effective token saver: per-key when tokenSaverMode=individual, else global.
+    const saver = effectiveTokenSaver(chatSettings, keyConfig);
+    const customInstruction = effectiveCustomInstruction(chatSettings, keyConfig);
     const result = await handleChatCore({
       body: { ...body, model: `${provider}/${model}` },
       modelInfo: { provider, model },
@@ -236,16 +324,22 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       userAgent,
       apiKey,
       ccFilterNaming: !!chatSettings.ccFilterNaming,
-      rtkEnabled: !!chatSettings.rtkEnabled,
-      cavemanEnabled: !!chatSettings.cavemanEnabled,
-      cavemanLevel: chatSettings.cavemanLevel || "full",
+      codexUsageEnabled: saver.codexUsageEnabled,
+      rtkEnabled: saver.rtkEnabled,
+      toonEnabled: saver.toonEnabled,
+      cavemanEnabled: saver.cavemanEnabled,
+      cavemanLevel: saver.cavemanLevel,
+      customInstructionEnabled: customInstruction.enabled,
+      customInstructionText: customInstruction.text,
+      customInstructionMode: customInstruction.mode,
       providerThinking,
       // Detect source format by endpoint + body
       sourceFormatOverride: request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null,
       onCredentialsRefreshed: async (newCreds) => {
         await updateProviderCredentials(credentials.connectionId, {
-          ...newCreds,
-          existingProviderSpecificData: credentials.providerSpecificData,
+          accessToken: newCreds.accessToken,
+          refreshToken: newCreds.refreshToken,
+          providerSpecificData: newCreds.providerSpecificData,
           testStatus: "active"
         });
       },
@@ -255,6 +349,16 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     });
 
     if (result.success) return result.response;
+
+    if (isLocalProxyFailure(result.status, result.error)) {
+      log.warn("CHAT", `Local proxy failure for ${provider}/${model}; not locking account: ${result.error}`);
+      return result.response;
+    }
+
+    if (result.skipAccountFallback) {
+      log.warn("CHAT", `Non-account failure for ${provider}/${model}; not locking account: ${result.error}`);
+      return result.response;
+    }
 
     // Mark account unavailable (auto-calculates cooldown with exponential backoff, or precise resetsAtMs)
     const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, result.resetsAtMs);

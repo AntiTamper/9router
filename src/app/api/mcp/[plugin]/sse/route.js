@@ -11,16 +11,22 @@ export async function GET(request, { params }) {
 
   const encoder = new TextEncoder();
   let sid;
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned || !sid) return;
+    cleaned = true;
+    unregisterSession(plugin, sid);
+  };
 
   const stream = new ReadableStream({
     start(controller) {
       const send = (chunk) => controller.enqueue(encoder.encode(chunk));
       sid = registerSession(plugin, send);
-      // MCP SSE handshake: tell client where to POST messages.
+      request.signal?.addEventListener?.("abort", cleanup, { once: true });
       send(`event: endpoint\ndata: /api/mcp/${plugin}/message?sessionId=${sid}\n\n`);
     },
     cancel() {
-      if (sid) unregisterSession(plugin, sid);
+      cleanup();
     },
   });
 

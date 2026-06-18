@@ -7,6 +7,12 @@ import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE } from
 /**
  * BaseExecutor - Base class for provider executors
  */
+export function resolveFetchConnectTimeoutMs({ provider, sourceFormat, timeoutMs } = {}) {
+  if (Number.isFinite(timeoutMs) && timeoutMs > 0) return timeoutMs;
+  if (provider === "kimi" && sourceFormat === "openai-responses") return 120000;
+  return FETCH_CONNECT_TIMEOUT_MS;
+}
+
 export class BaseExecutor {
   constructor(provider, config) {
     this.provider = provider;
@@ -132,7 +138,7 @@ export class BaseExecutor {
 
       // Abort if upstream doesn't return response headers within connection timeout
       const connectCtrl = new AbortController();
-      const timeoutMs = this.config?.timeoutMs || FETCH_CONNECT_TIMEOUT_MS;
+      const timeoutMs = resolveFetchConnectTimeoutMs({ provider: this.provider, sourceFormat: transformedBody?.input ? "openai-responses" : undefined, timeoutMs: this.config?.timeoutMs });
       const connectTimer = setTimeout(() => connectCtrl.abort(new Error("fetch connect timeout")), timeoutMs);
       const mergedSignal = signal ? AbortSignal.any([signal, connectCtrl.signal]) : connectCtrl.signal;
 

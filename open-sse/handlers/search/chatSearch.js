@@ -146,8 +146,9 @@ const CHAT_SEARCH_CONFIG = {
     }
   },
 
-  kimi: {
-    endpoint: () => searchEndpoint("kimi"),
+  "kimi-api": {
+    defaultModel: searchModel("kimi-api"),
+    endpoint: () => searchEndpoint("kimi-api"),
     buildBody: (query, model) => ({
       model,
       messages: [{ role: "user", content: query }],

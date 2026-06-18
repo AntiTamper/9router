@@ -1,5 +1,3 @@
-import { CLAUDE_API_HEADERS, KIMI_CODING_BASE_URL } from "../shared.js";
-
 export default {
   id: "kimi",
   priority: 170,
@@ -16,29 +14,26 @@ export default {
   },
   category: "apikey",
   transport: {
-    baseUrl: "https://api.kimi.com/coding/v1/messages",
-    format: "claude",
-    urlSuffix: "?beta=true",
-    headers: {
-      "Anthropic-Version": "2023-06-01",
-      "Anthropic-Beta": "claude-code-20250219,interleaved-thinking-2025-05-14",
-    },
+    baseUrl: "https://api.kimi.com/coding/v1/chat/completions",
+    openaiBaseUrl: "https://api.kimi.com/coding/v1/chat/completions",
+    anthropicBaseUrl: "https://api.kimi.com/coding/v1/messages",
+    baseUrls: ["https://api.kimi.com/coding/v1/chat/completions"],
+    modelsUrl: "https://api.kimi.com/coding/v1/models",
+    format: "openai",
+    headers: {},
     auth: {
       combined: true,
-      header: "x-api-key",
-      scheme: "raw",
+      header: "Authorization",
+      scheme: "bearer",
     },
   },
   models: [
-    { id: "kimi-k2.6", name: "Kimi K2.6" },
+    { id: "kimi-for-coding", name: "Kimi for Coding", contextWindow: 262144 },
+    { id: "kimi-k2.6", name: "Kimi K2.6", upstreamModelId: "kimi-for-coding", contextWindow: 262144 },
+    { id: "kimi-k2.7-code", name: "Kimi K2.7 Code", contextWindow: 262144, unsupportedParams: ["temperature", "top_p", "presence_penalty", "frequency_penalty", "thinking", "reasoning", "reasoning_effort", "enable_thinking"], unsupportedExtraBodyParams: ["thinking", "enable_thinking"] },
     { id: "kimi-k2.5", name: "Kimi K2.5" },
     { id: "kimi-k2.5-thinking", name: "Kimi K2.5 Thinking" },
     { id: "kimi-latest", name: "Kimi Latest" },
   ],
-  serviceKinds: ["llm","webSearch"],
-  searchViaChat: {
-    defaultModel: "kimi-k2.5",
-    endpoint: "https://api.moonshot.cn/v1/chat/completions",
-    pricingUrl: "https://platform.moonshot.ai/docs/pricing/chat",
-  },
+  serviceKinds: ["llm"],
 };

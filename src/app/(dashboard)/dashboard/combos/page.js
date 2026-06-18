@@ -5,7 +5,7 @@ import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, us
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { restrictToVerticalAxis, restrictToParentElement } from "@dnd-kit/modifiers";
-import { Card, Button, Modal, Input, CardSkeleton, ModelSelectModal, ConfirmModal, CapacityBadges, Select } from "@/shared/components";
+import { Card, Button, Modal, Input, CardSkeleton, ModelSelectModal, ConfirmModal, CapacityBadges, Select, ComboQuickAddByModel } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
 
@@ -25,7 +25,7 @@ export default function CombosPage() {
 
   useEffect(() => {
     fetchData();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   const fetchData = async () => {
     try {
@@ -572,6 +572,18 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
               Only letters, numbers, -, _ and . allowed
             </p>
           </div>
+
+          <ComboQuickAddByModel
+            models={models}
+            onModelsChange={setModels}
+            onNameCandidate={(candidate) => {
+              if (!name.trim()) {
+                setName(candidate);
+                validateName(candidate);
+              }
+            }}
+            kindFilter={kindFilter}
+          />
 
           {/* Models */}
           <div>

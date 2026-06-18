@@ -1,13 +1,12 @@
 import { NextResponse } from "next/server";
+import { guardedFetch, validatePublicUrl, toUrlGuardResponse, UrlGuardError } from "@/lib/security/urlGuard";
 
 // Fetch with timeout wrapper
 const fetchWithTimeout = (url, options, timeout = 10000) => {
-  return Promise.race([
-    fetch(url, options),
-    new Promise((_, reject) => 
-      setTimeout(() => reject(new Error("Request timeout")), timeout)
-    )
-  ]);
+  return guardedFetch(url, options, {
+    protocols: ["http:", "https:"],
+    timeoutMs: timeout,
+  });
 };
 
 // Validate URL format
@@ -59,10 +58,10 @@ export async function POST(request) {
       return NextResponse.json({ error: "Base URL and API key required" }, { status: 400 });
     }
 
-    // Validate URL format
     if (!isValidUrl(baseUrl)) {
       return NextResponse.json({ error: "Invalid URL format" }, { status: 400 });
     }
+    await validatePublicUrl(baseUrl, { protocols: ["http:", "https:"] });
 
     // Custom Embedding Validation - test POST /embeddings directly
     if (type === "custom-embedding") {
@@ -186,6 +185,12 @@ export async function POST(request) {
 
     return NextResponse.json({ valid: false, error: getModelsErrorMessage(res.status) });
   } catch (error) {
+    if (error instanceof UrlGuardError) {
+      return NextResponse.json({
+        valid: false,
+        ...toUrlGuardResponse(error),
+      }, { status: 400 });
+    }
     const errorMessage = getErrorMessage(error);
     console.error("Error validating provider node:", {
       message: error.message,

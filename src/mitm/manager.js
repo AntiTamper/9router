@@ -50,6 +50,35 @@ let mitmRestartCount = 0;
 let mitmLastStartTime = 0;
 let mitmIsRestarting = false;
 
+
+function findPackageRoot(filePath) {
+  const parts = path.resolve(filePath).split(path.sep);
+  const idx = parts.lastIndexOf("node_modules");
+  if (idx < 0 || idx + 1 >= parts.length) return null;
+  let pkgEnd = idx + 2;
+  if (parts[idx + 1]?.startsWith("@") && idx + 2 < parts.length) pkgEnd = idx + 3;
+  return parts.slice(0, pkgEnd).join(path.sep);
+}
+
+function findPackageNodePaths(filePath) {
+  const root = findPackageRoot(filePath);
+  const paths = [];
+  if (root) paths.push(path.join(root, "node_modules"));
+  if (process.env.NODE_PATH) paths.push(process.env.NODE_PATH);
+  return paths.join(path.delimiter);
+}
+
+function copyDirRecursive(src, dest) {
+  if (!fs.existsSync(src)) return;
+  fs.mkdirSync(dest, { recursive: true });
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const from = path.join(src, entry.name);
+    const to = path.join(dest, entry.name);
+    if (entry.isDirectory()) copyDirRecursive(from, to);
+    else if (entry.isFile()) fs.copyFileSync(from, to);
+  }
+}
+
 function resolveBundledServerPath() {
   if (process.env.MITM_SERVER_PATH) return process.env.MITM_SERVER_PATH;
   const sibling = path.join(__dirname, "server.js");
@@ -67,25 +96,22 @@ function ensureRuntimeServer(bundledPath) {
   try {
     if (!bundledPath || !fs.existsSync(bundledPath)) return bundledPath;
 
-    // Dev mode: source file has relative requires (./logger, ./config...),
-    // only the bundled file inside node_modules is self-contained + safe to copy.
     if (!bundledPath.includes(`${path.sep}node_modules${path.sep}`)) {
       return bundledPath;
     }
 
-    const runtimeDir = path.join(DATA_DIR, "runtime", "mitm");
-    const runtimeServer = path.join(runtimeDir, "server.js");
+    const packageRoot = findPackageRoot(bundledPath);
+    const sourceRoot = packageRoot ? path.join(packageRoot, "src") : null;
+    if (!sourceRoot || !fs.existsSync(sourceRoot)) return bundledPath;
 
-    // Skip copy if sizes match (bundle unchanged since last run)
-    if (fs.existsSync(runtimeServer)) {
-      try {
-        if (fs.statSync(bundledPath).size === fs.statSync(runtimeServer).size) return runtimeServer;
-      } catch { /* recopy */ }
-    }
+    const hash = crypto.createHash("sha1").update(path.resolve(packageRoot)).digest("hex").slice(0, 12);
+    const runtimeRoot = path.join(DATA_DIR, "runtime", `mitm-src-${hash}`);
+    const runtimeSrc = path.join(runtimeRoot, "src");
+    const runtimeServer = path.join(runtimeSrc, "mitm", "server.js");
 
-    fs.mkdirSync(runtimeDir, { recursive: true });
-    fs.copyFileSync(bundledPath, runtimeServer);
-    return runtimeServer;
+    fs.rmSync(runtimeRoot, { recursive: true, force: true });
+    copyDirRecursive(sourceRoot, runtimeSrc);
+    return fs.existsSync(runtimeServer) ? runtimeServer : bundledPath;
   } catch (e) {
     try { log(`[MITM] runtime copy failed: ${e.message}`); } catch { /* ignore */ }
     return bundledPath;
@@ -588,6 +614,7 @@ async function startServer(apiKey, sudoPassword, forceKillPort443 = false) {
         stdio: ["ignore", "pipe", "pipe"],
         env: {
           ...process.env,
+          NODE_PATH: findPackageNodePaths(effectiveServerPath),
           ROUTER_API_KEY: apiKey,
           NODE_ENV: "production",
           MITM_ROUTER_BASE: mitmRouterBase,
@@ -621,8 +648,9 @@ async function startServer(apiKey, sudoPassword, forceKillPort443 = false) {
       cwd: os.tmpdir(),
       stdio: ["ignore", "pipe", "pipe"],
       env: {
-        ...process.env,
-        ROUTER_API_KEY: apiKey,
+          ...process.env,
+          NODE_PATH: findPackageNodePaths(effectiveServerPath),
+          ROUTER_API_KEY: apiKey,
         NODE_ENV: "production",
         MITM_ROUTER_BASE: mitmRouterBase,
       },
@@ -848,4 +876,5 @@ module.exports = {
   restoreToolDNS,
   hasDnsPrivilege,
   removeAllDNSEntriesSync,
+  _test: { ensureRuntimeServer, findPackageNodePaths },
 };

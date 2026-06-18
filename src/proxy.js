@@ -1,8 +1,4 @@
-import { proxy as dashboardProxy } from "./dashboardGuard";
-
-export default async function proxy(request) {
-  return dashboardProxy(request);
-}
+export { proxy } from "./dashboardGuard";
 
 export const config = {
   matcher: ["/((?!_next/static|_next/image|favicon\\.ico).*)"],

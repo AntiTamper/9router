@@ -1,6 +1,9 @@
 import { PROVIDER_MODELS } from "open-sse/config/providerModels.js";
 import { AI_PROVIDERS, ALIAS_TO_ID } from "@/shared/constants/providers";
-import { getModelKind } from "@/shared/constants/models";
+import { getCustomModels } from "@/lib/localDb";
+import { resolveKiroModels } from "open-sse/services/kiroModels.js";
+import { resolveKimiModels } from "open-sse/services/kimiModels.js";
+import { resolveModelContextWindow } from "open-sse/services/contextWindow.js";
 
 const KIND_ENDPOINT = {
   llm: "/v1/chat/completions",
@@ -27,7 +30,17 @@ function buildInfo({ alias, providerId, model, kind, providerInfo }) {
   if (model.capabilities) out.capabilities = model.capabilities;
   if (model.options) out.options = model.options;
   if (model.dimensions) out.dimensions = model.dimensions;
-  if (model.contextWindow) out.contextWindow = model.contextWindow;
+  if (model.contextWindow) {
+    out.contextWindow = model.contextWindow;
+    out.context_window = model.contextWindow;
+    // Shave 4K safety margin to absorb tokenizer drift between client and upstream.
+    const SAFETY_MARGIN = 4096;
+    out.max_input_tokens = Math.max(model.contextWindow - SAFETY_MARGIN, Math.floor(model.contextWindow * 0.95));
+  }
+  if (model.maxOutputTokens) {
+    out.maxOutputTokens = model.maxOutputTokens;
+    out.max_output_tokens = model.maxOutputTokens;
+  }
   if (kind === "tts" && TTS_VOICES_API.has(providerId)) {
     out.voicesUrl = `/v1/audio/voices?provider=${providerId}`;
   }
@@ -41,8 +54,7 @@ function buildInfo({ alias, providerId, model, kind, providerInfo }) {
 }
 
 // id format: "{alias}/{modelId}" - alias may also be providerId
-// requestedKind: optional, disambiguates duplicate ids across kinds (e.g. gemini-2.5-pro llm vs stt)
-function lookup(fullId, requestedKind) {
+function lookup(fullId, ctx = {}) {
   if (!fullId || !fullId.includes("/")) return null;
   const slash = fullId.indexOf("/");
   const alias = fullId.slice(0, slash);
@@ -52,12 +64,21 @@ function lookup(fullId, requestedKind) {
 
   // PROVIDER_MODELS lookup (by alias key, fallback to providerId)
   const list = PROVIDER_MODELS[alias] || PROVIDER_MODELS[providerId] || [];
-  const m = requestedKind
-    ? list.find((x) => x.id === modelId && getModelKind(x, "llm") === requestedKind)
-    : list.find((x) => x.id === modelId);
+  const m = list.find((x) => x.id === modelId);
   if (m) {
-    const kind = getModelKind(m, "llm");
+    const kind = m.kind || m.type || "llm";
     return buildInfo({ alias, providerId, model: m, kind, providerInfo });
+  }
+
+  // Sub-configs (TTS/STT/embedding only-in-config)
+  const subs = [
+    ["tts", providerInfo?.ttsConfig],
+    ["stt", providerInfo?.sttConfig],
+    ["embedding", providerInfo?.embeddingConfig],
+  ];
+  for (const [kind, cfg] of subs) {
+    const sm = cfg?.models?.find((x) => x.id === modelId);
+    if (sm) return buildInfo({ alias, providerId, model: sm, kind, providerInfo });
   }
 
   // Web search/fetch — virtual model id "search" / "fetch"
@@ -73,6 +94,42 @@ function lookup(fullId, requestedKind) {
       model: { id: "fetch", name: `${providerInfo.name} Fetch`, params: ["url", "format", "max_characters"] },
     });
   }
+
+  // Custom-model fallback (user-supplied via /api/models/custom)
+  const cm = (ctx.customModels || []).find((x) =>
+    (x?.providerAlias === alias || x?.providerAlias === providerId) && x?.id === modelId
+  );
+  if (cm) {
+    const ctxWindow = Number(cm.contextWindow) || Number(cm.maxInputTokens) || null;
+    const maxOut = Number(cm.maxOutputTokens) || null;
+    return buildInfo({
+      alias, providerId, providerInfo,
+      kind: cm.type || "llm",
+      model: {
+        id: cm.id,
+        name: cm.name || cm.id,
+        contextWindow: ctxWindow,
+        maxOutputTokens: maxOut,
+      },
+    });
+  }
+
+  // Live Kiro catalog fallback (kr/* aliases that aren't in static registry)
+  if (providerId === "kiro" && Array.isArray(ctx.kiroLive)) {
+    const live = ctx.kiroLive.find((x) => x?.id === modelId || x?.upstreamModelId === modelId);
+    if (live) {
+      return buildInfo({
+        alias, providerId, providerInfo, kind: "llm",
+        model: {
+          id: live.id,
+          name: live.name || live.id,
+          contextWindow: Number(live.contextLength) || Number(live.contextWindow) || null,
+          maxOutputTokens: Number(live.maxOutputTokens) || null,
+        },
+      });
+    }
+  }
+
   return null;
 }
 
@@ -83,17 +140,91 @@ export async function OPTIONS() {
 }
 
 // GET /v1/models/info?id={alias}/{modelId} — metadata for a single model
+async function loadLookupContext(id) {
+  const ctx = { customModels: [], kiroLive: [], kimiLive: [], kimiApiLive: [] };
+  try { ctx.customModels = await getCustomModels(); } catch {}
+  try {
+    const slash = id.indexOf("/");
+    const alias = slash > 0 ? id.slice(0, slash) : "";
+    if (alias === "kr" || alias === "kiro") {
+      const { getProviderConnections } = await import("@/lib/localDb");
+      const conns = await getProviderConnections().catch(() => []);
+      const kiro = (conns || []).find((c) => c.provider === "kiro" && c.isActive !== false);
+      if (kiro?.accessToken) {
+        const { updateProviderCredentials } = await import("@/sse/services/tokenRefresh");
+        const live = await resolveKiroModels({
+          accessToken: kiro.accessToken,
+          refreshToken: kiro.refreshToken,
+          providerSpecificData: kiro.providerSpecificData || {},
+        }, {
+          log: console,
+          onCredentialsRefreshed: async (refreshed) => {
+            if (!refreshed?.accessToken) return;
+            await updateProviderCredentials(kiro.id, {
+              accessToken: refreshed.accessToken,
+              refreshToken: refreshed.refreshToken || kiro.refreshToken,
+              expiresIn: refreshed.expiresIn,
+            }).catch(() => {});
+          },
+        }).catch(() => null);
+        if (Array.isArray(live?.models)) ctx.kiroLive = live.models;
+      }
+    }
+    if (alias === "kimi" || alias === "kimi-api" || alias === "moonshot") {
+      const { getProviderConnections } = await import("@/lib/localDb");
+      const providerId = alias === "kimi" ? "kimi" : "kimi-api";
+      const conns = await getProviderConnections().catch(() => []);
+      const kimi = (conns || []).find((c) => c.provider === providerId && c.isActive !== false);
+      if (kimi?.apiKey || kimi?.accessToken) {
+        const live = await resolveKimiModels(providerId, {
+          apiKey: kimi.apiKey,
+          accessToken: kimi.accessToken,
+        }, { log: console }).catch(() => null);
+        if (Array.isArray(live?.models)) {
+          if (providerId === "kimi") ctx.kimiLive = live.models;
+          else ctx.kimiApiLive = live.models;
+        }
+      }
+    }
+  } catch {}
+  return ctx;
+}
+
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const id = searchParams.get("id");
-  const kind = searchParams.get("kind");
   if (!id) {
     return Response.json(
       { error: { message: "Missing required query param: id (e.g. ?id=openai/dall-e-3)", type: "invalid_request_error" } },
       { status: 400, headers: { "Access-Control-Allow-Origin": "*" } },
     );
   }
-  const info = lookup(id, kind);
+  const ctx = await loadLookupContext(id);
+  // resolveModelContextWindow ensures clients always see a context window when one exists
+  let info = lookup(id, ctx);
+  if (info) {
+    const slash = id.indexOf("/");
+    const alias = slash > 0 ? id.slice(0, slash) : "";
+    const modelId = slash > 0 ? id.slice(slash + 1) : id;
+    const providerId = ALIAS_TO_ID[alias] || alias;
+    const resolved = resolveModelContextWindow({
+      alias,
+      providerId,
+      modelId,
+      customModels: ctx.customModels,
+      live: { kiro: ctx.kiroLive, kimi: ctx.kimiLive, "kimi-api": ctx.kimiApiLive, moonshot: ctx.kimiApiLive },
+    });
+    if (resolved.contextWindow) {
+      info.contextWindow = resolved.contextWindow;
+      info.context_window = resolved.contextWindow;
+      const SAFETY_MARGIN = 4096;
+      info.max_input_tokens = Math.max(resolved.contextWindow - SAFETY_MARGIN, Math.floor(resolved.contextWindow * 0.95));
+    }
+    if (resolved.maxOutputTokens) {
+      info.maxOutputTokens = resolved.maxOutputTokens;
+      info.max_output_tokens = resolved.maxOutputTokens;
+    }
+  }
   if (!info) {
     return Response.json(
       { error: { message: `Model not found: ${id}`, type: "not_found" } },

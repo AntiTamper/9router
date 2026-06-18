@@ -32,7 +32,9 @@ async function setupTestContext(nodeData) {
     node,
     POST,
     getProviderConnections,
-    cleanup() {
+    async cleanup() {
+      const { resetDbAdapterForTests } = await import("@/lib/db/driver.js");
+      resetDbAdapterForTests();
       fs.rmSync(tempDir, { recursive: true, force: true });
     },
   };
@@ -73,11 +75,11 @@ describe("compatible provider connections API", () => {
     vi.clearAllMocks();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.doUnmock("next/server");
     vi.resetModules();
     vi.clearAllMocks();
-    cleanup();
+    await cleanup();
     cleanup = () => {};
     if (originalDataDir === undefined) delete process.env.DATA_DIR;
     else process.env.DATA_DIR = originalDataDir;

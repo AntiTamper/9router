@@ -21,6 +21,8 @@ import { detectClientTool, isNativePassthrough } from "../utils/clientDetector.j
 import { dedupeTools } from "../utils/toolDeduper.js";
 import { injectCaveman } from "../rtk/caveman.js";
 import { compressMessages, formatRtkLog } from "../rtk/index.js";
+import { injectCustomInstruction } from "../rtk/customInstruction.js";
+import { applyToon, formatToonLog } from "../rtk/toon.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { stripUnsupportedModalities } from "../translator/concerns/modality.js";
 import { prefetchRemoteImages } from "../translator/concerns/prefetch.js";
@@ -32,7 +34,7 @@ import { prefetchRemoteImages } from "../translator/concerns/prefetch.js";
  * @param {object} options.credentials - Provider credentials
  * @param {string} options.sourceFormatOverride - Override detected source format (e.g. "openai-responses")
  */
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, cavemanEnabled, cavemanLevel, sourceFormatOverride, providerThinking }) {
+export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, codexUsageEnabled, rtkEnabled, toonEnabled, cavemanEnabled, cavemanLevel, customInstructionEnabled, customInstructionText, customInstructionMode, sourceFormatOverride, providerThinking }) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
 
@@ -149,10 +151,24 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   const rtkLine = formatRtkLog(rtkStats);
   if (rtkLine) console.log(rtkLine);
 
+  const toonStats = applyToon(translatedBody, toonEnabled);
+  const toonLine = formatToonLog(toonStats);
+  if (toonLine) console.log(toonLine);
+
   // Caveman: inject terse-style system prompt
   if (cavemanEnabled && cavemanLevel) {
     injectCaveman(translatedBody, finalFormat, cavemanLevel);
     log?.debug?.("CAVEMAN", `${cavemanLevel} | ${finalFormat}`);
+  }
+
+  if (customInstructionEnabled && typeof customInstructionText === "string" && customInstructionText.trim()) {
+    injectCustomInstruction(translatedBody, finalFormat, customInstructionText, customInstructionMode);
+    log?.debug?.("CUSTOM_INSTRUCTION", `${customInstructionMode || "append"} | ${finalFormat}`);
+  }
+
+  if (codexUsageEnabled !== false && stream && detectedTool === "codex" && translatedBody && Array.isArray(translatedBody.messages) && !translatedBody.stream_options) {
+    translatedBody.stream_options = { include_usage: true };
+    log?.debug?.("CODEX_USAGE", "enabled include_usage for Codex client");
   }
 
   const executor = getExecutor(provider);

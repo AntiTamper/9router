@@ -1,5 +1,6 @@
 import { PROVIDERS } from "../config/providers.js";
 import { OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE } from "../providers/shared.js";
+import { buildKimiOpenAICompatibilityHeaders } from "../utils/kimiCodingAgentHeaders.js";
 
 const OPENAI_COMPATIBLE_PREFIX = "openai-compatible-";
 const OPENAI_COMPATIBLE_DEFAULTS = {
@@ -158,4 +159,39 @@ export function normalizeThinkingConfig(body) {
     delete body.thinking;
   }
   return body;
+}
+
+export function buildProviderUrl(provider, model, stream = true, credentials = null, options = {}) {
+  const config = getProviderConfig(provider);
+  if (provider === "kimi" && options?.targetFormat === "claude") return config.anthropicBaseUrl || config.baseUrl;
+  if (provider?.startsWith?.(OPENAI_COMPATIBLE_PREFIX)) {
+    const baseUrl = credentials?.providerSpecificData?.baseUrl || OPENAI_COMPATIBLE_DEFAULTS.baseUrl;
+    return baseUrl.replace(/\/$/, "") + (provider.includes("responses") ? "/responses" : "/chat/completions");
+  }
+  if (provider?.startsWith?.(ANTHROPIC_COMPATIBLE_PREFIX)) {
+    const baseUrl = credentials?.providerSpecificData?.baseUrl || ANTHROPIC_COMPATIBLE_DEFAULTS.baseUrl;
+    return baseUrl.replace(/\/$/, "") + "/messages";
+  }
+  const urls = config.baseUrls || (config.baseUrl ? [config.baseUrl] : []);
+  return urls[0] || config.baseUrl;
+}
+
+export function buildProviderHeaders(provider, credentials = {}, stream = true, options = {}) {
+  const config = getProviderConfig(provider);
+  const headers = { "Content-Type": "application/json", ...(config.headers || {}) };
+  const token = credentials.apiKey || credentials.accessToken;
+  if (provider === "kimi") {
+    if (token) headers.Authorization = "Bearer " + token;
+    const { headers: kimiHeaders } = buildKimiOpenAICompatibilityHeaders(options?.clientRawRequest?.headers || {});
+    Object.assign(headers, kimiHeaders);
+  } else if (config.auth?.header) {
+    headers[config.auth.header] = config.auth.scheme === "bearer" ? "Bearer " + token : token;
+  } else if (config.format === "claude") {
+    if (token) headers["x-api-key"] = token;
+    if (!headers["anthropic-version"]) headers["anthropic-version"] = "2023-06-01";
+  } else if (token) {
+    headers.Authorization = "Bearer " + token;
+  }
+  if (stream) headers.Accept = "text/event-stream";
+  return headers;
 }

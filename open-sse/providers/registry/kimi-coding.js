@@ -18,6 +18,7 @@ export default {
   category: "oauth",
   transport: {
     baseUrl: "https://api.kimi.com/coding/v1/messages",
+    modelsUrl: "https://api.kimi.com/coding/v1/models",
     format: "claude",
     urlSuffix: "?beta=true",
     headers: {
@@ -37,7 +38,9 @@ export default {
     },
   },
   models: [
-    { id: "kimi-k2.6", name: "Kimi K2.6" },
+    { id: "kimi-for-coding", name: "Kimi for Coding", contextWindow: 262144 },
+    { id: "kimi-k2.6", name: "Kimi K2.6", upstreamModelId: "kimi-for-coding", contextWindow: 262144 },
+    { id: "kimi-k2.7-code", name: "Kimi K2.7 Code", contextWindow: 262144, unsupportedParams: ["temperature", "top_p", "presence_penalty", "frequency_penalty", "thinking", "reasoning", "reasoning_effort", "enable_thinking"], unsupportedExtraBodyParams: ["thinking", "enable_thinking"] },
     { id: "kimi-k2.5", name: "Kimi K2.5" },
     { id: "kimi-k2.5-thinking", name: "Kimi K2.5 Thinking" },
     { id: "kimi-latest", name: "Kimi Latest" },

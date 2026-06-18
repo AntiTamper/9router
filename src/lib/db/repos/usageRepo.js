@@ -1,7 +1,9 @@
 import { EventEmitter } from "events";
+import { createHash } from "crypto";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
+import { classifyOverageAtWrite } from "./apiKeysRepo.js";
 
 const PENDING_TIMEOUT_MS = 60 * 1000;
 const RING_CAP = 50;
@@ -26,6 +28,15 @@ const recentRing = global._recentRing;
 const connCache = global._connectionMapCache;
 
 export const statsEmitter = global._statsEmitter;
+
+function hashApiKey(apiKey) {
+  if (!apiKey || apiKey === "local-no-key") return apiKey;
+  try {
+    return createHash("sha256").update(apiKey).digest("hex").slice(0, 16);
+  } catch {
+    return apiKey.slice(0, 8) + "...";
+  }
+}
 
 function getLocalDateKey(timestamp) {
   const d = timestamp ? new Date(timestamp) : new Date();
@@ -150,18 +161,26 @@ async function calculateCost(provider, model, tokens) {
   }
 }
 
-export function trackPendingRequest(model, provider, connectionId, started, error = false) {
-  const modelKey = provider ? `${model} (${provider})` : model;
-  const timerKey = `${connectionId}|${modelKey}`;
+function getPendingTimerList(timerKey) {
+  const current = pendingTimers[timerKey];
+  if (!current) return [];
+  if (Array.isArray(current)) return current;
+  return [current];
+}
 
-  if (!pendingRequests.byModel[modelKey]) pendingRequests.byModel[modelKey] = 0;
-  pendingRequests.byModel[modelKey] = Math.max(0, pendingRequests.byModel[modelKey] + (started ? 1 : -1));
+function storePendingTimerList(timerKey, timers) {
+  if (timers.length > 0) pendingTimers[timerKey] = timers;
+  else delete pendingTimers[timerKey];
+}
+
+function decrementPendingCount(modelKey, connectionId) {
+  if (pendingRequests.byModel[modelKey] > 0) {
+    pendingRequests.byModel[modelKey] = Math.max(0, pendingRequests.byModel[modelKey] - 1);
+  }
   if (pendingRequests.byModel[modelKey] === 0) delete pendingRequests.byModel[modelKey];
 
-  if (connectionId) {
-    if (!pendingRequests.byAccount[connectionId]) pendingRequests.byAccount[connectionId] = {};
-    if (!pendingRequests.byAccount[connectionId][modelKey]) pendingRequests.byAccount[connectionId][modelKey] = 0;
-    pendingRequests.byAccount[connectionId][modelKey] = Math.max(0, pendingRequests.byAccount[connectionId][modelKey] + (started ? 1 : -1));
+  if (connectionId && pendingRequests.byAccount[connectionId]?.[modelKey] > 0) {
+    pendingRequests.byAccount[connectionId][modelKey] = Math.max(0, pendingRequests.byAccount[connectionId][modelKey] - 1);
     if (pendingRequests.byAccount[connectionId][modelKey] === 0) {
       delete pendingRequests.byAccount[connectionId][modelKey];
       if (Object.keys(pendingRequests.byAccount[connectionId]).length === 0) {
@@ -169,20 +188,49 @@ export function trackPendingRequest(model, provider, connectionId, started, erro
       }
     }
   }
+}
+
+function clearOnePendingTimer(timerKey) {
+  const timers = getPendingTimerList(timerKey);
+  const timer = timers.shift();
+  if (timer) clearTimeout(timer);
+  storePendingTimerList(timerKey, timers);
+}
+
+function removePendingTimer(timerKey, timer) {
+  const timers = getPendingTimerList(timerKey).filter((item) => item !== timer);
+  storePendingTimerList(timerKey, timers);
+}
+
+export function trackPendingRequest(model, provider, connectionId, started, error = false) {
+  const modelKey = provider ? `${model} (${provider})` : model;
+  const timerKey = `${connectionId}|${modelKey}`;
 
   if (started) {
-    clearTimeout(pendingTimers[timerKey]);
-    pendingTimers[timerKey] = setTimeout(() => {
-      delete pendingTimers[timerKey];
-      if (pendingRequests.byModel[modelKey] > 0) pendingRequests.byModel[modelKey] = 0;
-      if (connectionId && pendingRequests.byAccount[connectionId]?.[modelKey] > 0) {
-        pendingRequests.byAccount[connectionId][modelKey] = 0;
-      }
+    if (!pendingRequests.byModel[modelKey]) pendingRequests.byModel[modelKey] = 0;
+    pendingRequests.byModel[modelKey] += 1;
+
+    if (connectionId) {
+      if (!pendingRequests.byAccount[connectionId]) pendingRequests.byAccount[connectionId] = {};
+      if (!pendingRequests.byAccount[connectionId][modelKey]) pendingRequests.byAccount[connectionId][modelKey] = 0;
+      pendingRequests.byAccount[connectionId][modelKey] += 1;
+    }
+  } else {
+    decrementPendingCount(modelKey, connectionId);
+  }
+
+  if (started) {
+    const timer = setTimeout(() => {
+      removePendingTimer(timerKey, timer);
+      decrementPendingCount(modelKey, connectionId);
       statsEmitter.emit("pending");
     }, PENDING_TIMEOUT_MS);
+    timer.unref?.();
+    const timers = getPendingTimerList(timerKey);
+    timers.push(timer);
+    storePendingTimerList(timerKey, timers);
   } else {
-    clearTimeout(pendingTimers[timerKey]);
-    delete pendingTimers[timerKey];
+    clearOnePendingTimer(timerKey);
   }
 
   if (!started && error && provider) {
@@ -228,8 +276,8 @@ export async function getActiveRequests() {
     })
     .filter((e) => {
       if (e.promptTokens === 0 && e.completionTokens === 0) return false;
-      const minute = e.timestamp ? e.timestamp.slice(0, 16) : "";
-      const key = `${e.model}|${e.provider}|${e.promptTokens}|${e.completionTokens}|${minute}`;
+      const ts = e.timestamp || "";
+      const key = `${ts}|${e.connectionId || ""}|${e.model}|${e.provider}|${e.promptTokens}|${e.completionTokens}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -251,16 +299,25 @@ export async function saveRequestUsage(entry) {
     const promptTokens = tokens.prompt_tokens || tokens.input_tokens || 0;
     const completionTokens = tokens.completion_tokens || tokens.output_tokens || 0;
 
+    // Tag this row as overage when the key has an active overage pool and a
+    // timed limit is already exhausted by normal usage (tag-at-write so the
+    // accounting survives window rollovers and resets cleanly). Honor an
+    // explicit entry.overage if the caller already classified it.
+    let isOverage = entry.overage === true;
+    if (!isOverage && entry.overage === undefined && entry.apiKey) {
+      isOverage = classifyOverageAtWrite(db, entry.apiKey);
+    }
+
     // All 3 writes (history insert, daily upsert, lifetime counter) in ONE transaction.
     // better-sqlite3 is sync → no JS yield mid-transaction → no race in same process.
     db.transaction(() => {
       db.run(
-        `INSERT INTO usageHistory(timestamp, provider, model, connectionId, apiKey, endpoint, promptTokens, completionTokens, cost, status, tokens, meta) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO usageHistory(timestamp, provider, model, connectionId, apiKey, endpoint, promptTokens, completionTokens, cost, status, tokens, meta, overage) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           entry.timestamp, entry.provider || null, entry.model || null,
           entry.connectionId || null, entry.apiKey || null, entry.endpoint || null,
           promptTokens, completionTokens, entry.cost || 0, entry.status || "ok",
-          stringifyJson(tokens), stringifyJson({}),
+          stringifyJson(tokens), stringifyJson({}), isOverage ? 1 : 0,
         ]
       );
 
@@ -356,8 +413,8 @@ export async function getUsageStats(period = "all") {
     })
     .filter((e) => {
       if (e.promptTokens === 0 && e.completionTokens === 0) return false;
-      const minute = e.timestamp ? e.timestamp.slice(0, 16) : "";
-      const key = `${e.model}|${e.provider}|${e.promptTokens}|${e.completionTokens}|${minute}`;
+      const ts = e.timestamp || "";
+      const key = `${ts}|${e.connectionId || ""}|${e.model}|${e.provider}|${e.promptTokens}|${e.completionTokens}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;

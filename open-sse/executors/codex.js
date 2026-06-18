@@ -1,10 +1,8 @@
 import { BaseExecutor } from "./base.js";
 import { CODEX_DEFAULT_INSTRUCTIONS } from "../config/codexInstructions.js";
 import { PROVIDERS } from "../config/providers.js";
-import {
-  refreshProviderCredentials,
-  shouldRefreshCredentials,
-} from "../services/oauthCredentialManager.js";
+import { safeRefreshCodexConnection } from "../../src/sse/services/codexOAuthRefresh.js";
+import { refreshProviderCredentials } from "../services/oauthCredentialManager.js";
 import { normalizeResponsesInput } from "../translator/formats/responsesApi.js";
 import { fetchImageAsBase64 } from "../translator/concerns/image.js";
 import { getModelUpstreamId } from "../config/providerModels.js";
@@ -142,13 +140,16 @@ export class CodexExecutor extends BaseExecutor {
     return this._isCompact ? `${base}/compact` : base;
   }
 
-  async refreshCredentials(credentials, log) {
-    if (!credentials?.refreshToken) return null;
+  async refreshCredentials(credentials, log, proxyOptions = null) {
+    if (!credentials?.connectionId || !credentials?.refreshToken) return null;
+    const result = await safeRefreshCodexConnection(credentials.connectionId, {
+      force: true,
+      proxyOptions,
+      reason: "reactive-auth",
+      log,
+    });
+    if (result?.accessToken || result?.reauthRequired) return result;
     return refreshProviderCredentials("codex", credentials, log);
-  }
-
-  needsRefresh(credentials) {
-    return shouldRefreshCredentials("codex", credentials);
   }
 
   /**

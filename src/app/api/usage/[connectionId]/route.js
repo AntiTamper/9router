@@ -6,6 +6,10 @@ import { getUsageForProvider } from "open-sse/services/usage.js";
 import { getExecutor } from "open-sse/executors/index.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { USAGE_APIKEY_PROVIDERS } from "@/shared/constants/providers";
+import { syncConnectionQuotaState } from "@/lib/quota/autoDisable";
+import { safeRefreshCodexConnection } from "@/sse/services/codexOAuthRefresh";
+
+const QUOTA_FETCH_TIMEOUT_MS = 12 * 1000;
 
 // Detect auth-expired messages returned by usage providers instead of throwing
 const AUTH_EXPIRED_PATTERNS = ["expired", "authentication", "unauthorized", "401", "re-authorize"];
@@ -15,22 +19,88 @@ function isAuthExpiredMessage(usage) {
   return AUTH_EXPIRED_PATTERNS.some((p) => msg.includes(p));
 }
 
+function isTransientUsageFetchError(error) {
+  const message = String(error?.message || "").toLowerCase();
+  return [
+    "fetch failed",
+    "enotfound",
+    "eai_again",
+    "etimedout",
+    "econnreset",
+    "econnrefused",
+    "network",
+  ].some((pattern) => message.includes(pattern));
+}
+
+function safeUsageErrorMessage(error) {
+  const message = String(error?.message || "fetch failed");
+  return message.replace(/bearer\s+[^\s]+/gi, "Bearer [redacted]");
+}
+
+function timeoutError(ms) {
+  const err = new Error(`quota fetch timeout after ${ms}ms`);
+  err.name = "TimeoutError";
+  return err;
+}
+
+function withQuotaTimeout(promise) {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(timeoutError(QUOTA_FETCH_TIMEOUT_MS)), QUOTA_FETCH_TIMEOUT_MS);
+    timer.unref?.();
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+function staleQuotaResponse(connection, reason) {
+  const snapshot = connection?.lastQuotaSnapshot;
+  if (snapshot && typeof snapshot === "object") {
+    return {
+      plan: snapshot.plan || null,
+      message: `${connection.provider} usage temporarily unavailable: ${reason}. Showing cached quota.`,
+      quotas: Object.fromEntries((snapshot.quotas || []).map((quota, index) => [quota.name || `quota_${index}`, quota])),
+      stale: true,
+      savedAt: snapshot.savedAt || connection.lastQuotaSnapshotAt || null,
+    };
+  }
+  return {
+    message: `${connection?.provider || "Provider"} usage temporarily unavailable: ${reason}.`,
+    quotas: {},
+    stale: true,
+  };
+}
+
 /**
  * Refresh credentials using executor and update database
  * @param {boolean} force - Skip needsRefresh check and always attempt refresh
  * @returns Promise<{ connection, refreshed: boolean }>
  */
-export async function refreshAndUpdateCredentials(connection, force = false, proxyOptions = null) {
+async function refreshAndUpdateCredentials(connection, force = false, proxyOptions = null) {
+  if (connection.provider === "codex") {
+    const result = await safeRefreshCodexConnection(connection.id, {
+      force,
+      includeKeepAlive: false,
+      proxyOptions,
+      reason: force ? "usage-auth-retry" : "usage-proactive",
+    });
+    if (result?.reauthRequired) {
+      throw new Error("Codex OAuth refresh failed; re-authentication required");
+    }
+    if (result?.accessToken) {
+      return { connection: result.connection || { ...connection, ...result }, refreshed: true };
+    }
+    return { connection, refreshed: false };
+  }
+
   const executor = getExecutor(connection.provider);
 
   // Build credentials object from connection
   const credentials = {
     accessToken: connection.accessToken,
     refreshToken: connection.refreshToken,
-    idToken: connection.idToken,
     expiresAt: connection.expiresAt || connection.tokenExpiresAt,
-    lastRefreshAt: connection.lastRefreshAt,
-    connectionId: connection.id,
     providerSpecificData: connection.providerSpecificData,
     // For GitHub
     copilotToken: connection.providerSpecificData?.copilotToken,
@@ -71,32 +141,19 @@ export async function refreshAndUpdateCredentials(connection, force = false, pro
     updateData.refreshToken = refreshResult.refreshToken;
   }
 
-  if (refreshResult.idToken) {
-    updateData.idToken = refreshResult.idToken;
-  }
-
-  if (refreshResult.lastRefreshAt) {
-    updateData.lastRefreshAt = refreshResult.lastRefreshAt;
-  }
-
   // Update token expiry
   if (refreshResult.expiresIn) {
     updateData.expiresAt = new Date(Date.now() + refreshResult.expiresIn * 1000).toISOString();
-    updateData.expiresIn = refreshResult.expiresIn;
   } else if (refreshResult.expiresAt) {
     updateData.expiresAt = refreshResult.expiresAt;
   }
 
   // Handle provider-specific data (copilotToken for GitHub, etc.)
-  const providerSpecificUpdates = {
-    ...(refreshResult.providerSpecificData || {}),
-    ...(refreshResult.copilotToken ? { copilotToken: refreshResult.copilotToken } : {}),
-    ...(refreshResult.copilotTokenExpiresAt ? { copilotTokenExpiresAt: refreshResult.copilotTokenExpiresAt } : {}),
-  };
-  if (Object.keys(providerSpecificUpdates).length > 0) {
+  if (refreshResult.copilotToken || refreshResult.copilotTokenExpiresAt) {
     updateData.providerSpecificData = {
-      ...(connection.providerSpecificData || {}),
-      ...providerSpecificUpdates,
+      ...connection.providerSpecificData,
+      copilotToken: refreshResult.copilotToken,
+      copilotTokenExpiresAt: refreshResult.copilotTokenExpiresAt,
     };
   }
 
@@ -107,7 +164,6 @@ export async function refreshAndUpdateCredentials(connection, force = false, pro
   const updatedConnection = {
     ...connection,
     ...updateData,
-    providerSpecificData: updateData.providerSpecificData || connection.providerSpecificData,
   };
 
   return {
@@ -168,7 +224,7 @@ export async function GET(request, { params }) {
     }
 
     // Fetch usage from provider API
-    let usage = await getUsageForProvider(connection, proxyOptions);
+    let usage = await withQuotaTimeout(getUsageForProvider(connection, proxyOptions));
 
     // If provider returned an auth-expired message instead of throwing,
     // force-refresh token and retry once (OAuth only)
@@ -176,16 +232,26 @@ export async function GET(request, { params }) {
       try {
         const retryResult = await refreshAndUpdateCredentials(connection, true, proxyOptions);
         connection = retryResult.connection;
-        usage = await getUsageForProvider(connection, proxyOptions);
+        usage = await withQuotaTimeout(getUsageForProvider(connection, proxyOptions));
       } catch (retryError) {
         console.warn(`[Usage] ${connection.provider}: force refresh failed: ${retryError.message}`);
       }
     }
 
+    connection = await syncConnectionQuotaState(connection, usage);
+
     return Response.json(usage);
   } catch (error) {
     const provider = connection?.provider ?? "unknown";
     console.warn(`[Usage] ${provider}: ${error.message}`);
+    if (connection && error?.name === "TimeoutError") {
+      return Response.json(staleQuotaResponse(connection, error.message));
+    }
+    if (connection && isTransientUsageFetchError(error)) {
+      return Response.json({
+        message: `${provider} connected. Usage temporarily unavailable: ${safeUsageErrorMessage(error)}`,
+      });
+    }
     return Response.json({ error: error.message }, { status: 500 });
   }
 }

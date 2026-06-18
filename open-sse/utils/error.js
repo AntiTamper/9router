@@ -145,3 +145,10 @@ export function formatProviderError(error, provider, model, statusCode) {
   const causeStr = causeCode || causeMsg ? ` (cause: ${[causeCode, causeMsg].filter(Boolean).join(": ")})` : "";
   return `[${code}]: ${message}${causeStr}`;
 }
+
+export function isLocalProxyFailure(statusCode, message) {
+  const status = Number(statusCode);
+  if (status !== 502) return false;
+  const text = String(message || '').toLowerCase();
+  return text.includes('invalid sse response') || text.includes('invalid json response') || text.includes('fetch connect timeout');
+}

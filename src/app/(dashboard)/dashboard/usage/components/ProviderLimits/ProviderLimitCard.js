@@ -44,7 +44,6 @@ export default function ProviderLimitCard({
       antigravity: "#4285F4",
       codex: "#10A37F",
       kiro: "#FF9900",
-      qoder: "#EC4899",
       claude: "#D97757",
     };
     return colors[provider?.toLowerCase()] || "#6B7280";
@@ -152,7 +151,7 @@ export default function ProviderLimitCard({
             // For Antigravity, use remainingPercentage if available, otherwise calculate
             const percentage =
               quota.remainingPercentage !== undefined
-                ? Math.round(((quota.total - quota.used) / quota.total) * 100)
+                ? Math.round(quota.remainingPercentage)
                 : calculatePercentage(quota.used, quota.total);
             const unlimited = quota.total === 0 || quota.total === null;
 

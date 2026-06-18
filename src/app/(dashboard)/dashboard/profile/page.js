@@ -1,41 +1,21 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { useRouter } from "next/navigation";
-import { Card, Button, Toggle, Input } from "@/shared/components";
-import Modal, { ConfirmModal } from "@/shared/components/Modal";
-import LanguageSwitcher from "@/shared/components/LanguageSwitcher";
+import { Card, Button, Toggle, Input, Modal } from "@/shared/components";
 import { useTheme } from "@/shared/hooks/useTheme";
 import { cn } from "@/shared/utils/cn";
 import { APP_CONFIG } from "@/shared/constants/config";
-import { LOCALE_COOKIE, normalizeLocale } from "@/i18n/config";
-import { LOCALE_FLAGS } from "@/shared/constants/locales";
-
-function getLocaleFromCookie() {
-  if (typeof document === "undefined") return "en";
-  const cookie = document.cookie
-    .split(";")
-    .find((c) => c.trim().startsWith(`${LOCALE_COOKIE}=`));
-  const value = cookie ? decodeURIComponent(cookie.split("=")[1]) : "en";
-  return normalizeLocale(value);
-}
+import { ACCOUNT_ROUTING_MODE_OPTIONS, normalizeAccountRoutingMode } from "@/shared/utils/accountRouting";
 
 export default function ProfilePage() {
-  const router = useRouter();
   const { theme, setTheme, isDark } = useTheme();
-  const [locale, setLocale] = useState("en");
-  const [langOpen, setLangOpen] = useState(false);
-  const [shutdownOpen, setShutdownOpen] = useState(false);
-  const [isShuttingDown, setIsShuttingDown] = useState(false);
-  const [settings, setSettings] = useState({ fallbackStrategy: "fill-first" });
+  const [settings, setSettings] = useState({ fallbackStrategy: "cycle" });
   const [loading, setLoading] = useState(true);
   const [passwords, setPasswords] = useState({ current: "", new: "", confirm: "" });
   const [passStatus, setPassStatus] = useState({ type: "", message: "" });
   const [passLoading, setPassLoading] = useState(false);
   const [dbLoading, setDbLoading] = useState(false);
   const [dbStatus, setDbStatus] = useState({ type: "", message: "" });
-  const [dbAuth, setDbAuth] = useState({ open: false, mode: "", password: "" });
-  const pendingImportRef = useRef(null);
   const [oidcForm, setOidcForm] = useState({
     authMode: "password",
     oidcIssuerUrl: "",
@@ -51,6 +31,8 @@ export default function ProfilePage() {
   const [oidcRedirectUri, setOidcRedirectUri] = useState("/api/auth/oidc/callback");
   const [oidcExpanded, setOidcExpanded] = useState(false);
   const importFileRef = useRef(null);
+  const importModeRef = useRef("replace");
+  const [conflictModal, setConflictModal] = useState(null); // { report, payload }
   const [proxyForm, setProxyForm] = useState({
     outboundProxyEnabled: false,
     outboundProxyUrl: "",
@@ -59,10 +41,6 @@ export default function ProfilePage() {
   const [proxyStatus, setProxyStatus] = useState({ type: "", message: "" });
   const [proxyLoading, setProxyLoading] = useState(false);
   const [proxyTestLoading, setProxyTestLoading] = useState(false);
-
-  useEffect(() => {
-    setLocale(getLocaleFromCookie());
-  }, [langOpen]);
 
   useEffect(() => {
     fetch("/api/settings")
@@ -259,24 +237,6 @@ export default function ProfilePage() {
     }
   };
 
-  const updateStickyLimit = async (limit) => {
-    const numLimit = parseInt(limit);
-    if (isNaN(numLimit) || numLimit < 1) return;
-
-    try {
-      const res = await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ stickyRoundRobinLimit: numLimit }),
-      });
-      if (res.ok) {
-        setSettings(prev => ({ ...prev, stickyRoundRobinLimit: numLimit }));
-      }
-    } catch (err) {
-      console.error("Failed to update sticky limit:", err);
-    }
-  };
-
   const updateComboStickyLimit = async (limit) => {
     const numLimit = parseInt(limit);
     if (isNaN(numLimit) || numLimit < 1) return;
@@ -462,6 +422,21 @@ export default function ProfilePage() {
     }
   };
 
+  const updateCodexUsageEnabled = async (enabled) => {
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ codexUsageEnabled: enabled }),
+      });
+      if (res.ok) {
+        setSettings(prev => ({ ...prev, codexUsageEnabled: enabled }));
+      }
+    } catch (err) {
+      console.error("Failed to update codexUsageEnabled:", err);
+    }
+  };
+
   const reloadSettings = async () => {
     try {
       const res = await fetch("/api/settings");
@@ -473,13 +448,11 @@ export default function ProfilePage() {
     }
   };
 
-  const handleExportDatabase = async (password) => {
+  const handleExportDatabase = async () => {
     setDbLoading(true);
     setDbStatus({ type: "", message: "" });
     try {
-      const res = await fetch("/api/settings/database", {
-        headers: { "x-9r-password": password },
-      });
+      const res = await fetch("/api/settings/database");
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || "Failed to export database");
@@ -506,76 +479,84 @@ export default function ProfilePage() {
     }
   };
 
-  const handleImportDatabase = (event) => {
-    const file = event.target.files?.[0];
-    if (importFileRef.current) importFileRef.current.value = "";
-    if (!file) return;
-    pendingImportRef.current = file;
-    setDbStatus({ type: "", message: "" });
-    setDbAuth({ open: true, mode: "import", password: "" });
-  };
-
-  const runImportDatabase = async (password) => {
-    const file = pendingImportRef.current;
-    if (!file) return;
+  const commitImport = async ({ payload, mode, conflict }) => {
     setDbLoading(true);
+    setDbStatus({ type: "", message: "" });
     try {
-      const raw = await file.text();
-      const payload = JSON.parse(raw);
-
-      const res = await fetch("/api/settings/database", {
+      const qs = mode === "merge" ? `mode=merge&conflict=${conflict || "skip"}` : "mode=replace";
+      const res = await fetch(`/api/settings/database?${qs}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...payload, password }),
+        body: JSON.stringify(payload),
       });
-
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.error || "Failed to import database");
-      }
+      if (!res.ok) throw new Error(data.error || "Failed to import database");
 
       await reloadSettings();
-      setDbStatus({ type: "success", message: "Database imported successfully" });
+      setDbStatus({
+        type: "success",
+        message: mode === "merge"
+          ? (conflict === "overwrite" ? "Entries added and conflicts overwritten" : "New entries added (existing kept)")
+          : "Database imported successfully",
+      });
     } catch (err) {
-      setDbStatus({ type: "error", message: err.message || "Invalid backup file" });
+      setDbStatus({ type: "error", message: err.message || "Import failed" });
     } finally {
-      pendingImportRef.current = null;
       setDbLoading(false);
     }
   };
 
-  // Confirm password modal, then run export or import.
-  const handleDbAuthConfirm = async () => {
-    const { mode, password } = dbAuth;
-    setDbAuth({ open: false, mode: "", password: "" });
-    if (mode === "export") await handleExportDatabase(password);
-    else if (mode === "import") await runImportDatabase(password);
+  const handleImportDatabase = async (event) => {
+    const file = event.target.files?.[0];
+    if (importFileRef.current) importFileRef.current.value = "";
+    if (!file) return;
+
+    const mode = importModeRef.current || "replace";
+    setDbStatus({ type: "", message: "" });
+
+    let payload;
+    try {
+      payload = JSON.parse(await file.text());
+    } catch {
+      setDbStatus({ type: "error", message: "Invalid backup file" });
+      return;
+    }
+
+    if (mode === "merge") {
+      // Dry-run to detect overlap before writing.
+      try {
+        setDbLoading(true);
+        const res = await fetch("/api/settings/database?analyze=1", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+        setDbLoading(false);
+        if (res.ok && data.report?.hasConflicts) {
+          // Same entries exist — ask add-extra vs destructive.
+          setConflictModal({ report: data.report, payload });
+          return;
+        }
+      } catch {
+        setDbLoading(false);
+      }
+      // No conflicts → just add.
+      await commitImport({ payload, mode: "merge", conflict: "skip" });
+      return;
+    }
+
+    await commitImport({ payload, mode: "replace" });
+  };
+
+  const openImportPicker = (mode) => {
+    importModeRef.current = mode;
+    importFileRef.current?.click();
   };
 
   const observabilityEnabled = settings.enableObservability === true;
 
-  const handleShutdown = async () => {
-    setIsShuttingDown(true);
-    try {
-      await fetch("/api/version/shutdown", { method: "POST" });
-    } catch (e) {
-      // Expected to fail as server shuts down; ignore error
-    }
-    setIsShuttingDown(false);
-    setShutdownOpen(false);
-  };
-
-  const handleLogout = async () => {
-    try {
-      const res = await fetch("/api/auth/logout", { method: "POST" });
-      if (res.ok) {
-        router.push("/login");
-        router.refresh();
-      }
-    } catch (err) {
-      console.error("Failed to logout:", err);
-    }
-  };
+  const codexUsageEnabled = settings.codexUsageEnabled !== false;
 
   return (
     <div className="max-w-2xl mx-auto px-4 sm:px-0">
@@ -624,7 +605,7 @@ export default function ProfilePage() {
               <Button
                 variant="secondary"
                 icon="download"
-                onClick={() => setDbAuth({ open: true, mode: "export", password: "" })}
+                onClick={handleExportDatabase}
                 loading={dbLoading}
                 className="w-full sm:w-auto"
               >
@@ -633,11 +614,21 @@ export default function ProfilePage() {
               <Button
                 variant="outline"
                 icon="upload"
-                onClick={() => importFileRef.current?.click()}
+                onClick={() => openImportPicker("replace")}
                 disabled={dbLoading}
                 className="w-full sm:w-auto"
               >
                 Import Backup
+              </Button>
+              <Button
+                variant="outline"
+                icon="add"
+                onClick={() => openImportPicker("merge")}
+                disabled={dbLoading}
+                className="w-full sm:w-auto"
+                title="Add entries from a backup without erasing existing data"
+              >
+                Add to Database
               </Button>
               <input
                 ref={importFileRef}
@@ -653,24 +644,6 @@ export default function ProfilePage() {
               </p>
             )}
           </div>
-        </Card>
-
-        {/* Language */}
-        <Card>
-          <div className="flex items-center gap-3 mb-4">
-            <div className="size-10 rounded-lg bg-blue-500/10 text-blue-500 flex items-center justify-center shrink-0">
-              <span className="material-symbols-outlined text-[20px]">language</span>
-            </div>
-            <h3 className="text-base sm:text-lg font-semibold">Language</h3>
-          </div>
-          <button
-            onClick={() => setLangOpen(true)}
-            className="flex items-center justify-between w-full p-3 rounded-lg bg-bg border border-border hover:border-primary/50 transition-colors"
-            data-i18n-skip="true"
-          >
-            <span className="text-sm text-text-muted">Display language</span>
-            <span className="text-2xl">{LOCALE_FLAGS[locale] || "🌐"}</span>
-          </button>
         </Card>
 
         {/* Security */}
@@ -929,43 +902,27 @@ export default function ProfilePage() {
           <div className="flex flex-col gap-4">
             <div className="flex items-start sm:items-center justify-between gap-4">
               <div className="flex-1 min-w-0">
-                <p className="font-medium text-sm sm:text-base">Round Robin</p>
+                <p className="font-medium text-sm sm:text-base">Account Mode</p>
                 <p className="text-xs sm:text-sm text-text-muted">
-                  Cycle through accounts to distribute load
+                  Cycle rotates each request; 1 by 1 stays on one account until it is locked or out of quota.
                 </p>
               </div>
-              <Toggle
-                checked={settings.fallbackStrategy === "round-robin"}
-                onChange={() => updateFallbackStrategy(settings.fallbackStrategy === "round-robin" ? "fill-first" : "round-robin")}
+              <select
+                value={normalizeAccountRoutingMode(settings.fallbackStrategy)}
+                onChange={(e) => updateFallbackStrategy(e.target.value)}
                 disabled={loading}
-              />
+                className="h-9 rounded-lg border border-border bg-background px-2 text-sm text-text-main focus:outline-none focus:border-primary"
+              >
+                {ACCOUNT_ROUTING_MODE_OPTIONS.map((option) => (
+                  <option key={option.id} value={option.id}>{option.label}</option>
+                ))}
+              </select>
             </div>
 
-            {/* Sticky Round Robin Limit */}
-            {settings.fallbackStrategy === "round-robin" && (
-              <div className="flex items-start sm:items-center justify-between gap-4 pt-2 border-t border-border/50">
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium text-sm sm:text-base">Sticky Limit</p>
-                  <p className="text-xs sm:text-sm text-text-muted">
-                    Calls per account before switching
-                  </p>
-                </div>
-                <Input
-                  type="number"
-                  min="1"
-                  max="10"
-                  value={settings.stickyRoundRobinLimit || 3}
-                  onChange={(e) => updateStickyLimit(e.target.value)}
-                  disabled={loading}
-                  className="w-16 sm:w-20 text-center shrink-0"
-                />
-              </div>
-            )}
-
-            {/* Combo Round Robin */}
+            {/* Combo Cycle */}
             <div className="flex items-start sm:items-center justify-between gap-4 pt-4 border-t border-border/50">
               <div className="flex-1 min-w-0">
-                <p className="font-medium text-sm sm:text-base">Combo Round Robin</p>
+                <p className="font-medium text-sm sm:text-base">Combo Cycle</p>
                 <p className="text-xs sm:text-sm text-text-muted">
                   Cycle through providers in combos instead of always starting with first
                 </p>
@@ -977,7 +934,7 @@ export default function ProfilePage() {
               />
             </div>
 
-            {/* Combo Sticky Round Robin Limit */}
+            {/* Combo Sticky Cycle Limit */}
             {settings.comboStrategy === "round-robin" && (
               <div className="flex items-center justify-between pt-2 border-t border-border/50">
                 <div>
@@ -999,9 +956,15 @@ export default function ProfilePage() {
             )}
 
             <p className="text-xs text-text-muted italic pt-2 border-t border-border/50">
-              {settings.fallbackStrategy === "round-robin"
-                ? `Currently distributing requests across all available accounts with ${settings.stickyRoundRobinLimit || 3} calls per account.`
-                : "Currently using accounts in priority order (Fill First)."}
+              {normalizeAccountRoutingMode(settings.fallbackStrategy) === "highest"
+                ? "Currently choosing the account with the highest cached quota."
+                : normalizeAccountRoutingMode(settings.fallbackStrategy) === "lowest"
+                  ? "Currently choosing the account with the lowest cached quota."
+                  : normalizeAccountRoutingMode(settings.fallbackStrategy) === "random"
+                    ? "Currently choosing a random available account."
+                    : normalizeAccountRoutingMode(settings.fallbackStrategy) === "one_by_one"
+                      ? "Currently staying on the first available account until it locks or runs out of quota."
+                      : "Currently cycling through accounts in priority order."}
               {settings.comboStrategy === "round-robin"
                 ? ` Combos rotate after ${settings.comboStickyRoundRobinLimit || 1} call${(settings.comboStickyRoundRobinLimit || 1) === 1 ? "" : "s"} per model.`
                 : " Combos always start with their first model."}
@@ -1081,6 +1044,29 @@ export default function ProfilePage() {
           </div>
         </Card>
 
+
+        {/* Codex Usage Forwarding */}
+        <Card>
+          <div className="flex items-center gap-3 mb-4">
+            <div className="p-2 rounded-lg bg-blue-500/10 text-blue-500 shrink-0">
+              <span className="material-symbols-outlined text-[20px]">sync</span>
+            </div>
+            <h3 className="text-base sm:text-lg font-semibold">Codex Integration</h3>
+          </div>
+          <div className="flex items-start sm:items-center justify-between gap-4">
+            <div className="flex-1 min-w-0">
+              <p className="font-medium text-sm sm:text-base">Forward usage to Codex</p>
+              <p className="text-xs sm:text-sm text-text-muted">
+                Show context-used gauge in Codex CLI and trigger auto-compact when full. Works for all custom models.
+              </p>
+            </div>
+            <Toggle
+              checked={codexUsageEnabled}
+              onChange={updateCodexUsageEnabled}
+              disabled={loading}
+            />
+          </div>
+        </Card>
         {/* Observability Settings */}
         <Card>
           <div className="flex items-center gap-3 mb-4">
@@ -1104,27 +1090,6 @@ export default function ProfilePage() {
           </div>
         </Card>
 
-        {/* Account actions */}
-        <div className="flex flex-col sm:flex-row gap-2">
-          <Button
-            variant="outline"
-            fullWidth
-            icon="power_settings_new"
-            onClick={() => setShutdownOpen(true)}
-            className="text-red-500 border-red-200 hover:bg-red-50 hover:border-red-300"
-          >
-            Shutdown
-          </Button>
-          <Button
-            variant="outline"
-            fullWidth
-            icon="logout"
-            onClick={handleLogout}
-          >
-            Logout
-          </Button>
-        </div>
-
         {/* App Info */}
         <div className="text-center text-xs sm:text-sm text-text-muted py-4">
           <p>{APP_CONFIG.name} v{APP_CONFIG.version}</p>
@@ -1132,53 +1097,61 @@ export default function ProfilePage() {
         </div>
       </div>
 
-      <LanguageSwitcher
-        hideTrigger
-        isOpen={langOpen}
-        onClose={(next) => {
-          setLangOpen(false);
-          setLocale(next);
-        }}
-      />
-      <ConfirmModal
-        isOpen={shutdownOpen}
-        onClose={() => setShutdownOpen(false)}
-        onConfirm={handleShutdown}
-        title="Close Proxy"
-        message="Are you sure you want to close the proxy server?"
-        confirmText="Close"
-        cancelText="Cancel"
-        variant="danger"
-        loading={isShuttingDown}
-      />
-
       <Modal
-        isOpen={dbAuth.open}
-        onClose={() => setDbAuth({ open: false, mode: "", password: "" })}
-        title="Confirm Password"
-        size="sm"
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setDbAuth({ open: false, mode: "", password: "" })} disabled={dbLoading}>
+        isOpen={!!conflictModal}
+        onClose={() => setConflictModal(null)}
+        title="Some entries already exist"
+      >
+        <div className="flex flex-col gap-4">
+          <p className="text-sm text-text-muted">
+            This backup overlaps with data already in your database
+            {conflictModal ? ` (${conflictModal.report.totalAdds} new, ${conflictModal.report.totalConflicts} conflicting).` : "."}
+            {" "}Choose how to handle the conflicting entries.
+          </p>
+          {conflictModal && (
+            <div className="text-xs font-mono bg-black/5 dark:bg-white/5 rounded p-2 flex flex-col gap-1">
+              {Object.entries(conflictModal.report.tables)
+                .filter(([, v]) => v.adds || v.conflicts)
+                .map(([name, v]) => (
+                  <div key={name} className="flex justify-between gap-4">
+                    <span>{name}</span>
+                    <span>+{v.adds} new, {v.conflicts} conflict</span>
+                  </div>
+                ))}
+            </div>
+          )}
+          <div className="flex flex-col sm:flex-row gap-2">
+            <Button
+              variant="primary"
+              icon="add"
+              className="w-full"
+              loading={dbLoading}
+              onClick={async () => {
+                const job = conflictModal;
+                setConflictModal(null);
+                if (job) await commitImport({ payload: job.payload, mode: "merge", conflict: "skip" });
+              }}
+            >
+              Add extras only
+            </Button>
+            <Button
+              variant="danger"
+              icon="warning"
+              className="w-full"
+              loading={dbLoading}
+              onClick={async () => {
+                const job = conflictModal;
+                setConflictModal(null);
+                if (job) await commitImport({ payload: job.payload, mode: "merge", conflict: "overwrite" });
+              }}
+            >
+              Overwrite existing
+            </Button>
+            <Button variant="ghost" className="w-full" onClick={() => setConflictModal(null)} disabled={dbLoading}>
               Cancel
             </Button>
-            <Button variant="primary" onClick={handleDbAuthConfirm} loading={dbLoading} disabled={!dbAuth.password}>
-              Confirm
-            </Button>
-          </>
-        }
-      >
-        <p className="text-text-muted mb-3 text-sm">
-          Enter your current password to {dbAuth.mode === "export" ? "export" : "import"} the database.
-        </p>
-        <Input
-          type="password"
-          value={dbAuth.password}
-          onChange={(e) => setDbAuth((s) => ({ ...s, password: e.target.value }))}
-          onKeyDown={(e) => { if (e.key === "Enter" && dbAuth.password) handleDbAuthConfirm(); }}
-          placeholder="Current password"
-          autoFocus
-        />
+          </div>
+        </div>
       </Modal>
     </div>
   );

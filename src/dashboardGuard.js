@@ -29,6 +29,8 @@ const PUBLIC_API_PATHS = [
   "/api/auth/oidc",
   "/api/version",
   "/api/settings/require-login",
+  "/api/apikey/info",
+  "/api/apikey/settings",
 ];
 
 // Public top-level prefixes (LLM API endpoints with their own API key auth).
@@ -67,8 +69,9 @@ const PROTECTED_API_PATHS = [
 
 // Routes that spawn child processes or read host secrets — restrict to localhost.
 const LOCAL_ONLY_PATHS = [
-  "/api/cli-tools/cowork-settings",
-  "/api/cli-tools/antigravity-mitm",
+  // All cli-tools routes write host config files and/or spawn host probes.
+  "/api/cli-tools/",
+  "/api/system/elevation",
   "/api/mcp/",
   "/api/tunnel/tailscale-install",
   "/api/tunnel/tailscale-enable",
@@ -83,6 +86,12 @@ const LOCAL_ONLY_PATHS = [
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
+function isLoopbackIp(ip) {
+  if (!ip) return true;
+  const value = String(ip).split(",")[0].trim().replace(/^\[|\]$/g, "");
+  return value === "127.0.0.1" || value === "::1" || value === "::ffff:127.0.0.1" || value.startsWith("127.");
+}
+
 function isLoopbackHostname(h) {
   if (!h) return false;
   const name = h.split(":")[0].replace(/^\[|\]$/g, "").toLowerCase();
@@ -96,7 +105,7 @@ export function isLocalRequest(request) {
   // Trusted peer IP from TCP socket (custom-server.js); unspoofable. Primary anchor for "local".
   const realIp = request.headers.get("x-9r-real-ip");
   if (realIp) {
-    if (!isLoopbackHostname(realIp)) return false;
+    if (!isLoopbackIp(realIp)) return false;
   } else if (!isLoopbackHostname(request.headers.get("host"))) {
     // Fallback for bare server.js (dev) without custom-server: legacy Host-based check.
     return false;
@@ -156,7 +165,10 @@ async function loadSettings() {
 async function isAuthenticated(request) {
   if (await hasValidToken(request)) return true;
   const settings = await loadSettings();
-  if (settings && settings.requireLogin === false) return true;
+  // requireLogin=false relaxes auth ONLY for local (loopback) requests.
+  // Remote/tunnel/custom-domain requests must always present a valid JWT,
+  // otherwise disabling login would expose every protected API publicly.
+  if (settings && settings.requireLogin === false && isLocalRequest(request)) return true;
   return false;
 }
 
@@ -214,12 +226,24 @@ export async function proxy(request) {
         requireLogin = settings.requireLogin !== false;
         tunnelDashboardAccess = settings.tunnelDashboardAccess === true;
 
+        const host = (request.headers.get("host") || "").split(":")[0].toLowerCase();
+
         // Block tunnel/tailscale access if disabled (redirect to login)
         if (!tunnelDashboardAccess) {
-          const host = (request.headers.get("host") || "").split(":")[0].toLowerCase();
           const tunnelHost = settings.tunnelUrl ? new URL(settings.tunnelUrl).hostname.toLowerCase() : "";
           const tailscaleHost = settings.tailscaleUrl ? new URL(settings.tailscaleUrl).hostname.toLowerCase() : "";
           if ((tunnelHost && host === tunnelHost) || (tailscaleHost && host === tailscaleHost)) {
+            return NextResponse.redirect(new URL("/login", request.url));
+          }
+        }
+
+        // Custom domain: only allow dashboard when the domain is enabled AND
+        // dashboard access via the domain is explicitly enabled. Default off.
+        const customHost = settings.customDomain
+          ? (() => { try { return new URL(settings.customDomain).hostname.toLowerCase(); } catch { return settings.customDomain.trim().toLowerCase(); } })()
+          : "";
+        if (customHost && host === customHost) {
+          if (settings.customDomainEnabled !== true || settings.customDomainDashboardAccess !== true) {
             return NextResponse.redirect(new URL("/login", request.url));
           }
         }
@@ -228,8 +252,9 @@ export async function proxy(request) {
       // On error, keep defaults (require login, block tunnel)
     }
 
-    // If login not required, allow through
-    if (!requireLogin) return NextResponse.next();
+    // If login not required, allow through for local requests only.
+    // Remote/tunnel/custom-domain dashboards must still authenticate.
+    if (!requireLogin && isLocalRequest(request)) return NextResponse.next();
 
     // Verify JWT token
     const token = request.cookies.get("auth_token")?.value;
@@ -246,7 +271,7 @@ export async function proxy(request) {
 
   // Redirect / to /dashboard if logged in, or /dashboard if it's the root
   if (pathname === "/") {
-    return NextResponse.redirect(new URL("/dashboard", request.url));
+    return NextResponse.redirect(new URL("/apikey", request.url));
   }
 
   return NextResponse.next();

@@ -97,6 +97,76 @@ async function tryGotScrapingFetch(url, options) {
 }
 */
 
+let _gotScraping = null;
+let _gotScrapingChecked = false;
+const _gotScrapingLoggedHosts = new Set();
+
+async function getGotScraping() {
+  if (_gotScrapingChecked) return _gotScraping;
+  _gotScrapingChecked = true;
+  try {
+    const mod = await import("got-scraping");
+    _gotScraping = typeof mod.gotScraping === "function" ? mod.gotScraping : null;
+    if (_gotScraping) dbg("TLS", "got-scraping loaded (Anthropic non-stream enabled)");
+  } catch (e) {
+    console.warn("[ProxyFetch] got-scraping unavailable, falling back to native fetch: " + e.message);
+    _gotScraping = null;
+  }
+  return _gotScraping;
+}
+
+function isAnthropicNonStreamingRequest(targetUrl, options = {}) {
+  try {
+    const parsed = new URL(targetUrl);
+    if (parsed.hostname !== "api.anthropic.com") return false;
+    const headers = options.headers instanceof Headers
+      ? Object.fromEntries(options.headers.entries())
+      : { ...(options.headers || {}) };
+    const accept = Object.entries(headers).find(([key]) => key.toLowerCase() === "accept")?.[1] || "";
+    return !String(accept).toLowerCase().includes("text/event-stream");
+  } catch { return false; }
+}
+
+async function tryGotScrapingNonStreamingFetch(targetUrl, options = {}) {
+  const gs = await getGotScraping();
+  if (!gs) return null;
+  const method = (options.method || "GET").toUpperCase();
+  const headersInit = options.headers || {};
+  const headers = headersInit instanceof Headers
+    ? Object.fromEntries(headersInit.entries())
+    : { ...headersInit };
+  try {
+    const res = await gs({
+      url: targetUrl,
+      method,
+      headers,
+      body: method === "GET" || method === "HEAD" ? undefined : options.body,
+      throwHttpErrors: false,
+      retry: { limit: 0 },
+      timeout: { request: undefined },
+      followRedirect: false,
+      decompress: true,
+    });
+    const resHeaders = new Headers();
+    for (const [key, value] of Object.entries(res.headers || {})) {
+      if (Array.isArray(value)) value.forEach((item) => resHeaders.append(key, String(item)));
+      else if (value != null) resHeaders.set(key, String(value));
+    }
+    if (!_gotScrapingLoggedHosts.has("api.anthropic.com")) {
+      _gotScrapingLoggedHosts.add("api.anthropic.com");
+      dbg("TLS", "using got-scraping for api.anthropic.com");
+    }
+    return new Response(res.rawBody ?? res.body ?? null, {
+      status: res.statusCode || 200,
+      statusText: res.statusMessage || "",
+      headers: resHeaders,
+    });
+  } catch (e) {
+    console.warn("[ProxyFetch] got-scraping request failed, fallback to native fetch: " + e.message);
+    return null;
+  }
+}
+
 // DNS cache — use Map to avoid prototype pollution via malformed hostnames
 const DNS_CACHE = new Map();
 const MITM_BYPASS_HOSTS = [
@@ -304,6 +374,11 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
       "x-relay-path": `${parsed.pathname}${parsed.search}`,
     };
     return originalFetch(vercelRelayUrl, { ...options, headers: relayHeaders });
+  }
+
+  if (isAnthropicNonStreamingRequest(targetUrl, options)) {
+    const gotScrapingResponse = await tryGotScrapingNonStreamingFetch(targetUrl, options);
+    if (gotScrapingResponse) return gotScrapingResponse;
   }
 
   const connectionProxyUrl = resolveConnectionProxyUrl(targetUrl, proxyOptions);

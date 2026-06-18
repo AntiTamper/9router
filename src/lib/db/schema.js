@@ -1,5 +1,5 @@
 // Latest schema version — bumped when a migration is added in ./migrations/
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 3;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -78,7 +78,16 @@ export const TABLES = {
       name: "TEXT",
       machineId: "TEXT",
       isActive: "INTEGER DEFAULT 1",
+      limitMode: "TEXT DEFAULT 'unlimited'",
+      tokenLimit: "INTEGER",
+      dailyTokenLimit: "INTEGER",
+      weeklyTokenLimit: "INTEGER",
+      monthlyTokenLimit: "INTEGER",
+      config: "TEXT",
+      expiresAt: "TEXT",
+      autoDeleteExpired: "INTEGER DEFAULT 1",
       createdAt: "TEXT NOT NULL",
+      updatedAt: "TEXT",
     },
     indexes: ["CREATE INDEX IF NOT EXISTS idx_ak_key ON apiKeys(key)"],
   },
@@ -117,12 +126,18 @@ export const TABLES = {
       status: "TEXT",
       tokens: "TEXT",
       meta: "TEXT",
+      overage: "INTEGER DEFAULT 0",
     },
     indexes: [
       "CREATE INDEX IF NOT EXISTS idx_uh_ts ON usageHistory(timestamp DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_uh_overage ON usageHistory(apiKey, overage)",
       "CREATE INDEX IF NOT EXISTS idx_uh_provider ON usageHistory(provider)",
       "CREATE INDEX IF NOT EXISTS idx_uh_model ON usageHistory(model)",
       "CREATE INDEX IF NOT EXISTS idx_uh_conn ON usageHistory(connectionId)",
+      "CREATE INDEX IF NOT EXISTS idx_uh_apiKey ON usageHistory(apiKey)",
+      "CREATE INDEX IF NOT EXISTS idx_uh_ts_provider ON usageHistory(timestamp DESC, provider)",
+      "CREATE INDEX IF NOT EXISTS idx_uh_ts_model ON usageHistory(timestamp DESC, model)",
+      "CREATE INDEX IF NOT EXISTS idx_uh_ts_conn ON usageHistory(timestamp DESC, connectionId)",
     ],
   },
   usageDaily: {

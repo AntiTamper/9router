@@ -39,7 +39,8 @@ function isPrivateIp(ip) {
 async function resolvePinnedIps(hostname) {
   if (!hostname || BLOCKED_HOSTS.has(hostname.toLowerCase())) return null;
   try {
-    const records = await lookup(hostname, { all: true });
+    const result = await lookup(hostname, { all: true });
+    const records = Array.isArray(result) ? result : [result];
     if (!records.length || records.some((r) => isPrivateIp(r.address))) return null;
     return records;
   } catch {

@@ -60,6 +60,57 @@ export function getModelQuotaFamily(aliasOrId, modelId) {
   return modelQuotaFamily(models?.find(m => m.id === modelId));
 }
 
+function stripSyntheticModelSuffixes(modelId) {
+  if (typeof modelId !== "string") return modelId;
+  let out = modelId;
+  for (const sfx of ["-thinking-agentic", "-thinking", "-agentic", "-review", "-xhigh", "-high", "-low", "-none", "-spark"]) {
+    if (out.endsWith(sfx)) {
+      out = out.slice(0, -sfx.length);
+      break;
+    }
+  }
+  return out;
+}
+
+const FAMILY_CONTEXT_WINDOW = {
+  cc: 200000, claude: 200000, anthropic: 200000,
+  cx: 400000, codex: 400000, openai: 128000,
+  gc: 1048576, gemini: 1048576, "gemini-cli": 1048576, vertex: 1048576,
+  qw: 256000, qwen: 256000,
+  if: 128000, iflow: 128000,
+  ag: 1048576, antigravity: 1048576,
+  gh: 128000, copilot: 128000, github: 128000,
+  kr: 200000, kiro: 200000,
+  kimi: 262144, "kimi-api": 262144, "kimi-coding": 262144, kmc: 262144,
+  glm: 128000, deepseek: 128000, minimax: 256000,
+  grok: 128000, openrouter: 128000, kc: 200000,
+};
+
+export function getFamilyContextWindow(aliasOrId) {
+  if (!aliasOrId) return null;
+  const v = FAMILY_CONTEXT_WINDOW[aliasOrId];
+  return Number.isFinite(v) && v > 0 ? v : null;
+}
+
+function findModelForContext(aliasOrId, modelId) {
+  const list = PROVIDER_MODELS[aliasOrId];
+  if (!Array.isArray(list)) return null;
+  const id = stripSyntheticModelSuffixes(modelId);
+  return list.find(m => m.id === modelId) || list.find(m => m.id === id) || null;
+}
+
+export function getStaticContextWindow(aliasOrId, modelId) {
+  const found = findModelForContext(aliasOrId, modelId);
+  const ctx = Number(found?.contextWindow ?? found?.contextLength ?? found?.maxInputTokens);
+  return Number.isFinite(ctx) && ctx > 0 ? ctx : null;
+}
+
+export function getStaticMaxOutputTokens(aliasOrId, modelId) {
+  const found = findModelForContext(aliasOrId, modelId);
+  const max = Number(found?.maxOutputTokens ?? found?.maxOutput ?? found?.outputTokenLimit);
+  return Number.isFinite(max) && max > 0 ? max : null;
+}
+
 // OAuth short aliases — derived from registry `alias` (single source). everything else: alias = id.
 // vertex/vertex-partner keep alias=id (kept via the `|| id` fallback in consumers).
 export const OAUTH_ALIASES = Object.fromEntries(

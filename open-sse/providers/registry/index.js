@@ -49,6 +49,7 @@ import p46 from "./jina-ai.js";
 import p47 from "./jina-reader.js";
 import p48 from "./kilocode.js";
 import p49 from "./kimi.js";
+import kimiApi from "./kimi-api.js";
 import p50 from "./kimi-coding.js";
 import p51 from "./kiro.js";
 import p52 from "./linkup.js";
@@ -145,6 +146,7 @@ export default [
   p47,
   p48,
   p49,
+  kimiApi,
   p50,
   p51,
   p52,

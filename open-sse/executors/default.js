@@ -6,7 +6,45 @@ import { buildClineHeaders } from "../shared/clineAuth.js";
 import { getCachedClaudeHeaders } from "../utils/claudeHeaderCache.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
+import { getModelUpstreamId, getProviderModels } from "../config/providerModels.js";
+import { buildKimiOpenAICompatibilityHeaders } from "../utils/kimiCodingAgentHeaders.js";
 import { stripUnsupportedParams } from "../translator/concerns/paramSupport.js";
+
+const KIMI_PROVIDER_ALIASES = {
+  kimi: "kimi",
+  "kimi-api": "moonshot",
+  "kimi-coding": "kmc",
+  kmc: "kmc",
+};
+
+function stripUnsupportedModelParams(providerAlias, model, body) {
+  const modelInfo = getProviderModels(providerAlias).find((m) => m.id === model || m.upstreamModelId === model);
+  const unsupported = Array.isArray(modelInfo?.unsupportedParams) ? modelInfo.unsupportedParams : [];
+  const unsupportedExtra = Array.isArray(modelInfo?.unsupportedExtraBodyParams) ? modelInfo.unsupportedExtraBodyParams : [];
+  if (!body || typeof body !== "object" || (!unsupported.length && !unsupportedExtra.length)) return body;
+
+  let next = body;
+  for (const key of unsupported) {
+    if (Object.prototype.hasOwnProperty.call(next, key)) {
+      if (next === body) next = { ...body };
+      delete next[key];
+    }
+  }
+
+  if (unsupportedExtra.length && next.extra_body && typeof next.extra_body === "object") {
+    const extra = { ...next.extra_body };
+    let changed = false;
+    for (const key of unsupportedExtra) {
+      if (Object.prototype.hasOwnProperty.call(extra, key)) {
+        delete extra[key];
+        changed = true;
+      }
+    }
+    if (changed) next = { ...next, extra_body: extra };
+  }
+
+  return next;
+}
 
 // Auth header descriptors — derived from registry transport.auth, fallback to hardcoded defaults.
 const BEARER = { combined: true, header: "Authorization", scheme: "bearer" };
@@ -82,7 +120,7 @@ export class DefaultExecutor extends BaseExecutor {
   }
 
   transformRequest(model, body) {
-    const transformed = this.applyJsonSchemaFallback(body);
+    let transformed = this.applyJsonSchemaFallback(body);
 
     if (transformed && typeof transformed === "object") {
       // quirk: some openai-compatible providers reject Anthropic's client_metadata field
@@ -92,7 +130,19 @@ export class DefaultExecutor extends BaseExecutor {
       stripUnsupportedParams(this.provider, model, transformed);
     }
 
-    return injectReasoningContent({ provider: this.provider, model, body: transformed });
+    transformed = injectReasoningContent({ provider: this.provider, model, body: transformed });
+
+    const kimiAlias = KIMI_PROVIDER_ALIASES[this.provider];
+    if (kimiAlias) {
+      const requestedModel = transformed?.model || model;
+      const upstreamModel = getModelUpstreamId(kimiAlias, requestedModel);
+      if (upstreamModel && upstreamModel !== transformed?.model) {
+        transformed = { ...transformed, model: upstreamModel };
+      }
+      transformed = stripUnsupportedModelParams(kimiAlias, upstreamModel || requestedModel, transformed);
+    }
+
+    return transformed;
   }
 
   // Fallback json_schema → json_object for openai-compatible providers without native Structured Output.
@@ -115,7 +165,14 @@ export class DefaultExecutor extends BaseExecutor {
     return { ...body, messages, response_format: { type: "json_object" } };
   }
 
-  buildUrl(model, stream, urlIndex = 0, credentials = null) {
+  shouldRetry(status, urlIndex) {
+    if ((this.provider === "kimi" || this.provider === "kimi-api") && (status === 401 || status === 403) && urlIndex + 1 < this.getFallbackCount()) {
+      return true;
+    }
+    return super.shouldRetry(status, urlIndex);
+  }
+
+  buildUrl(model, stream, urlIndex = 0, credentials = null, options = {}) {
     if (this.provider?.startsWith?.("openai-compatible-")) {
       const baseUrl = credentials?.providerSpecificData?.baseUrl || OPENAI_COMPAT_BASE;
       const normalized = baseUrl.replace(/\/$/, "");
@@ -127,9 +184,16 @@ export class DefaultExecutor extends BaseExecutor {
       const normalized = baseUrl.replace(/\/$/, "");
       return `${normalized}/messages`;
     }
+    if (this.provider === "kimi" && options?.targetFormat === "claude") {
+      return this.config.anthropicBaseUrl || this.config.baseUrl;
+    }
     // gemini-format: build :streamGenerateContent / :generateContent path
     if (this.config.format === "gemini") {
       return `${this.config.baseUrl}/${model}:${stream ? "streamGenerateContent?alt=sse" : "generateContent"}`;
+    }
+    const baseUrls = this.getBaseUrls();
+    if (baseUrls.length > 1) {
+      return baseUrls[urlIndex] || this.config.baseUrl;
     }
     // urlSuffix (e.g. ?beta=true) declared per-provider in registry
     if (this.config.urlSuffix) {
@@ -155,12 +219,17 @@ export class DefaultExecutor extends BaseExecutor {
     return BEARER;
   }
 
-  buildHeaders(credentials, stream = true) {
+  buildHeaders(credentials, stream = true, options = {}) {
     const headers = { "Content-Type": "application/json", ...this.config.headers };
     const desc = AUTH_DESCRIPTORS[this.provider] || this.resolveAuthDescriptor();
     // Hooks run BEFORE auth so dynamic overlays (claude cached headers) can't clobber the token.
     for (const hook of desc.hooks || []) HEADER_HOOKS[hook]?.(headers, credentials);
     applyAuth(headers, desc, credentials);
+
+    if (this.provider === "kimi") {
+      const { headers: kimiHeaders } = buildKimiOpenAICompatibilityHeaders(options?.clientRawRequest?.headers || {});
+      Object.assign(headers, kimiHeaders);
+    }
 
     // Strip first-party Claude Code identity headers for non-Anthropic anthropic-compatible upstreams
     if (this.provider?.startsWith?.("anthropic-compatible-")) {

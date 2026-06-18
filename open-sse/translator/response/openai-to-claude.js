@@ -214,7 +214,15 @@ export function openaiToClaudeResponse(chunk, state) {
         if (toolInfo) {
           // Buffer args instead of streaming — sanitize at finish to fix bad params
           if (!state.toolArgBuffers) state.toolArgBuffers = new Map();
+          if (!state.emittedToolArgDeltas) state.emittedToolArgDeltas = new Set();
           state.toolArgBuffers.set(idx, (state.toolArgBuffers.get(idx) || "") + tc.function.arguments);
+          const sanitized = sanitizeToolArgs(toolInfo.name, tc.function.arguments);
+          results.push({
+            type: "content_block_delta",
+            index: toolInfo.blockIndex,
+            delta: { type: "input_json_delta", partial_json: sanitized }
+          });
+          state.emittedToolArgDeltas.add(idx);
         }
       }
     }
@@ -228,7 +236,7 @@ export function openaiToClaudeResponse(chunk, state) {
     for (const [idx, toolInfo] of state.toolCalls) {
       // Emit buffered + sanitized args as single delta before stop
       const buffered = state.toolArgBuffers?.get(idx);
-      if (buffered) {
+      if (buffered && !state.emittedToolArgDeltas?.has(idx)) {
         const sanitized = sanitizeToolArgs(toolInfo.name, buffered);
         results.push({
           type: "content_block_delta",
@@ -262,3 +270,4 @@ const convertFinishReason = (reason) => fromOpenAIFinish(reason, "claude");
 
 // Register
 register(FORMATS.OPENAI, FORMATS.CLAUDE, null, openaiToClaudeResponse);
+
