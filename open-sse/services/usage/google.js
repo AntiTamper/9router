@@ -154,11 +154,107 @@ function getAntigravityQuotaEntries(info) {
 /**
  * Antigravity Usage - Fetch quota from Google Cloud Code API
  */
+// Map an Antigravity grouped-quota group displayName to a UI family.
+function classifyAntigravityGroupFamily(group) {
+  const name = String(group?.displayName || group?.groupId || "").toLowerCase();
+  if (name.includes("gemini")) return "gemini";
+  return "claude_gpt";
+}
+
+// Map a grouped-quota bucket window string ("weekly" | "5h" | "five_hour" | ...) to our window id.
+function classifyAntigravityBucketWindow(bucket) {
+  const w = String(bucket?.window || bucket?.bucketId || bucket?.displayName || "").toLowerCase();
+  if (w.includes("week")) return "weekly";
+  if (w.includes("5h") || w.includes("five") || w.includes("hour")) return "five_hour";
+  return "weekly";
+}
+
+/**
+ * Parse the Antigravity grouped-quota response (groups[].buckets[]) into our
+ * quotas map. This is the authoritative source the IDE dashboard uses and the
+ * ONLY one that exposes real weekly AND five-hour remaining fractions.
+ * Shape: { response: { groups: [ { displayName, buckets: [ { window, remainingFraction, resetTime, displayName } ] } ] } }
+ */
+export function parseGroupedAntigravityQuota(payload) {
+  const root = payload?.response || payload || {};
+  const groups = Array.isArray(root.groups) ? root.groups : [];
+  const quotas = {};
+  for (const group of groups) {
+    const family = classifyAntigravityGroupFamily(group);
+    const buckets = Array.isArray(group?.buckets) ? group.buckets : [];
+    for (const bucket of buckets) {
+      const window = classifyAntigravityBucketWindow(bucket);
+      const frac = Number(bucket?.remainingFraction);
+      const remainingFraction = Number.isFinite(frac) ? Math.min(Math.max(frac, 0), 1) : 0;
+      const remainingPercentage = remainingFraction * 100;
+      const total = 1000;
+      const remaining = Math.round(total * remainingFraction);
+      const used = total - remaining;
+      const key = `${family}:${window}`;
+      quotas[key] = {
+        used,
+        total,
+        resetAt: parseResetTime(bucket?.resetTime),
+        remainingPercentage,
+        unlimited: false,
+        displayName: group?.displayName || family,
+        family,
+        window,
+        modelKey: bucket?.bucketId || key,
+        description: bucket?.description || group?.description || null,
+      };
+    }
+  }
+  return quotas;
+}
+// Try the grouped quota endpoint (authoritative weekly + 5-hour fractions).
+// Returns a quotas map on success, or null when unavailable so the caller can
+// fall back to the per-model fetchAvailableModels path. The grouped response
+// uses grpc-web+json; we request JSON and tolerate either {response:{groups}} or {groups}.
+async function fetchGroupedAntigravityQuota(accessToken, projectId, proxyOptions) {
+  const url = ANTIGRAVITY_CONFIG.groupedQuotaApiUrl;
+  if (!url) return null;
+  try {
+    const response = await fetchWithTimeout(url, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${accessToken}`,
+        "User-Agent": ANTIGRAVITY_CONFIG.userAgent,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "X-Client-Name": "antigravity",
+        "X-Client-Version": "1.107.0",
+        "x-request-source": "local",
+      },
+      body: JSON.stringify(projectId ? { project: projectId } : {}),
+    }, 10000, proxyOptions);
+    if (!response.ok) return null;
+    const data = await response.json().catch(() => null);
+    if (!data) return null;
+    const groups = data?.response?.groups || data?.groups;
+    if (!Array.isArray(groups) || groups.length === 0) return null;
+    const quotas = parseGroupedAntigravityQuota(data);
+    return Object.keys(quotas).length > 0 ? quotas : null;
+  } catch {
+    return null;
+  }
+}
 export async function getAntigravityUsage(accessToken, providerSpecificData, proxyOptions = null) {
   try {
     // Fetch subscription info once — reuse for both projectId and plan
     const subscriptionInfo = await getAntigravitySubscriptionInfo(accessToken, proxyOptions);
     const projectId = subscriptionInfo?.cloudaicompanionProject || null;
+
+    // Prefer the grouped quota endpoint (real weekly + 5-hour). Fall back to the
+    // per-model availability path below when it is unavailable.
+    const groupedQuotas = await fetchGroupedAntigravityQuota(accessToken, projectId, proxyOptions);
+    if (groupedQuotas) {
+      return {
+        plan: subscriptionInfo?.currentTier?.name || "Unknown",
+        quotas: groupedQuotas,
+        subscriptionInfo,
+      };
+    }
 
     const response = await fetchWithTimeout(ANTIGRAVITY_CONFIG.quotaApiUrl, {
       method: "POST",

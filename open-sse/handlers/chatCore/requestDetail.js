@@ -13,7 +13,11 @@ const OPTIONAL_PARAMS = [
 ];
 
 export function extractRequestConfig(body, stream) {
-  const config = { messages: body.messages || [], model: body.model, stream };
+  // Capture messages across request shapes: OpenAI chat (messages), OpenAI
+  // Responses (input), and Gemini (contents). Without this, non-chat-format
+  // requests logged empty messages.
+  const messages = body.messages || body.input || body.contents || body.request?.contents || [];
+  const config = { messages, model: body.model, stream };
   for (const param of OPTIONAL_PARAMS) {
     if (body[param] !== undefined) config[param] = body[param];
   }

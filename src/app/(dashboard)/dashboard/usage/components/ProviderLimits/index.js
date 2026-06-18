@@ -474,11 +474,18 @@ export default function ProviderLimits() {
         return null;
       }
 
+      // Track which connections actually get processed so we can clear the
+      // loading state for any that were cancelled/skipped (otherwise their
+      // spinner would hang forever - a real infinite-loading bug).
+      const unsettled = new Set(eligibleConnections.map((conn) => conn.id));
       const queue = runPerProviderRefreshQueue(
         eligibleConnections,
         (conn) => fetchQuota(conn, { force }),
         {
           shouldContinue: () => mountedRef.current && isPageVisible(),
+          onItemSettled: (conn) => {
+            if (conn?.id) unsettled.delete(conn.id);
+          },
           onError: (error, conn) => {
             console.error(
               `[ProviderLimits] Quota refresh queue failed for ${conn?.provider || "unknown"}:`,
@@ -491,6 +498,15 @@ export default function ProviderLimits() {
       refreshQueueRef.current = queue;
       queue.done
         .then(async () => {
+          // Clear loading for connections the queue never reached (cancelled/
+          // replaced) so their spinners do not hang indefinitely.
+          if (mountedRef.current && unsettled.size > 0) {
+            setLoading((prev) => {
+              const next = { ...prev };
+              unsettled.forEach((id) => { next[id] = false; });
+              return next;
+            });
+          }
           if (!mountedRef.current || refreshQueueRef.current !== queue) return;
           if (refreshConnectionsWhenDone) await fetchConnections();
           if (!mountedRef.current || refreshQueueRef.current !== queue) return;

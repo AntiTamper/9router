@@ -37,6 +37,9 @@ export default {
     },
     usage: {
       quotaApiUrl: "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+      // Grouped quota endpoint: returns real weekly + 5-hour remaining fractions per model
+      // group (Gemini / Claude+GPT). Authoritative source the IDE dashboard uses.
+      groupedQuotaApiUrl: null, // exact cloudcode-pa grouped-quota path unconfirmed; falls back to per-model path until set
       loadProjectApiUrl: "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
       tokenUrl: "https://oauth2.googleapis.com/token",
     },

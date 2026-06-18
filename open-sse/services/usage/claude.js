@@ -16,15 +16,58 @@ const CLAUDE_CONFIG = {
 
 // OAuth usage endpoint rate-limits (429); cool down per-token to stop hammering it.
 // Only the quota endpoint is affected — chat with the same token still works.
-const OAUTH_429_COOLDOWN_MS = 180000;
+const OAUTH_429_COOLDOWN_MS = 300000; // base 5 min cooldown when no Retry-After
+const OAUTH_429_COOLDOWN_MAX_MS = 1800000; // cap honored Retry-After at 30 min
 const oauthCooldown = new Map();
+// Cache last successful OAuth usage payload per token so a transient 429 keeps
+// showing real quota instead of N/A. Bounded + age-limited.
+const LAST_KNOWN_MAX_AGE_MS = 86400000; // 24h
+const lastKnownUsage = new Map();
+
+function tokenKey(accessToken) {
+  const t = String(accessToken || "");
+  return t.length > 12 ? t.slice(-12) : t;
+}
+
+function rememberUsage(accessToken, usage) {
+  if (!usage || !usage.quotas || Object.keys(usage.quotas).length === 0) return;
+  lastKnownUsage.set(tokenKey(accessToken), { usage, at: Date.now() });
+}
+
+function recallUsage(accessToken) {
+  const entry = lastKnownUsage.get(tokenKey(accessToken));
+  if (!entry) return null;
+  if (Date.now() - entry.at > LAST_KNOWN_MAX_AGE_MS) {
+    lastKnownUsage.delete(tokenKey(accessToken));
+    return null;
+  }
+  return entry.usage;
+}
+
+function rateLimitedResult(accessToken) {
+  const recalled = recallUsage(accessToken);
+  // Keep real quota bars when we have last-known data. Do NOT set `message`
+  // here: the UI parser short-circuits on `message` and would hide the quotas.
+  if (recalled && recalled.quotas && Object.keys(recalled.quotas).length > 0) {
+    return { ...recalled, stale: true };
+  }
+  return { message: "Claude connected. Usage temporarily rate-limited, retrying shortly." };
+}
+
+function cooldownFromResponse(response) {
+  const retryAfter = Number(response?.headers?.get?.("retry-after"));
+  if (Number.isFinite(retryAfter) && retryAfter > 0) {
+    return Math.min(retryAfter * 1000, OAUTH_429_COOLDOWN_MAX_MS);
+  }
+  return OAUTH_429_COOLDOWN_MS;
+}
 
 export async function getClaudeUsage(accessToken, proxyOptions = null) {
   try {
     // Skip OAuth usage call while this token is cooling down from a recent 429
     const cooldownUntil = oauthCooldown.get(accessToken);
     if (cooldownUntil && Date.now() < cooldownUntil) {
-      return await getClaudeUsageLegacy(accessToken, proxyOptions);
+      return rateLimitedResult(accessToken);
     }
 
     // Primary: OAuth usage endpoint (Claude Code consumer OAuth tokens)
@@ -74,19 +117,25 @@ export async function getClaudeUsage(accessToken, proxyOptions = null) {
         }
       }
 
-      return {
+      const result = {
         plan: "Claude Code",
         extraUsage: data.extra_usage ?? null,
         quotas,
       };
+      rememberUsage(accessToken, result);
+      return result;
     }
 
-    // Cool down OAuth usage polling after a 429 (quota endpoint only)
+    // OAuth usage is the correct endpoint for Claude Code consumer tokens. A 429
+    // means rate-limited, NOT lack of permission — do not fall to the org/admin
+    // legacy path (it produces a misleading "admin permissions" message). Cool
+    // down, honor Retry-After, and keep showing last-known quota.
     if (oauthResponse.status === 429) {
-      oauthCooldown.set(accessToken, Date.now() + OAUTH_429_COOLDOWN_MS);
+      oauthCooldown.set(accessToken, Date.now() + cooldownFromResponse(oauthResponse));
+      return rateLimitedResult(accessToken);
     }
 
-    // Fallback: legacy settings + org usage endpoint
+    // Other non-OK statuses: token may be an org/API-key account — try legacy path.
     console.warn(`[Claude Usage] OAuth endpoint returned ${oauthResponse.status}, falling back to legacy`);
     return await getClaudeUsageLegacy(accessToken, proxyOptions);
   } catch (error) {
