@@ -152,3 +152,27 @@ export function isLocalProxyFailure(statusCode, message) {
   const text = String(message || '').toLowerCase();
   return text.includes('invalid sse response') || text.includes('invalid json response') || text.includes('fetch connect timeout');
 }
+
+
+/**
+ * Detect terminal client/content errors that will fail identically on every account.
+ * Content-moderation / safety refusals and flagged-input rejections are deterministic per request,
+ * so rotating accounts only wastes time and applies undeserved cooldowns to healthy accounts.
+ * @param {number} statusCode - HTTP status code
+ * @param {string} message - Upstream error message text
+ * @returns {boolean} true when the request should NOT trigger account fallback
+ */
+export function isTerminalClientError(statusCode, message) {
+  const text = String(message || "").toLowerCase();
+  if (!text) return false;
+  // Content moderation / safety refusals (e.g. OpenRouter "input was flagged for ...",
+  // provider content-policy blocks). These are input-deterministic, not account problems.
+  const moderationSignals = [
+    "moderation",
+    "flagged",
+    "content policy",
+    "content_policy",
+    "prohibited content",
+  ];
+  return moderationSignals.some((sig) => text.includes(sig));
+}
