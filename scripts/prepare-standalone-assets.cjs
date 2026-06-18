@@ -30,3 +30,5 @@ copyFile(path.join(root, "src", "lib", "dataDir.js"), path.join(standaloneDir, "
 copyDir(path.join(root, "src", "mitm"), path.join(standaloneDir, "src", "mitm"));
 copyDir(path.join(root, "src", "shared", "constants"), path.join(standaloneDir, "src", "shared", "constants"));
 copyFile(path.join(root, "src", "sse", "services", "codexOAuthRefresh.js"), path.join(standaloneDir, "src", "sse", "services", "codexOAuthRefresh.js"));
+copyDir(path.join(root, "node_modules", "header-generator", "data_files"), path.join(standaloneDir, "node_modules", "header-generator", "data_files"));
+copyDir(path.join(root, "node_modules", "header-generator", "data_files"), path.join(standaloneDir, path.basename(distDir), "server", "chunks", "data_files"));

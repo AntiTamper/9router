@@ -333,7 +333,7 @@ describe("proxyAwareFetch — api.anthropic.com routing", () => {
       const mockGotScraping = vi.fn().mockResolvedValue({
         statusCode: 200,
         statusMessage: "OK",
-        headers: { "content-type": "application/json" },
+        headers: { ":status": "200", "content-type": "application/json" },
         rawBody: Buffer.from(JSON.stringify({ id: "msg_test" })),
       });
       mockGotScraping.stream = vi.fn();
@@ -354,6 +354,8 @@ describe("proxyAwareFetch — api.anthropic.com routing", () => {
     expect(gotScraping).toHaveBeenCalledOnce();
     expect(res.ok).toBe(true);
     expect(res.status).toBe(200);
+    expect(Array.from(res.headers.keys())).not.toContain(":status");
+    expect(res.headers.get("content-type")).toBe("application/json");
     const data = await res.json();
     expect(data.id).toBe("msg_test");
   });

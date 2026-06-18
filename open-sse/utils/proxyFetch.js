@@ -13,6 +13,20 @@ let _gotScraping = null;
 let _gotScrapingChecked = false;
 const _gotScrapingLoggedHosts = new Set();
 
+function appendFetchHeader(headers, key, value) {
+  if (!key || key.startsWith(":")) return;
+  if (Array.isArray(value)) {
+    value.forEach((item) => appendFetchHeader(headers, key, item));
+    return;
+  }
+  if (value == null) return;
+  try {
+    headers.set(key, String(value));
+  } catch {
+    // got-scraping can surface transport-only headers that Web Headers rejects.
+  }
+}
+
 async function getGotScraping() {
   if (_gotScrapingChecked) return _gotScraping;
   _gotScrapingChecked = true;
@@ -101,6 +115,20 @@ let _gotScraping = null;
 let _gotScrapingChecked = false;
 const _gotScrapingLoggedHosts = new Set();
 
+function appendFetchHeader(headers, key, value) {
+  if (!key || key.startsWith(":")) return;
+  if (Array.isArray(value)) {
+    value.forEach((item) => appendFetchHeader(headers, key, item));
+    return;
+  }
+  if (value == null) return;
+  try {
+    headers.set(key, String(value));
+  } catch {
+    // got-scraping can surface transport-only headers that Web Headers rejects.
+  }
+}
+
 async function getGotScraping() {
   if (_gotScrapingChecked) return _gotScraping;
   _gotScrapingChecked = true;
@@ -149,8 +177,7 @@ async function tryGotScrapingNonStreamingFetch(targetUrl, options = {}) {
     });
     const resHeaders = new Headers();
     for (const [key, value] of Object.entries(res.headers || {})) {
-      if (Array.isArray(value)) value.forEach((item) => resHeaders.append(key, String(item)));
-      else if (value != null) resHeaders.set(key, String(value));
+      appendFetchHeader(resHeaders, key, value);
     }
     if (!_gotScrapingLoggedHosts.has("api.anthropic.com")) {
       _gotScrapingLoggedHosts.add("api.anthropic.com");

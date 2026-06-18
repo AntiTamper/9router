@@ -147,6 +147,8 @@ export default function ProviderLimits() {
   const [connectionsLoading, setConnectionsLoading] = useState(true);
   const [deletingId, setDeletingId] = useState(null);
   const [togglingId, setTogglingId] = useState(null);
+  const [resettingLimitId, setResettingLimitId] = useState(null);
+  const [resetConfirmState, setResetConfirmState] = useState(null);
   const [showEditModal, setShowEditModal] = useState(false);
   const [selectedConnection, setSelectedConnection] = useState(null);
   const [proxyPools, setProxyPools] = useState([]);
@@ -299,7 +301,7 @@ export default function ProviderLimits() {
       setResettingLimitId(connectionId);
       setErrors((prev) => ({ ...prev, [connectionId]: null }));
       try {
-        const res = await fetch(`/api/usage/${connectionId}/reset-limit`, { method: "POST" });
+        const res = await fetch(`/api/usage/${connectionId}/codex-reset-credits`, { method: "POST" });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || "Failed to reset Codex limit");
         const connection = connectionsRef.current.find((conn) => conn.id === connectionId);
@@ -1204,6 +1206,9 @@ export default function ProviderLimits() {
           const quota = quotaData[conn.id];
           const isLoading = loading[conn.id];
           const error = errors[conn.id];
+          const isCodex = conn.provider === "codex";
+          const resetCreditCount = isCodex ? getCodexResetCreditCount(quota) : 0;
+          const isResettingLimit = resettingLimitId === conn.id;
 
           // Use table layout for all providers
           const isInactive = conn.isActive === false;
@@ -1440,6 +1445,25 @@ export default function ProviderLimits() {
         onClose={() => {
           setShowEditModal(false);
           setSelectedConnection(null);
+        }}
+      />
+
+      <ConfirmModal
+        isOpen={Boolean(resetConfirmState)}
+        title="Use Codex reset credit?"
+        message={resetConfirmState ? `Use 1 Codex reset credit for ${getConnectionLabel(resetConfirmState.connection) || resetConfirmState.connection?.name || "this connection"}? Available: ${resetConfirmState.resetCreditCount}.` : ""}
+        confirmText="Reset limit"
+        cancelText="Cancel"
+        variant="primary"
+        loading={resetConfirmState ? resettingLimitId === resetConfirmState.connection?.id : false}
+        onClose={() => {
+          if (!resettingLimitId) setResetConfirmState(null);
+        }}
+        onConfirm={async () => {
+          const connection = resetConfirmState?.connection;
+          if (!connection) return;
+          await handleResetCodexLimit(connection.id, connection.provider);
+          setResetConfirmState(null);
         }}
       />
     </div>

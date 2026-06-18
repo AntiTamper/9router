@@ -90,6 +90,7 @@ export async function initializeApp() {
     startWatchdog();
     startNetworkMonitor();
     autoStartMitm();
+    startCodexOAuthEvergreenSteward();
     startClaudeAutoPing();
   } catch (error) {
     console.error("[InitApp] Error:", error);
