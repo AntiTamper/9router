@@ -217,6 +217,36 @@ describe("provider quota auto-disable", () => {
     });
   });
 
+  it("uses Antigravity bottleneck quota for provider service averages", async () => {
+    const { buildProviderQuotaAverages } = await import("@/app/(dashboard)/dashboard/usage/components/ProviderLimits/utils.js");
+    const averages = buildProviderQuotaAverages(
+      [
+        { id: "ag-a", provider: "antigravity", isActive: true },
+        { id: "ag-b", provider: "antigravity", isActive: true },
+      ],
+      {
+        "ag-a": {
+          quotas: [
+            { name: "Gemini Session", used: 0, total: 100, remainingPercentage: 100, window: "five_hour" },
+            { name: "Claude Weekly", used: 80, total: 100, remainingPercentage: 20, window: "weekly" },
+          ],
+        },
+        "ag-b": {
+          quotas: [
+            { name: "Gemini Weekly", used: 4, total: 100, remainingPercentage: 96, window: "weekly" },
+            { name: "Claude Session", used: 0, total: 100, remainingPercentage: 100, window: "five_hour" },
+          ],
+        },
+      },
+    );
+
+    expect(averages.find((avg) => avg.provider === "antigravity")).toMatchObject({
+      measuredAccounts: 2,
+      averageRemaining: 58,
+      lowCount: 1,
+    });
+  });
+
   it("waits for all quota fetches before averaging a provider", async () => {
     const { buildProviderQuotaAverages } = await import("@/app/(dashboard)/dashboard/usage/components/ProviderLimits/utils.js");
     const connections = [

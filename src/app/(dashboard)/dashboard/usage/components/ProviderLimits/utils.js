@@ -365,11 +365,19 @@ function isSessionQuotaRow(quota) {
   );
 }
 
-function selectQuotaRowsForServiceAverage(quotas) {
+function selectQuotaRowsForServiceAverage(provider, quotas) {
   if (!Array.isArray(quotas) || quotas.length === 0) return [];
+  if (provider === "antigravity") return quotas;
   const sessionRows = quotas.filter(isSessionQuotaRow);
   if (sessionRows.length > 0) return sessionRows;
   return quotas;
+}
+
+function combineQuotaPercentagesForServiceAverage(provider, percentages) {
+  if (provider === "antigravity") return Math.min(...percentages);
+  return Math.round(
+    percentages.reduce((sum, percentage) => sum + percentage, 0) / percentages.length,
+  );
 }
 
 export function buildProviderQuotaAverages(
@@ -412,15 +420,13 @@ export function buildProviderQuotaAverages(
       continue;
     }
 
-    const quotas = selectQuotaRowsForServiceAverage(quotaData[conn.id]?.quotas || []);
+    const quotas = selectQuotaRowsForServiceAverage(conn.provider, quotaData[conn.id]?.quotas || []);
     const percentages = quotas
       .map(quotaRemainingPercentage)
       .filter((percentage) => percentage !== null);
 
     if (percentages.length > 0) {
-      const accountAverage = Math.round(
-        percentages.reduce((sum, percentage) => sum + percentage, 0) / percentages.length,
-      );
+      const accountAverage = combineQuotaPercentagesForServiceAverage(conn.provider, percentages);
       group.measuredAccounts += 1;
       group.totalRemaining += accountAverage;
       if (accountAverage <= 0) group.exhaustedCount += 1;
