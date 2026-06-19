@@ -1,5 +1,19 @@
-import { describe, it, expect } from "vitest";
-import { parseGroupedAntigravityQuota } from "../../open-sse/services/usage/google.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const { proxyAwareFetch } = vi.hoisted(() => ({
+  proxyAwareFetch: vi.fn(),
+}));
+
+vi.mock("../../open-sse/utils/proxyFetch.js", () => ({
+  proxyAwareFetch,
+}));
+
+import { getAntigravityUsage, parseGroupedAntigravityQuota } from "../../open-sse/services/usage/google.js";
+
+const jsonResponse = (body, status = 200) => new Response(JSON.stringify(body), {
+  status,
+  headers: { "Content-Type": "application/json" },
+});
 
 // Real captured response shape from the Antigravity IDE grouped-quota endpoint.
 const SAMPLE = {
@@ -25,6 +39,10 @@ const SAMPLE = {
 };
 
 describe("parseGroupedAntigravityQuota", () => {
+  beforeEach(() => {
+    proxyAwareFetch.mockReset();
+  });
+
   it("maps the real grouped response to per-family weekly + five_hour quotas", () => {
     const q = parseGroupedAntigravityQuota(SAMPLE);
     expect(Math.round(q["gemini:weekly"].remainingPercentage)).toBe(97);
@@ -56,5 +74,27 @@ describe("parseGroupedAntigravityQuota", () => {
     expect(parseGroupedAntigravityQuota(null)).toEqual({});
     expect(parseGroupedAntigravityQuota({})).toEqual({});
     expect(parseGroupedAntigravityQuota({ response: { groups: [] } })).toEqual({});
+  });
+
+  it("does not fall back to model availability as quota when grouped quota is unavailable", async () => {
+    proxyAwareFetch.mockImplementation(async (url) => {
+      const href = String(url);
+      if (href.includes("loadCodeAssist")) {
+        return jsonResponse({ currentTier: { name: "Pro" }, cloudaicompanionProject: "projects/test" });
+      }
+      if (href.includes("retrieveUserQuotaSummary")) {
+        return jsonResponse({ error: { message: "quota unavailable" } }, 403);
+      }
+      if (href.includes("fetchAvailableModels")) {
+        throw new Error("fetchAvailableModels must not be used for quota fallback");
+      }
+      throw new Error(`unexpected URL ${href}`);
+    });
+
+    const usage = await getAntigravityUsage("token", {});
+    expect(usage).toMatchObject({ plan: "Pro", quotas: {} });
+    expect(usage.message).toMatch(/quota not available|quota unavailable/i);
+    const calledUrls = proxyAwareFetch.mock.calls.map(([url]) => String(url));
+    expect(calledUrls.some((url) => url.includes("fetchAvailableModels"))).toBe(false);
   });
 });

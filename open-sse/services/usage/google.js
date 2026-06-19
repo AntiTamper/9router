@@ -113,44 +113,6 @@ async function getGeminiSubscriptionInfo(accessToken, proxyOptions = null) {
   }
 }
 
-// Group antigravity models into UI families (matches dashboard cards).
-// Gemini* -> "gemini" card; claude*/gpt* (and anything else) -> "claude_gpt" card.
-function classifyAntigravityFamily(modelKey) {
-  const key = String(modelKey || "").toLowerCase();
-  if (key.startsWith("gemini")) return "gemini";
-  return "claude_gpt";
-}
-
-// Derive the quota window for an antigravity bucket.
-// Free-tier "Antigravity" plan exposes only a weekly window; paid tiers may
-// also expose a five-hour window. Prefer an explicit window/limit hint from the
-// API; otherwise infer from the reset horizon (>24h out => weekly, else 5h).
-function classifyAntigravityWindow(quotaInfo, resetAt) {
-  const hint = String(
-    quotaInfo?.tokenType
-      || quotaInfo?.quotaType
-      || quotaInfo?.limitType
-      || quotaInfo?.window
-      || "",
-  ).toLowerCase();
-  if (hint.includes("week") || hint === "wtus" || hint.includes("7")) return "weekly";
-  if (hint.includes("hour") || hint.includes("5h") || hint.includes("five")) return "five_hour";
-
-  if (resetAt) {
-    const ms = new Date(resetAt).getTime() - Date.now();
-    if (Number.isFinite(ms) && ms > 0 && ms <= 24 * 60 * 60 * 1000) return "five_hour";
-  }
-  return "weekly";
-}
-
-function getAntigravityQuotaEntries(info) {
-  const source = info?.quotaInfos || info?.quotas || info?.quotaInfo;
-  if (!source) return [];
-  if (Array.isArray(source)) return source.map((quotaInfo, index) => [String(quotaInfo?.window || quotaInfo?.quotaType || index), quotaInfo]);
-  if (source.remainingFraction != null || source.resetTime) return [[String(source.window || source.quotaType || "quota"), source]];
-  if (typeof source === "object") return Object.entries(source).map(([key, quotaInfo]) => [key, quotaInfo]);
-  return [];
-}
 /**
  * Antigravity Usage - Fetch quota from Google Cloud Code API
  */
@@ -213,7 +175,7 @@ export function parseGroupedAntigravityQuota(payload) {
 // uses grpc-web+json; we request JSON and tolerate either {response:{groups}} or {groups}.
 async function fetchGroupedAntigravityQuota(accessToken, projectId, proxyOptions) {
   const url = ANTIGRAVITY_CONFIG.groupedQuotaApiUrl;
-  if (!url) return null;
+  if (!url) return { error: { status: 0, message: "Antigravity quota endpoint not configured." } };
   try {
     const response = await fetchWithTimeout(url, {
       method: "POST",
@@ -228,16 +190,44 @@ async function fetchGroupedAntigravityQuota(accessToken, projectId, proxyOptions
       },
       body: "{}", // confirmed: retrieveUserQuotaSummary takes empty request body (project field => 400)
     }, 10000, proxyOptions);
-    if (!response.ok) return null;
+    if (!response.ok) {
+      let apiMsg = null;
+      try { apiMsg = (await response.json())?.error?.message || null; } catch { /* ignore */ }
+      return { error: { status: response.status, message: apiMsg } };
+    }
     const data = await response.json().catch(() => null);
-    if (!data) return null;
+    if (!data) return { error: { status: response.status, message: "Empty quota response." } };
     const groups = data?.response?.groups || data?.groups;
-    if (!Array.isArray(groups) || groups.length === 0) return null;
+    if (!Array.isArray(groups) || groups.length === 0) {
+      return { error: { status: response.status, message: "No quota groups returned." } };
+    }
     const quotas = parseGroupedAntigravityQuota(data);
-    return Object.keys(quotas).length > 0 ? quotas : null;
-  } catch {
-    return null;
+    if (Object.keys(quotas).length === 0) {
+      return { error: { status: response.status, message: "No quota buckets returned." } };
+    }
+    return { quotas };
+  } catch (err) {
+    return { error: { status: 0, message: err?.message || "network error" } };
   }
+}
+
+// Map a grouped-quota failure into a single honest, user-facing message.
+// The per-model fetchAvailableModels endpoint only reports model AVAILABILITY
+// (always remainingFraction=1), never real consumption, so it must NOT be used
+// to synthesize quota bars. When the authoritative grouped endpoint is
+// unavailable we surface the reason instead of fabricating 100% bars.
+function antigravityQuotaUnavailableMessage(error) {
+  const status = error?.status;
+  const apiMsg = error?.message;
+  if (status === 403) {
+    if (apiMsg && /verify your account/i.test(apiMsg)) return "Antigravity account not verified — quota unavailable. Chat may still work.";
+    if (apiMsg && /valid license/i.test(apiMsg)) return "Antigravity account has no quota license — quota unavailable. Chat may still work.";
+    return "Antigravity quota not available for this account. Chat may still work.";
+  }
+  if (status === 401) return "Antigravity authentication expired — reconnect to view quota.";
+  if (status === 429) return "Antigravity quota temporarily rate-limited. Try again later.";
+  if (status && status >= 500) return `Antigravity quota service error (${status}). Try again later.`;
+  return "Antigravity quota unavailable. Chat may still work.";
 }
 export async function getAntigravityUsage(accessToken, providerSpecificData, proxyOptions = null) {
   try {
@@ -245,106 +235,24 @@ export async function getAntigravityUsage(accessToken, providerSpecificData, pro
     const subscriptionInfo = await getAntigravitySubscriptionInfo(accessToken, proxyOptions);
     const projectId = subscriptionInfo?.cloudaicompanionProject || null;
 
-    // Prefer the grouped quota endpoint (real weekly + 5-hour). Fall back to the
-    // per-model availability path below when it is unavailable.
-    const groupedQuotas = await fetchGroupedAntigravityQuota(accessToken, projectId, proxyOptions);
-    if (groupedQuotas) {
+    // The grouped quota endpoint (retrieveUserQuotaSummary) is the ONLY source of
+    // real weekly + 5-hour remaining fractions. The per-model fetchAvailableModels
+    // endpoint reports model AVAILABILITY (always remainingFraction=1), so it can
+    // never be turned into honest quota bars. When grouped is unavailable we return
+    // a clear message instead of fabricating 100% bars.
+    const grouped = await fetchGroupedAntigravityQuota(accessToken, projectId, proxyOptions);
+    if (grouped?.quotas) {
       return {
         plan: subscriptionInfo?.currentTier?.name || "Unknown",
-        quotas: groupedQuotas,
+        quotas: grouped.quotas,
         subscriptionInfo,
       };
     }
 
-    const response = await fetchWithTimeout(ANTIGRAVITY_CONFIG.quotaApiUrl, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${accessToken}`,
-        "User-Agent": ANTIGRAVITY_CONFIG.userAgent,
-        "Content-Type": "application/json",
-        "X-Client-Name": "antigravity",
-        "X-Client-Version": "1.107.0",
-        "x-request-source": "local", // MITM bypass
-      },
-      body: JSON.stringify({
-        ...(projectId ? { project: projectId } : {})
-      }),
-    }, 10000, proxyOptions);
-
-    if (response.status === 403) {
-      return {
-        message: "Antigravity quota API access forbidden. Chat may still work.",
-        quotas: {}
-      };
-    }
-
-    if (response.status === 401) {
-      return {
-        message: "Antigravity quota API authentication expired. Chat may still work.",
-        quotas: {}
-      };
-    }
-
-    if (!response.ok) {
-      throw new Error(`Antigravity API error: ${response.status}`);
-    }
-
-    const data = await response.json();
-    const quotas = {};
-
-    // Parse model quotas (inspired by vscode-antigravity-cockpit)
-    if (data.models) {
-      // Filter only recommended/important models (must match PROVIDER_MODELS ag ids)
-      const importantModels = [
-        'gemini-3-flash-agent',
-        'gemini-3.5-flash-low',
-        'gemini-3.5-flash-extra-low',
-        'gemini-pro-agent',
-        'gemini-3.1-pro-low',
-        'claude-sonnet-4-6',
-        'claude-opus-4-6-thinking',
-        'gpt-oss-120b-medium',
-        'gemini-3-flash',
-      ];
-
-      for (const [modelKey, info] of Object.entries(data.models)) {
-        // Skip internal models and non-important models
-        if (info.isInternal || !importantModels.includes(modelKey)) {
-          continue;
-        }
-
-        const quotaEntries = getAntigravityQuotaEntries(info);
-        if (quotaEntries.length === 0) continue;
-
-        for (const [bucketKey, quotaInfo] of quotaEntries) {
-          const remainingFraction = quotaInfo?.remainingFraction || 0;
-          const remainingPercentage = remainingFraction * 100;
-
-          // Convert percentage to used/total for UI compatibility
-          const total = 1000; // Normalized base
-          const remaining = Math.round(total * remainingFraction);
-          const used = total - remaining;
-          const resetAt = parseResetTime(quotaInfo?.resetTime);
-          const window = classifyAntigravityWindow({ ...(quotaInfo || {}), window: quotaInfo?.window || bucketKey }, resetAt);
-
-          quotas[`${modelKey}:${window}`] = {
-            used,
-            total,
-            resetAt,
-            remainingPercentage,
-            unlimited: false,
-            displayName: info.displayName || modelKey,
-            family: classifyAntigravityFamily(modelKey),
-            window,
-            modelKey,
-          };
-        }
-      }
-    }
-
     return {
       plan: subscriptionInfo?.currentTier?.name || "Unknown",
-      quotas,
+      message: antigravityQuotaUnavailableMessage(grouped?.error),
+      quotas: {},
       subscriptionInfo,
     };
   } catch (error) {
