@@ -59,6 +59,22 @@ describe("parseGroupedAntigravityQuota", () => {
     expect(Math.round(q["gemini:weekly"].remainingPercentage)).toBe(97);
   });
 
+  it("keeps free-tier All Models groups separate from Claude/GPT", () => {
+    const q = parseGroupedAntigravityQuota({
+      groups: [{
+        displayName: "All Models",
+        buckets: [{ bucketId: "all-weekly", window: "weekly", remainingFraction: 1 }],
+      }],
+    });
+    expect(q["all:weekly"]).toMatchObject({
+      displayName: "All Models",
+      family: "all",
+      window: "weekly",
+      remainingPercentage: 100,
+    });
+    expect(q["claude_gpt:weekly"]).toBeUndefined();
+  });
+
   it("clamps out-of-range / missing fractions", () => {
     const q = parseGroupedAntigravityQuota({
       groups: [{ displayName: "Gemini Models", buckets: [

@@ -5,10 +5,11 @@ import { buildGroups, WINDOW_ORDER } from "./quotaGroups";
 
 // Family + window display metadata
 const FAMILY_LABELS = {
+  all: "All Models",
   gemini: "Gemini Models",
   claude_gpt: "Claude and GPT models",
 };
-const FAMILY_ORDER = ["gemini", "claude_gpt"];
+const FAMILY_ORDER = ["all", "gemini", "claude_gpt"];
 
 const WINDOW_LABELS = {
   five_hour: "Session Limit",

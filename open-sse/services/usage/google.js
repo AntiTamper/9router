@@ -119,6 +119,7 @@ async function getGeminiSubscriptionInfo(accessToken, proxyOptions = null) {
 // Map an Antigravity grouped-quota group displayName to a UI family.
 function classifyAntigravityGroupFamily(group) {
   const name = String(group?.displayName || group?.groupId || "").toLowerCase();
+  if (name.includes("all model") || name === "all") return "all";
   if (name.includes("gemini")) return "gemini";
   return "claude_gpt";
 }
