@@ -226,7 +226,7 @@ async function fetchGroupedAntigravityQuota(accessToken, projectId, proxyOptions
         "X-Client-Version": "1.107.0",
         "x-request-source": "local",
       },
-      body: JSON.stringify(projectId ? { project: projectId } : {}),
+      body: "{}", // confirmed: retrieveUserQuotaSummary takes empty request body (project field => 400)
     }, 10000, proxyOptions);
     if (!response.ok) return null;
     const data = await response.json().catch(() => null);
