@@ -10,6 +10,15 @@ export function remainingOf(quota) {
   return 0;
 }
 
+function inferFamily(quota) {
+  if (quota?.family) return quota.family;
+
+  const key = String(quota?.modelKey || quota?.name || "").toLowerCase();
+  if (key.startsWith("all:") || key.includes("all model")) return "all";
+  if (key.startsWith("gemini:") || key.includes("gemini")) return "gemini";
+  return "claude_gpt";
+}
+
 // Aggregate quotas into family -> window -> { remaining (min/worst-case), resetAt (earliest) }.
 // Render ONLY windows we actually have data for. The upstream Antigravity API returns a
 // single quota window per model (classified five_hour vs weekly by its reset horizon); the
@@ -18,7 +27,7 @@ export function remainingOf(quota) {
 export function buildGroups(quotas) {
   const families = new Map();
   for (const quota of quotas) {
-    const family = quota.family || "claude_gpt";
+    const family = inferFamily(quota);
     const win = quota.window || "weekly";
     if (!families.has(family)) families.set(family, new Map());
     const windows = families.get(family);

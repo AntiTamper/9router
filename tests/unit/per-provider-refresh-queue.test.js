@@ -217,4 +217,14 @@ describe("buildGroups (no fabricated windows)", () => {
     const fam = buildGroups(quotas).get("gemini");
     expect(fam.get("weekly").remaining).toBe(90);
   });
+
+  it("keeps cached All Models quotas out of Claude/GPT when family is missing", () => {
+    const quotas = [
+      { name: "All Models", modelKey: "all:weekly", window: "weekly", remainingPercentage: 100, resetAt: "2030-01-01T00:00:00Z" },
+    ];
+    const families = buildGroups(quotas);
+    expect(families.has("all")).toBe(true);
+    expect(families.has("claude_gpt")).toBe(false);
+    expect(families.get("all").get("weekly").remaining).toBe(100);
+  });
 });

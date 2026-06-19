@@ -2,7 +2,7 @@
 
 import { parseQuotaData, parseQuotaMetadata } from "./utils";
 
-export const PROVIDER_QUOTA_CACHE_KEY = "providerQuotaSnapshots:v3";
+export const PROVIDER_QUOTA_CACHE_KEY = "providerQuotaSnapshots:v4";
 export const PROVIDER_QUOTA_CACHE_TTL_MS = 15 * 60 * 1000;
 export const PROVIDER_QUOTA_FETCH_TIMEOUT_MS = 12 * 1000;
 
