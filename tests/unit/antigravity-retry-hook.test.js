@@ -32,8 +32,8 @@ describe("antigravity computeRetryDelay hook (D3)", () => {
     expect(await ag.computeRetryDelay(res(429), 3)).toBe(Math.min(1000 * 2 ** 3, MAX));
   });
 
-  it("503 without retry info → veto (no auto backoff)", async () => {
-    expect(await ag.computeRetryDelay(res(503), 1)).toBe(false);
+  it("503 without retry info lets base retry config decide", async () => {
+    expect(await ag.computeRetryDelay(res(503), 1)).toBeNull();
   });
 
   it("buildHeaders includes cached session id after transformRequest", () => {

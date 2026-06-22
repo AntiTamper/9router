@@ -184,17 +184,25 @@ export async function POST(request) {
           normalizedBase = normalizedBase.slice(0, -9); // remove /messages
         }
 
-        const modelsUrl = `${normalizedBase}/models`;
+        const messagesUrl = `${normalizedBase}/v1/messages`;
+        const model = node.defaultModel || "claude-3-haiku-20240307";
 
-        const res = await guardedFetch(modelsUrl, {
+        const res = await guardedFetch(messagesUrl, {
+          method: "POST",
           headers: {
             "x-api-key": apiKey,
             "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
             "Authorization": `Bearer ${apiKey}`
           },
+          body: JSON.stringify({
+            model,
+            max_tokens: 1,
+            messages: [{ role: "user", content: "test" }],
+          }),
         }, USER_PROVIDER_URL_GUARD);
 
-        isValid = res.ok;
+        isValid = res.status !== 401 && res.status !== 403;
         return NextResponse.json({
           valid: isValid,
           error: isValid ? null : "Invalid API key",

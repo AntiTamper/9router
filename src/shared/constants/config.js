@@ -71,6 +71,8 @@ export const CLAUDE_AUTOPING_CONFIG = {
   pingText: "hi",
   pingMaxTokens: 1,
   refreshAheadMs: 300000,               // refetch usage when within 5min of reset
+  idleRetryMs: 1800000,                 // retry no-reset warmup every 30min until a reset clock appears
+  failedRetryMs: 300000,                // retry failed warmup after 5min
   fiveHourKey: "session (5h)",          // quota key returned by usage handler
 };
 

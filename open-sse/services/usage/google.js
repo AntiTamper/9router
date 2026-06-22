@@ -129,7 +129,7 @@ function classifyAntigravityBucketWindow(bucket) {
   const w = String(bucket?.window || bucket?.bucketId || bucket?.displayName || "").toLowerCase();
   if (w.includes("week")) return "weekly";
   if (w.includes("5h") || w.includes("five") || w.includes("hour")) return "five_hour";
-  return "weekly";
+  return null;
 }
 
 /**
@@ -147,13 +147,15 @@ export function parseGroupedAntigravityQuota(payload) {
     const buckets = Array.isArray(group?.buckets) ? group.buckets : [];
     for (const bucket of buckets) {
       const window = classifyAntigravityBucketWindow(bucket);
+      if (!window) continue;
       const frac = Number(bucket?.remainingFraction);
       const remainingFraction = Number.isFinite(frac) ? Math.min(Math.max(frac, 0), 1) : 0;
       const remainingPercentage = remainingFraction * 100;
       const total = 1000;
       const remaining = Math.round(total * remainingFraction);
       const used = total - remaining;
-      const key = `${family}:${window}`;
+      let key = `${family}:${window}`;
+      if (quotas[key]) key = `${family}:${window}:${bucket?.bucketId || Object.keys(quotas).length}`;
       quotas[key] = {
         used,
         total,
@@ -169,6 +171,98 @@ export function parseGroupedAntigravityQuota(payload) {
     }
   }
   return quotas;
+}
+
+function classifyAntigravityLegacyFamily(modelKey) {
+  const key = String(modelKey || "").toLowerCase();
+  if (key.startsWith("all") || key.includes("all-model")) return "all";
+  if (key.startsWith("gemini")) return "gemini";
+  return "claude_gpt";
+}
+
+function classifyAntigravityLegacyWindow(quotaInfo, resetAt) {
+  const hint = String(quotaInfo?.tokenType || quotaInfo?.quotaType || quotaInfo?.limitType || quotaInfo?.window || "").toLowerCase();
+  if (hint.includes("week") || hint === "wtus") return "weekly";
+  if (hint.includes("hour") || hint.includes("5h") || hint.includes("five") || hint.includes("session")) return "five_hour";
+  const resetMs = resetAt ? new Date(resetAt).getTime() - Date.now() : NaN;
+  if (Number.isFinite(resetMs) && resetMs > 0 && resetMs <= 6 * 60 * 60 * 1000) return "five_hour";
+  return "weekly";
+}
+
+function getAntigravityLegacyQuotaEntries(info) {
+  const source = info?.quotaInfos || info?.quotas || info?.quotaInfo;
+  if (!source) return [];
+  if (Array.isArray(source)) return source.map((quotaInfo, index) => [String(quotaInfo?.window || quotaInfo?.quotaType || index), quotaInfo]);
+  if (source.remainingFraction != null || source.resetTime) return [[String(source.window || source.quotaType || "quota"), source]];
+  if (typeof source === "object") return Object.entries(source).map(([key, quotaInfo]) => [key, quotaInfo]);
+  return [];
+}
+
+function parseLegacyAntigravityQuota(payload) {
+  const models = payload?.models;
+  if (!models || typeof models !== "object" || Array.isArray(models)) return {};
+  const quotas = {};
+  for (const [modelKey, info] of Object.entries(models)) {
+    if (info?.isInternal) continue;
+    for (const [bucketKey, quotaInfo] of getAntigravityLegacyQuotaEntries(info)) {
+      const rawFraction = Number(quotaInfo?.remainingFraction);
+      const hasResetClock = !!(quotaInfo?.resetTime || quotaInfo?.resetAt);
+      const hasRealQuota = Number.isFinite(rawFraction) && hasResetClock;
+      if (!hasRealQuota) continue;
+      const remainingFraction = Number.isFinite(rawFraction) ? Math.min(Math.max(rawFraction, 0), 1) : 0;
+      const total = 1000;
+      const remaining = Math.round(total * remainingFraction);
+      const resetAt = parseResetTime(quotaInfo?.resetTime || quotaInfo?.resetAt);
+      const window = classifyAntigravityLegacyWindow({ ...(quotaInfo || {}), window: quotaInfo?.window || bucketKey }, resetAt);
+      const family = classifyAntigravityLegacyFamily(modelKey);
+      // Primary key is `${modelKey}:${window}` (stable for UI + tests). If a model
+      // exposes two buckets that classify to the same window, disambiguate with the
+      // bucket key so neither row is silently overwritten.
+      let key = `${modelKey}:${window}`;
+      if (quotas[key]) key = `${modelKey}:${window}:${bucketKey}`;
+      quotas[key] = {
+        used: total - remaining,
+        total,
+        resetAt,
+        remainingPercentage: remainingFraction * 100,
+        unlimited: false,
+        displayName: info?.displayName || modelKey,
+        family,
+        window,
+        modelKey,
+        quotaSource: "legacy",
+      };
+    }
+  }
+  return quotas;
+}
+
+async function fetchLegacyAntigravityQuota(accessToken, projectId, proxyOptions) {
+  try {
+    const response = await fetchWithTimeout(ANTIGRAVITY_CONFIG.quotaApiUrl, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${accessToken}`,
+        "User-Agent": ANTIGRAVITY_CONFIG.userAgent,
+        "Content-Type": "application/json",
+        "X-Client-Name": "antigravity",
+        "X-Client-Version": "1.107.0",
+        "x-request-source": "local",
+      },
+      body: JSON.stringify({ ...(projectId ? { project: projectId } : {}) }),
+    }, 10000, proxyOptions);
+    if (!response.ok) {
+      let apiMsg = null;
+      try { apiMsg = (await response.json())?.error?.message || null; } catch { /* ignore */ }
+      return { error: { status: response.status, message: apiMsg } };
+    }
+    const data = await response.json().catch(() => null);
+    const quotas = parseLegacyAntigravityQuota(data);
+    if (Object.keys(quotas).length === 0) return { error: { status: response.status, message: "No real quota fields returned by legacy endpoint." } };
+    return { quotas };
+  } catch (err) {
+    return { error: { status: 0, message: err?.message || "network error" } };
+  }
 }
 // Try the grouped quota endpoint (authoritative weekly + 5-hour fractions).
 // Returns a quotas map on success, or null when unavailable so the caller can
@@ -247,12 +341,24 @@ export async function getAntigravityUsage(accessToken, providerSpecificData, pro
         plan: subscriptionInfo?.currentTier?.name || "Unknown",
         quotas: grouped.quotas,
         subscriptionInfo,
+        quotaSource: "grouped",
+      };
+    }
+
+    const legacy = await fetchLegacyAntigravityQuota(accessToken, projectId, proxyOptions);
+    if (legacy?.quotas) {
+      return {
+        plan: subscriptionInfo?.currentTier?.name || "Unknown",
+        quotas: legacy.quotas,
+        subscriptionInfo,
+        quotaSource: "legacy",
+        message: "Antigravity grouped quota unavailable; showing legacy quota data.",
       };
     }
 
     return {
       plan: subscriptionInfo?.currentTier?.name || "Unknown",
-      message: antigravityQuotaUnavailableMessage(grouped?.error),
+      message: antigravityQuotaUnavailableMessage(grouped?.error || legacy?.error),
       quotas: {},
       subscriptionInfo,
     };

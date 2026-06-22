@@ -81,4 +81,42 @@ describe("Antigravity executor", () => {
     const query = out.request.tools[0].functionDeclarations[0].parameters.properties.query;
     expect(query).toEqual({ type: "string", description: "Search query" });
   });
+
+  it("preserves pattern in tool schemas", () => {
+    const out = new AntigravityExecutor().transformRequest("gemini-2.5-pro", {
+      request: {
+        contents: [{ role: "user", parts: [{ text: "hi" }] }],
+        tools: [{
+          functionDeclarations: [{
+            name: "grep",
+            parameters: {
+              type: "object",
+              properties: {
+                pattern: { type: "string", pattern: "^[a-z]+$" },
+              },
+              required: ["pattern"],
+            },
+          }],
+        }],
+      },
+    }, true, { projectId: "project-1", connectionId: "conn-1" });
+
+    const schema = out.request.tools[0].functionDeclarations[0].parameters.properties.pattern;
+    expect(schema).toEqual({ type: "string", pattern: "^[a-z]+$" });
+  });
+
+  it("uses non-streaming image generation envelope for image models", () => {
+    const executor = new AntigravityExecutor();
+    expect(executor.buildUrl("gemini-3.1-flash-image", true)).toContain("generateContent");
+    expect(executor.buildUrl("gemini-3.1-flash-image", true)).not.toContain("streamGenerateContent");
+
+    const out = executor.transformRequest("gemini-3.1-flash-image-16x9", {
+      contents: [{ role: "user", parts: [{ text: "paint a skyline" }] }],
+    }, false, { projectId: "project-1", connectionId: "conn-1" });
+
+    expect(out.model).toBe("gemini-3.1-flash-image");
+    expect(out.requestType).toBe("image_gen");
+    expect(out.request.generationConfig.imageConfig.aspectRatio).toBe("16:9");
+    expect(out.request.contents[0].parts[0].text).toBe("paint a skyline");
+  });
 });

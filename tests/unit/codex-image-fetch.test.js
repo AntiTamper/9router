@@ -157,5 +157,59 @@ describe("CodexExecutor image handling", () => {
     const parsed = JSON.parse(capturedBodyString);
     const imgBlock = parsed.input[0].content.find((c) => c.type === "input_image");
     expect(imgBlock.image_url.startsWith("data:image/jpeg;base64,")).toBe(true);
+    expect(body.input[0].content[0].type).toBe("image_url");
+  });
+
+  it("uses /compact only for compact requests and clears it for later requests", async () => {
+    global.fetch = vi.fn();
+    const urls = [];
+    vi.spyOn(proxyFetchModule, "proxyAwareFetch").mockImplementation(async (url) => {
+      urls.push(String(url));
+      return { ok: true, status: 200, headers: new Map() };
+    });
+
+    const executor = new CodexExecutor();
+    await executor.execute({
+      model: "gpt-5.3-codex",
+      body: { _compact: true, input: "compact this" },
+      stream: true,
+      credentials: { accessToken: "test" },
+    });
+    await executor.execute({
+      model: "gpt-5.3-codex",
+      body: { input: "normal" },
+      stream: true,
+      credentials: { accessToken: "test" },
+    });
+
+    expect(urls[0]).toMatch(/\/compact$/);
+    expect(urls[1]).not.toMatch(/\/compact$/);
+  });
+
+  it("applies reasoning_effort when reasoning exists without effort", () => {
+    const executor = new CodexExecutor();
+    const out = executor.transformRequest("gpt-5.3-codex-high", {
+      model: "gpt-5.3-codex-high",
+      input: "think",
+      reasoning: {},
+      reasoning_effort: "medium",
+    }, true, { accessToken: "test" });
+
+    expect(out.model).toBe("gpt-5.3-codex");
+    expect(out.reasoning.effort).toBe("medium");
+    expect(out.reasoning.summary).toBe("auto");
+  });
+
+  it("keeps explicit reasoning.effort over model suffix", () => {
+    const executor = new CodexExecutor();
+    const out = executor.transformRequest("gpt-5.3-codex-high", {
+      model: "gpt-5.3-codex-high",
+      input: "think",
+      reasoning: { effort: "none" },
+    }, true, { accessToken: "test" });
+
+    expect(out.model).toBe("gpt-5.3-codex");
+    expect(out.reasoning.effort).toBe("none");
+    expect(out.include).toBeUndefined();
   });
 });

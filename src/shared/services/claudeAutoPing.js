@@ -5,8 +5,10 @@ import crypto from "crypto";
 import { getSettings, getProviderConnections, updateProviderConnection } from "@/lib/localDb";
 import { getClaudeUsage } from "open-sse/services/usage/claude.js";
 import { getAntigravityUsage } from "open-sse/services/usage/google.js";
+import { getCodexUsage } from "open-sse/services/usage/codex.js";
+import { CODEX_DEFAULT_INSTRUCTIONS } from "open-sse/config/codexInstructions.js";
 import { CLAUDE_CLI_SPOOF_HEADERS } from "open-sse/providers/shared.js";
-import { ANTIGRAVITY_HEADERS, INTERNAL_REQUEST_HEADER } from "open-sse/config/appConstants.js";
+import { ANTIGRAVITY_HEADERS, CLAUDE_SYSTEM_PROMPT, INTERNAL_REQUEST_HEADER } from "open-sse/config/appConstants.js";
 import { proxyAwareFetch } from "open-sse/utils/proxyFetch.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { refreshAndUpdateCredentials } from "@/app/api/usage/[connectionId]/route.js";
@@ -16,6 +18,7 @@ import { PROVIDERS } from "open-sse/config/providers.js";
 const C = CLAUDE_AUTOPING_CONFIG;
 const CLAUDE_PING_URL = "https://api.anthropic.com/v1/messages?beta=true";
 const ANTIGRAVITY_PING_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent";
+const CODEX_PING_URL = "https://chatgpt.com/backend-api/codex/responses";
 const TRIGGER_OUT = "out-of-quota";
 const TRIGGER_IDLE = "not-counting-down";
 const TRIGGER_BOTH = "not-counting-down-or-out-of-quota";
@@ -45,6 +48,15 @@ const PROVIDER_CONFIG = {
     pickWindows: pickAntigravityWindows,
     send: sendAntigravityPing,
     validModels: providerModels("antigravity"),
+  },
+  codex: {
+    settingsKey: "codexAutoPing",
+    defaultModel: "gpt-5.3-codex-low",
+    defaultTrigger: TRIGGER_BOTH,
+    usage: (conn, proxyOptions) => getCodexUsage(conn.accessToken, proxyOptions),
+    pickWindows: pickCodexWindows,
+    send: sendCodexPing,
+    validModels: providerModels("codex"),
   },
 };
 
@@ -101,7 +113,7 @@ function shouldWarmup(trigger, windows, state) {
   if (trigger === TRIGGER_IDLE) return { should: idle, nextState };
   if (trigger === TRIGGER_BOTH) {
     const refillAfterExhaustion = idle && state?.exhaustedResetAt && state.exhaustedResetAt !== resetAt;
-    return { should: idle || refillAfterExhaustion, nextState };
+    return { should: idle || exhausted || refillAfterExhaustion, nextState };
   }
   return { should: exhausted, nextState };
 }
@@ -117,6 +129,74 @@ function pickAntigravityWindows(usage) {
   return { session: worst(sessionRows) || worst(weeklyRows), weekly: worst(weeklyRows) };
 }
 
+function pickCodexWindows(usage) {
+  const quotas = usage?.quotas || {};
+  return {
+    session: quotas.session || quotas.review_session || null,
+    weekly: quotas.weekly || quotas.review_weekly || null,
+  };
+}
+
+async function cancelResponseBody(res) {
+  try { await res?.body?.cancel?.(); } catch { /* ignore */ }
+}
+
+// Codex UI model ids carry an effort suffix (-none/-low/-high/-xhigh) and an
+// optional -review marker, but the upstream /responses endpoint only accepts the
+// base id + reasoning.effort (the chat executor strips the suffix the same way).
+// A direct warmup POST bypasses the executor, so we must normalize here or the
+// ping 400s and never starts the session window.
+const CODEX_EFFORT_LEVELS = ["none", "low", "medium", "high", "xhigh"];
+function resolveCodexWarmupModel(model) {
+  let id = String(model || "gpt-5.3-codex").trim();
+  id = id.replace(/-review$/, "");
+  let effort = "none";
+  for (const level of CODEX_EFFORT_LEVELS) {
+    if (id.endsWith(`-${level}`)) {
+      effort = level;
+      id = id.slice(0, -(level.length + 1));
+      break;
+    }
+  }
+  if (!id.startsWith("gpt-")) id = "gpt-5.3-codex";
+  return { model: id, configuredEffort: effort };
+}
+
+function buildCodexWarmupRequest(conn, model) {
+  const sessionId = `warmup-${conn.id || crypto.randomUUID()}`;
+  const { model: upstreamModel } = resolveCodexWarmupModel(model);
+  const workspaceId = conn.providerSpecificData?.workspaceId;
+  return {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${conn.accessToken}`,
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+      originator: "codex_cli_rs",
+      "User-Agent": "codex_cli_rs/0.136.0",
+      session_id: sessionId,
+      ...(workspaceId ? { "chatgpt-account-id": workspaceId } : {}),
+    },
+    body: {
+      model: upstreamModel,
+      instructions: CODEX_DEFAULT_INSTRUCTIONS,
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: C.pingText }] }],
+      reasoning: { effort: "none", summary: "auto" },
+      stream: true,
+      store: false,
+    },
+  };
+}
+
+async function sendCodexPing(conn, proxyOptions, model) {
+  const request = buildCodexWarmupRequest(conn, model);
+  const res = await proxyAwareFetch(CODEX_PING_URL, {
+    ...request,
+    body: JSON.stringify(request.body),
+  }, proxyOptions);
+  await cancelResponseBody(res);
+  return res.ok;
+}
 async function sendClaudePing(conn, proxyOptions, model) {
   const res = await proxyAwareFetch(CLAUDE_PING_URL, {
     method: "POST",
@@ -128,9 +208,11 @@ async function sendClaudePing(conn, proxyOptions, model) {
     body: JSON.stringify({
       model: model || C.pingModel,
       max_tokens: C.pingMaxTokens,
+      system: [{ type: "text", text: CLAUDE_SYSTEM_PROMPT }],
       messages: [{ role: "user", content: C.pingText }],
     }),
   }, proxyOptions);
+  await cancelResponseBody(res);
   return res.ok;
 }
 
@@ -161,9 +243,21 @@ async function sendAntigravityPing(conn, proxyOptions, model) {
       },
     }),
   }, proxyOptions);
+  await cancelResponseBody(res);
   return res.ok;
 }
 
+function warmupCycleKey(provider, resetAt) {
+  return resetAt || `${provider}:idle`;
+}
+
+function shouldSkipWarmupCycle(state, cycleKey, resetAt, now = Date.now()) {
+  const lastPingMs = new Date(state?.lastPingAt || 0).getTime();
+  if (state?.lastPingOk === false && Number.isFinite(lastPingMs) && now - lastPingMs < C.failedRetryMs) return true;
+  if (resetAt) return state?.lastPingedCycle === cycleKey;
+  if (state?.lastPingedCycle !== cycleKey) return false;
+  return Number.isFinite(lastPingMs) && now - lastPingMs < C.idleRetryMs;
+}
 async function pingConnection(provider, conn, settings) {
   const { cfg, model, trigger } = resolveWarmupConfig(provider, settings, conn.id);
   const state = conn.providerSpecificData?.warmupState || {};
@@ -198,8 +292,8 @@ async function pingConnection(provider, conn, settings) {
     return;
   }
 
-  const cycleKey = resetAt || `${provider}:idle`;
-  if (state.lastPingedCycle === cycleKey) return;
+  const cycleKey = warmupCycleKey(provider, resetAt);
+  if (shouldSkipWarmupCycle(state, cycleKey, resetAt)) return;
 
   const ok = await cfg.send(connection, proxyOptions, model);
   await updateProviderConnection(connection.id, {
@@ -209,7 +303,7 @@ async function pingConnection(provider, conn, settings) {
       ...(connection.providerSpecificData || {}),
       warmupState: {
         ...nextState,
-        lastPingedCycle: cycleKey,
+        lastPingedCycle: ok ? cycleKey : state.lastPingedCycle,
         lastPingOk: ok,
         lastPingModel: model,
         lastPingTrigger: trigger,
@@ -251,6 +345,7 @@ export function startClaudeAutoPing() {
   if (g.interval) return;
   g.interval = setInterval(() => { tick().catch(() => {}); }, C.tickIntervalMs);
   if (g.interval.unref) g.interval.unref();
+  tick().catch(() => {});
 }
 
-export const __autoWarmupTest = { shouldWarmup, pickAntigravityWindows, percentUsed };
+export const __autoWarmupTest = { shouldWarmup, pickAntigravityWindows, pickCodexWindows, percentUsed, warmupCycleKey, shouldSkipWarmupCycle, resolveCodexWarmupModel, buildCodexWarmupRequest };

@@ -24,6 +24,7 @@ const ONE_BY_ONE_DELAY_MS = 1000;
 const WARMUP_PROVIDER_CONFIG = {
   claude: { settingsKey: "claudeAutoPing", title: "Claude Code Warmup", defaultModel: "claude-haiku-4-5-20251001", defaultTrigger: "out-of-quota" },
   antigravity: { settingsKey: "antigravityAutoPing", title: "Antigravity Warmup", defaultModel: "gemini-3-flash", defaultTrigger: "not-counting-down-or-out-of-quota" },
+  codex: { settingsKey: "codexAutoPing", title: "Codex Warmup", defaultModel: "gpt-5.3-codex-low", defaultTrigger: "not-counting-down-or-out-of-quota" },
 };
 
 const ACCOUNT_MODEL_QUERY_PROVIDERS = new Set(["codex", "kiro", "openrouter"]);

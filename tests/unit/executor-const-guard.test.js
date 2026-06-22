@@ -9,6 +9,8 @@ import { DEFAULT_MAX_TOKENS, DEFAULT_MIN_TOKENS } from "../../open-sse/config/ru
 import mimoFree from "../../open-sse/providers/registry/mimo-free.js";
 import opencode from "../../open-sse/providers/registry/opencode.js";
 import antigravity from "../../open-sse/providers/registry/antigravity.js";
+import { AntigravityExecutor } from "../../open-sse/executors/antigravity.js";
+import { resolveAntigravityImageConfig } from "../../open-sse/handlers/imageProviders/antigravity.js";
 
 describe("compat base URLs / version", () => {
   it("OPENAI_COMPAT_BASE", () => {
@@ -38,11 +40,39 @@ describe("provider baseUrl const (full path, no trailing slash)", () => {
   });
 });
 
-describe("antigravity retry (intentional change: 429=6, 503=3)", () => {
-  it("429 attempts = 6", () => {
-    expect(antigravity.transport.retry["429"].attempts).toBe(6);
+describe("antigravity retry (429=3, 503=3)", () => {
+  it("429 attempts = 3", () => {
+    expect(antigravity.transport.retry["429"].attempts).toBe(3);
   });
   it("503 attempts = 3", () => {
     expect(antigravity.transport.retry["503"].attempts).toBe(3);
+  });
+
+  it("does not veto configured non-429 retries", async () => {
+    const executor = new AntigravityExecutor();
+    const response = new Response("temporary", { status: 503 });
+    await expect(executor.computeRetryDelay(response, 1)).resolves.toBeNull();
+  });
+});
+
+
+describe("antigravity image request config", () => {
+  it("maps OpenAI image size to Antigravity aspectRatio", () => {
+    expect(resolveAntigravityImageConfig({ size: "1792x1024" })).toEqual({ aspectRatio: "16:9" });
+    expect(resolveAntigravityImageConfig({ size: "1024x1792" })).toEqual({ aspectRatio: "9:16" });
+    expect(resolveAntigravityImageConfig({ size: "1536x1024" })).toEqual({ aspectRatio: "3:2" });
+    expect(resolveAntigravityImageConfig({ aspect_ratio: "4:3" })).toEqual({ aspectRatio: "4:3" });
+  });
+
+  it("passes adapter imageConfig through executor envelope", () => {
+    const executor = new AntigravityExecutor();
+    const out = executor.transformRequest("gemini-3.1-flash-image", {
+      imageConfig: { aspectRatio: "16:9" },
+      contents: [{ role: "user", parts: [{ text: "draw" }] }],
+    }, false, { accessToken: "tok", connectionId: "ag-image-test" });
+
+    expect(out.requestType).toBe("image_gen");
+    expect(out.request.generationConfig.imageConfig).toEqual({ aspectRatio: "16:9" });
+    expect(out.request.contents[0].parts[0].text).toBe("draw");
   });
 });

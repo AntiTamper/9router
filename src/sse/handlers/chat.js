@@ -32,6 +32,14 @@ const MAX_REQUEST_BODY_BYTES = Math.max(
 );
 const ACCOUNT_FALLBACK_DEADLINE_MS = Math.max(1000, parseInt(process.env.ACCOUNT_FALLBACK_DEADLINE_MS || "45000", 10));
 
+function rawRequestForComboPanel(clientRawRequest) {
+  if (!clientRawRequest?.body) return clientRawRequest;
+  const body = { ...clientRawRequest.body };
+  delete body.tools;
+  delete body.tool_choice;
+  return { ...clientRawRequest, body };
+}
+
 /**
  * Handle chat completion request
  * Supports: OpenAI, Claude, Gemini, OpenAI Responses API formats
@@ -155,7 +163,14 @@ export async function handleChat(request, clientRawRequest = null) {
       return handleFusionChat({
         body,
         models: comboModels,
-        handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+        handleSingleModel: (b, m, isPanel) => handleSingleModelChat(
+          b,
+          m,
+          isPanel ? rawRequestForComboPanel(clientRawRequest) : clientRawRequest,
+          request,
+          apiKey,
+          keyConfig
+        ),
         log,
         comboName: modelStr,
         judgeModel: comboStrategies[modelStr]?.judgeModel,
@@ -223,7 +238,15 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         return handleFusionChat({
           body,
           models: comboModels,
-          handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+          handleSingleModel: (b, m, isPanel) => handleSingleModelChat(
+            b,
+            m,
+            isPanel ? rawRequestForComboPanel(clientRawRequest) : clientRawRequest,
+            request,
+            apiKey,
+            keyConfig,
+            comboDepth + 1
+          ),
           log,
           comboName: modelStr,
           judgeModel: comboStrategies[modelStr]?.judgeModel,

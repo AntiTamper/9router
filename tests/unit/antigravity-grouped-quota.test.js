@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { proxyAwareFetch } = vi.hoisted(() => ({
   proxyAwareFetch: vi.fn(),
@@ -41,6 +41,12 @@ const SAMPLE = {
 describe("parseGroupedAntigravityQuota", () => {
   beforeEach(() => {
     proxyAwareFetch.mockReset();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-19T20:00:00Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("maps the real grouped response to per-family weekly + five_hour quotas", () => {
@@ -86,13 +92,53 @@ describe("parseGroupedAntigravityQuota", () => {
     expect(q["gemini:five_hour"].remainingPercentage).toBe(0);
   });
 
+  it("does not overwrite grouped buckets that classify to the same window", () => {
+    const q = parseGroupedAntigravityQuota({
+      groups: [{ displayName: "Gemini Models", buckets: [
+        { bucketId: "gemini-weekly-a", window: "weekly", remainingFraction: 0.9 },
+        { bucketId: "gemini-weekly-b", displayName: "Weekly Limit", remainingFraction: 0.4 },
+      ] }],
+    });
+
+    expect(q["gemini:weekly"].remainingPercentage).toBe(90);
+    expect(q["gemini:weekly:gemini-weekly-b"].remainingPercentage).toBe(40);
+  });
+
   it("returns an empty object for empty / malformed input", () => {
     expect(parseGroupedAntigravityQuota(null)).toEqual({});
     expect(parseGroupedAntigravityQuota({})).toEqual({});
     expect(parseGroupedAntigravityQuota({ response: { groups: [] } })).toEqual({});
   });
 
-  it("does not fall back to model availability as quota when grouped quota is unavailable", async () => {
+  it("falls back to legacy quota only when real quota fields exist", async () => {
+    proxyAwareFetch.mockImplementation(async (url) => {
+      const href = String(url);
+      if (href.includes("loadCodeAssist")) {
+        return jsonResponse({ currentTier: { name: "Pro" }, cloudaicompanionProject: "projects/test" });
+      }
+      if (href.includes("retrieveUserQuotaSummary")) {
+        return jsonResponse({ error: { message: "quota unavailable" } }, 503);
+      }
+      if (href.includes("fetchAvailableModels")) {
+        return jsonResponse({ models: {
+          "gemini-3-flash": { displayName: "Gemini 3 Flash", quotaInfo: { remainingFraction: 0.42, resetTime: "2026-06-19T21:41:07Z" } },
+          "claude-sonnet-4-6": { displayName: "Claude Sonnet", quotaInfo: { remainingFraction: 0.2, resetTime: "2026-06-25T06:27:56Z" } },
+          "claude-future-model": { displayName: "Claude Future", quotaInfo: { remainingFraction: 0.7, resetTime: "2026-06-25T06:27:56Z" } },
+        } });
+      }
+      throw new Error(`unexpected URL ${href}`);
+    });
+
+    const usage = await getAntigravityUsage("token", {});
+    expect(usage.quotaSource).toBe("legacy");
+    expect(Math.round(usage.quotas["gemini-3-flash:five_hour"].remainingPercentage)).toBe(42);
+    expect(usage.quotas["gemini-3-flash:five_hour"].family).toBe("gemini");
+    expect(Math.round(usage.quotas["claude-sonnet-4-6:weekly"].remainingPercentage)).toBe(20);
+    expect(usage.quotas["claude-sonnet-4-6:weekly"].family).toBe("claude_gpt");
+    expect(Math.round(usage.quotas["claude-future-model:weekly"].remainingPercentage)).toBe(70);
+  });
+
+  it("does not synthesize legacy availability rows as quota", async () => {
     proxyAwareFetch.mockImplementation(async (url) => {
       const href = String(url);
       if (href.includes("loadCodeAssist")) {
@@ -102,7 +148,10 @@ describe("parseGroupedAntigravityQuota", () => {
         return jsonResponse({ error: { message: "quota unavailable" } }, 403);
       }
       if (href.includes("fetchAvailableModels")) {
-        throw new Error("fetchAvailableModels must not be used for quota fallback");
+        return jsonResponse({ models: {
+          "gemini-3-flash": { displayName: "Gemini 3 Flash", quotaInfo: { remainingFraction: 1 } },
+          "claude-sonnet-4-6": { displayName: "Claude Sonnet", quotaInfo: { resetTime: "2026-06-25T06:27:56Z" } },
+        } });
       }
       throw new Error(`unexpected URL ${href}`);
     });
@@ -111,6 +160,6 @@ describe("parseGroupedAntigravityQuota", () => {
     expect(usage).toMatchObject({ plan: "Pro", quotas: {} });
     expect(usage.message).toMatch(/quota not available|quota unavailable/i);
     const calledUrls = proxyAwareFetch.mock.calls.map(([url]) => String(url));
-    expect(calledUrls.some((url) => url.includes("fetchAvailableModels"))).toBe(false);
+    expect(calledUrls.some((url) => url.includes("fetchAvailableModels"))).toBe(true);
   });
 });

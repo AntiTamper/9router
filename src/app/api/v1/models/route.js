@@ -17,6 +17,7 @@ import { guardedFetch } from "@/lib/security/urlGuard";
 import { updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { resolveExposure } from "@/lib/keyPolicy.js";
 import { getComboModels } from "@/sse/services/model.js";
+import { capabilitiesFromServiceKind } from "open-sse/providers/capabilities.js";
 
 function alignLiveModelsWithStaticIds(providerId, liveModels) {
   const staticAlias = PROVIDER_ID_TO_ALIAS[providerId] || providerId;
@@ -407,14 +408,20 @@ export async function buildModelsList(kindFilter, options = {}) {
         })
         .filter((modelId) => typeof modelId === "string" && modelId.trim() !== "");
 
+      const customModelKindById = new Map();
       const customModelIds = customModels
         .filter((m) => {
-          const k = m.kind || m.type;
-          if (!m?.id || (k && k !== "llm")) return false;
+          if (!m?.id) return false;
+          const k = m.kind || m.type || LLM_KIND;
+          if (!kindFilter.includes(k) && !(k === "imageToText" && kindFilter.includes(LLM_KIND))) return false;
           const alias = m.providerAlias;
           return alias === staticAlias || alias === outputAlias || alias === providerId;
         })
-        .map((m) => String(m.id).trim())
+        .map((m) => {
+          const modelId = String(m.id).trim();
+          if (modelId) customModelKindById.set(modelId, m.kind || m.type || LLM_KIND);
+          return modelId;
+        })
         .filter((modelId) => modelId !== "");
 
       const aliasModelIds = Object.values(modelAliases || {})
@@ -443,16 +450,21 @@ export async function buildModelsList(kindFilter, options = {}) {
       const mergedModelIds = Array.from(new Set([...modelIds, ...customModelIds, ...aliasModelIds]));
 
       for (const modelId of mergedModelIds) {
-        // Resolve kind: prefer static metadata, otherwise infer from ID heuristics
-        const kind = staticModelKindById.get(modelId) || inferKindFromUnknownModelId(modelId);
-        if (!kindFilter.includes(kind)) continue;
+        // Resolve kind: prefer static/custom metadata, otherwise infer from ID heuristics
+        const customKind = customModelKindById.get(modelId);
+        const kind = staticModelKindById.get(modelId) || customKind || inferKindFromUnknownModelId(modelId);
+        const allowAsLlm = kind === "imageToText" && kindFilter.includes(LLM_KIND);
+        if (!kindFilter.includes(kind) && !allowAsLlm) continue;
         if (isDisabled(outputAlias, modelId) || isDisabled(staticAlias, modelId)) continue;
 
-        models.push(enrichWithContext({
+        const entry = enrichWithContext({
           id: `${outputAlias}/${modelId}`,
           object: "model",
           owned_by: outputAlias,
-        }, outputAlias, providerId, modelId, { customModels, live: liveCatalogs }));
+        }, outputAlias, providerId, modelId, { customModels, live: liveCatalogs });
+        const caps = capabilitiesFromServiceKind(customKind);
+        if (caps) entry.capabilities = caps;
+        models.push(entry);
       }
 
       // Merge sub-config models (TTS / embedding) that live on AI_PROVIDERS, not PROVIDER_MODELS

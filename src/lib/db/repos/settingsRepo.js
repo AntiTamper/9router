@@ -67,6 +67,13 @@ const DEFAULT_SETTINGS = {
     connections: {},
     overrides: {},
   },
+  codexAutoPing: {
+    enabled: false,
+    warmupModel: "gpt-5.3-codex-low",
+    warmupTrigger: "not-counting-down-or-out-of-quota",
+    connections: {},
+    overrides: {},
+  },
   rtkEnabled: true,
   toonEnabled: false,
   cavemanEnabled: false,

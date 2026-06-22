@@ -51,6 +51,18 @@ export const DEFAULT_CAPABILITIES = {
   maxOutput: 64000,
 };
 
+const SERVICE_KIND_CAPABILITIES = {
+  imageToText: { vision: true },
+  image: { imageOutput: true },
+  stt: { audioInput: true },
+  tts: { audioOutput: true },
+  embedding: { tools: false },
+};
+
+export function capabilitiesFromServiceKind(kind) {
+  return SERVICE_KIND_CAPABILITIES[kind] || null;
+}
+
 /**
  * Canonical exact-id overrides — used for exceptions that patterns would
  * otherwise mis-match. Only declare deltas vs DEFAULT.
@@ -163,7 +175,7 @@ export const PATTERN_CAPABILITIES = [
 
   // ── MiniMax (M3 = adaptive; M2.x cannot disable) ─────────────────
   { pattern: "*minimax*image*", caps: { imageOutput: true } },
-  { pattern: "*minimax-m3*",    caps: { reasoning: true, thinkingFormat: "minimax", contextWindow: 1048576, maxOutput: 512000 } },
+  { pattern: "*minimax-m3*",    caps: { vision: true, reasoning: true, thinkingFormat: "minimax", contextWindow: 1048576, maxOutput: 512000 } },
   { pattern: "*minimax-m2.7*",  caps: { reasoning: true, thinkingFormat: "minimax", thinkingCanDisable: false, contextWindow: 204800, maxOutput: 131072 } },
   { pattern: "*minimax*",       caps: { reasoning: true, thinkingFormat: "minimax", thinkingCanDisable: false, contextWindow: 200000, maxOutput: 131072 } },
 

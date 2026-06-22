@@ -92,6 +92,12 @@ const AUTO_REFRESH_STORAGE_KEY = "quotaAutoRefresh";
 const REFRESH_INTERVAL_STORAGE_KEY = "quotaRefreshIntervalMs";
 const UI_SETTINGS_STORAGE_KEY = "quotaTrackerUiSettings:v1";
 const DEFAULT_REFRESH_INTERVAL_MS = 60000;
+const WARMUP_SETTINGS_KEYS = {
+  claude: "claudeAutoPing",
+  antigravity: "antigravityAutoPing",
+  codex: "codexAutoPing",
+};
+
 const REFRESH_INTERVAL_OPTIONS = [
   { label: "Manual", value: 0 },
   { label: "1m", value: 60000 },
@@ -647,6 +653,7 @@ export default function ProviderLimits() {
       .then((s) => setAutoPingMap({
         ...(s?.claudeAutoPing?.connections || {}),
         ...(s?.antigravityAutoPing?.connections || {}),
+        ...(s?.codexAutoPing?.connections || {}),
       }))
       .catch(() => {});
   }, []);
@@ -654,7 +661,8 @@ export default function ProviderLimits() {
   const toggleAutoPing = useCallback(async (provider, connectionId, on) => {
     const next = { ...autoPingMap, [connectionId]: on };
     setAutoPingMap(next);
-    const settingsKey = provider === "antigravity" ? "antigravityAutoPing" : "claudeAutoPing";
+    const settingsKey = WARMUP_SETTINGS_KEYS[provider];
+    if (!settingsKey) return;
     try {
       const r = await fetch("/api/settings", { cache: "no-store" });
       const s = r.ok ? await r.json() : {};
@@ -1363,7 +1371,7 @@ export default function ProviderLimits() {
                         </button>
                       </Tooltip>
                     )}
-                    {["claude", "antigravity"].includes(conn.provider) && conn.authType === "oauth" && (
+                    {Object.prototype.hasOwnProperty.call(WARMUP_SETTINGS_KEYS, conn.provider) && conn.authType === "oauth" && (
                       <Tooltip text="Sends a minimal warmup request when this account matches its configured quota trigger.">
                         <button
                           type="button"

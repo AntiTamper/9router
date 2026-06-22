@@ -8,7 +8,7 @@ import { fetchImageAsBase64 } from "../translator/concerns/image.js";
 import { getModelUpstreamId } from "../config/providerModels.js";
 import { DEFAULT_RETRY_CONFIG, resolveRetryEntry } from "../config/runtimeConfig.js";
 import { dbg } from "../utils/debugLog.js";
-import { resolveSessionId } from "../utils/sessionManager.js";
+import { generateBinaryStyleId, resolveSessionId } from "../utils/sessionManager.js";
 
 // SSE error patterns inside 200-OK body that should trigger retry as if 503
 const CODEX_SSE_OVERLOADED_PATTERNS = ["server_is_overloaded", "service_unavailable_error"];
@@ -20,8 +20,12 @@ const SERVER_ID_PATTERN = /^(rs|fc|resp|msg)_/;
 // Hosted tool types that Codex/OpenAI Responses executes server-side
 const CODEX_HOSTED_TOOL_TYPES = new Set([
   "image_generation", "web_search", "web_search_preview", "file_search",
-  "computer", "computer_use_preview", "code_interpreter", "mcp", "local_shell"
+  "computer", "computer_use_preview", "code_interpreter", "mcp", "local_shell",
+  "tool_search"
 ]);
+
+// Responses-native freeform tools carry a name plus format payload and must pass through intact.
+const CODEX_PASSTHROUGH_TOOL_TYPES = new Set(["custom"]);
 
 // Allowlist of fields accepted by Codex Responses API — anything else is stripped
 const RESPONSES_API_ALLOWLIST = new Set([
@@ -69,6 +73,7 @@ function normalizeCodexTools(body) {
       return true;
     }
     if (type !== "function") {
+      if (CODEX_PASSTHROUGH_TOOL_TYPES.has(type)) return true;
       if (!type || tool.function || typeof tool.name === "string") return false;
       return CODEX_HOSTED_TOOL_TYPES.has(type);
     }
@@ -98,14 +103,29 @@ function normalizeCodexTools(body) {
 }
 
 // Resolve prompt-cache session id: client session → assistant-text-hash → workspaceId → connection
+function hasCodexSessionAnchor(body, credentials) {
+  const headers = credentials?.rawHeaders || {};
+  const headerKeys = ["x-session-id", "session-id", "session_id", "x-amp-thread-id", "x-client-request-id"];
+  if (headerKeys.some((k) => headers[k] || headers[k.toLowerCase()])) return true;
+  if (body?.prompt_cache_key || body?.session_id || body?.conversation_id || body?.metadata?.user_id) return true;
+  const items = Array.isArray(body?.input) ? body.input : Array.isArray(body?.messages) ? body.messages : [];
+  return items.some((item) => item?.role === "assistant");
+}
+
 function resolveCacheSessionId(body, credentials) {
+  if (!hasCodexSessionAnchor(body, credentials)) return generateBinaryStyleId();
   return resolveSessionId({
     headers: credentials?.rawHeaders,
     body,
     connectionId: credentials?.connectionId,
-    workspaceId: credentials?.providerSpecificData?.workspaceId,
     scope: "codex"
   });
+}
+
+function cloneCodexBodyForSend(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return body;
+  try { return structuredClone(body); }
+  catch { return JSON.parse(JSON.stringify(body)); }
 }
 
 /**
@@ -175,15 +195,18 @@ export class CodexExecutor extends BaseExecutor {
   }
 
   async execute(args) {
-    const imgCount = Array.isArray(args.body?.input) ? args.body.input.reduce((n, it) => n + (Array.isArray(it.content) ? it.content.filter(c => c.type === "image_url").length : 0), 0) : 0;
-    const inputLen = Array.isArray(args.body?.input) ? args.body.input.length : 0;
+    const body = cloneCodexBodyForSend(args.body);
+    const sendArgs = { ...args, body };
+    this._isCompact = !!body?._compact;
+    const imgCount = Array.isArray(body?.input) ? body.input.reduce((n, it) => n + (Array.isArray(it.content) ? it.content.filter(c => c.type === "image_url").length : 0), 0) : 0;
+    const inputLen = Array.isArray(body?.input) ? body.input.length : 0;
     dbg("CODEX", `execute start | inputItems=${inputLen} | images=${imgCount} | sessionId=${this._currentSessionId || "pending"}`);
     if (imgCount > 0) {
       const t0 = Date.now();
-      await this.prefetchImages(args.body);
+      await this.prefetchImages(body);
       dbg("CODEX", `prefetchImages done | ${Date.now() - t0}ms`);
     } else {
-      await this.prefetchImages(args.body);
+      await this.prefetchImages(body);
     }
 
     // Retry loop for SSE-level overloaded errors (200 OK body contains event: error)
@@ -192,7 +215,8 @@ export class CodexExecutor extends BaseExecutor {
     const { attempts, delayMs } = resolveRetryEntry(retryConfig[503]);
     let attempt = 0;
     while (true) {
-      const result = await super.execute(args);
+      this._isCompact = !!body?._compact;
+      const result = await super.execute(sendArgs);
       const peek = await this._peekSseOverloaded(result.response);
       if (!peek.matched) {
         // Replace body with re-assembled stream (prefix bytes already read + rest)
@@ -303,7 +327,7 @@ export class CodexExecutor extends BaseExecutor {
   transformRequest(model, body, stream, credentials) {
     this._isCompact = !!body._compact;
     delete body._compact;
-    // Resolve conversation-stable session_id (priority: body → assistant-text → workspace → machine)
+    // Resolve conversation-stable session_id (priority: client id → assistant text → per-request id)
     this._currentSessionId = resolveCacheSessionId(body, credentials);
     // Convert string input to array format (Codex API requires input as array)
     const normalized = normalizeResponsesInput(body.input);
@@ -341,22 +365,25 @@ export class CodexExecutor extends BaseExecutor {
     body.model = getModelUpstreamId("cx", body.model || model);
 
     // Extract thinking level from model name suffix
-    // e.g., gpt-5.3-codex-high → high, gpt-5.3-codex → medium (default)
+    // e.g., gpt-5.3-codex-high → high, gpt-5.3-codex → low (default)
     const effortLevels = ['none', 'low', 'medium', 'high', 'xhigh'];
     let modelEffort = null;
     for (const level of effortLevels) {
       if (body.model.endsWith(`-${level}`)) {
         modelEffort = level;
         // Strip suffix from model name for actual API call
-        body.model = body.model.replace(`-${level}`, '');
+        body.model = body.model.slice(0, -(level.length + 1));
         break;
       }
     }
 
-    // Priority: explicit reasoning.effort > reasoning_effort param > model suffix > default (medium)
+    // Priority: explicit reasoning.effort > reasoning_effort param > model suffix > default (low)
     if (!body.reasoning || typeof body.reasoning !== "object" || Array.isArray(body.reasoning)) {
       const effort = body.reasoning_effort || modelEffort || 'low';
       body.reasoning = { effort, summary: "auto" };
+    } else if (!body.reasoning.effort) {
+      body.reasoning.effort = body.reasoning_effort || modelEffort || 'low';
+      if (!body.reasoning.summary) body.reasoning.summary = "auto";
     } else if (!body.reasoning.summary) {
       body.reasoning.summary = "auto";
     }

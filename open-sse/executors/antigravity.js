@@ -17,6 +17,43 @@ function sanitizeFunctionName(name) {
 
 const MAX_RETRY_AFTER_MS = 10000;
 const MAX_ANTIGRAVITY_OUTPUT_TOKENS = 16384;
+const ANTIGRAVITY_REQUEST_BLACKLIST = new Set(["output_config"]);
+
+function stripBlacklisted(obj) {
+  if (!obj || typeof obj !== "object") return;
+  for (const key of ANTIGRAVITY_REQUEST_BLACKLIST) delete obj[key];
+}
+
+const IMAGE_MODEL_PATTERNS = [/image/i, /imagen/i, /image-generation/i];
+
+function isImageModel(model) {
+  if (!model) return false;
+  return IMAGE_MODEL_PATTERNS.some((pattern) => pattern.test(model));
+}
+
+function normalizeImageConfig(config) {
+  if (!config || typeof config !== "object" || Array.isArray(config)) return null;
+  const aspectRatio = typeof config.aspectRatio === "string" ? config.aspectRatio.trim() : "";
+  if (!/^\d+:\d+$/.test(aspectRatio)) return null;
+  return { aspectRatio };
+}
+
+function parseImageConfig(model) {
+  const config = { aspectRatio: "1:1" };
+  const resMatch = String(model || "").match(/(\d+)x(\d+)$/);
+  if (!resMatch) return config;
+  const w = parseInt(resMatch[1], 10);
+  const h = parseInt(resMatch[2], 10);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return config;
+  if (w <= 16 && h <= 16) {
+    config.aspectRatio = `${w}:${h}`;
+  } else {
+    const gcd = (a, b) => b ? gcd(b, a % b) : a;
+    const d = gcd(w, h);
+    config.aspectRatio = `${w / d}:${h / d}`;
+  }
+  return config;
+}
 
 export class AntigravityExecutor extends BaseExecutor {
   constructor() {
@@ -26,7 +63,7 @@ export class AntigravityExecutor extends BaseExecutor {
   buildUrl(model, stream, urlIndex = 0) {
     const baseUrls = this.getBaseUrls();
     const baseUrl = baseUrls[urlIndex] || baseUrls[0];
-    const action = stream ? "streamGenerateContent?alt=sse" : "generateContent";
+    const action = (stream && !isImageModel(model)) ? "streamGenerateContent?alt=sse" : "generateContent";
     return `${baseUrl}/v1internal:${action}`;
   }
 
@@ -46,6 +83,45 @@ export class AntigravityExecutor extends BaseExecutor {
 
   transformRequest(model, body, stream, credentials) {
     const projectId = credentials?.projectId || this.generateProjectId();
+
+    if (isImageModel(model)) {
+      const imageConfig = normalizeImageConfig(body.imageConfig || body.request?.generationConfig?.imageConfig) || parseImageConfig(model);
+      const cleanModel = String(model).replace(/-(\d+)x(\d+)$/, "");
+      const srcContents = body.request?.contents || body.contents || [];
+      const contents = [];
+      for (const c of srcContents) {
+        const parts = (c.parts || []).filter((p) => p.text !== undefined || p.inlineData || p.inline_data).map((p) => {
+          if (p.inline_data && !p.inlineData) return { inlineData: p.inline_data };
+          return p;
+        });
+        if (parts.length > 0) contents.push({ role: c.role || "user", parts });
+      }
+      const sessionId = resolveSessionId({
+        headers: credentials?.rawHeaders,
+        body,
+        connectionId: credentials?.email || credentials?.connectionId,
+        scope: "antigravity",
+      });
+      this._lastSessionId = sessionId;
+      return {
+        project: projectId,
+        model: cleanModel,
+        userAgent: "antigravity",
+        requestType: "image_gen",
+        requestId: `agent-${crypto.randomUUID()}`,
+        request: {
+          contents,
+          generationConfig: {
+            temperature: 1.0,
+            topP: 0.95,
+            topK: 40,
+            maxOutputTokens: 8192,
+            imageConfig,
+          },
+          sessionId,
+        },
+      };
+    }
 
     // Fix contents for Claude models via Antigravity
     const contents = body.request?.contents?.map(c => {
@@ -84,6 +160,7 @@ export class AntigravityExecutor extends BaseExecutor {
     }
 
     const { tools: _originalTools, toolConfig: _originalToolConfig, ...requestWithoutTools } = body.request || {};
+    stripBlacklisted(requestWithoutTools);
     const generationConfig = { ...(requestWithoutTools.generationConfig || {}) };
     if (generationConfig.maxOutputTokens > MAX_ANTIGRAVITY_OUTPUT_TOKENS) {
       generationConfig.maxOutputTokens = MAX_ANTIGRAVITY_OUTPUT_TOKENS;
@@ -100,6 +177,8 @@ export class AntigravityExecutor extends BaseExecutor {
     };
 
     this._lastSessionId = transformedRequest.sessionId; // cached for buildHeaders (base.execute order)
+
+    stripBlacklisted(body);
 
     return {
       ...body,
@@ -204,6 +283,8 @@ export class AntigravityExecutor extends BaseExecutor {
   // Hook called by BaseExecutor.tryRetry: derive delay from Retry-After (header → body),
   // cap at MAX_RETRY_AFTER_MS, else exponential backoff for 429. Return false to veto (fallback URL).
   async computeRetryDelay(response, attempt) {
+    if (response.status !== HTTP_STATUS.RATE_LIMITED) return null;
+
     let retryMs = this.parseRetryHeaders(response.headers);
     if (!retryMs) {
       try {
@@ -214,10 +295,7 @@ export class AntigravityExecutor extends BaseExecutor {
       }
     }
     if (retryMs) return retryMs <= MAX_RETRY_AFTER_MS ? retryMs : false;
-    if (response.status === HTTP_STATUS.RATE_LIMITED) {
-      return Math.min(1000 * (2 ** attempt), MAX_RETRY_AFTER_MS); // exponential backoff
-    }
-    return false;
+    return Math.min(1000 * (2 ** attempt), MAX_RETRY_AFTER_MS); // exponential backoff
   }
 
   /**
