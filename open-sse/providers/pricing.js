@@ -210,8 +210,14 @@ export const PATTERN_PRICING = [
  * Match a model ID against a glob pattern (* = wildcard). Case-insensitive:
  * registry ids mix casing (e.g. "MiniMax-M2.5" vs "minimax-m2.5").
  */
+const _patternRegexCache = new Map();
+
 export function matchPattern(pattern, model) {
-  const regex = new RegExp("^" + pattern.split("*").map(s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$", "i");
+  let regex = _patternRegexCache.get(pattern);
+  if (!regex) {
+    regex = new RegExp("^" + pattern.split("*").map(s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$", "i");
+    _patternRegexCache.set(pattern, regex);
+  }
   return regex.test(model);
 }
 
@@ -225,26 +231,42 @@ export function matchPattern(pattern, model) {
  * @param {string} model
  * @returns {object|null}
  */
+const _pricingCache = new Map();
+
 export function getPricingForModel(provider, model) {
   if (!model) return null;
 
+  const cacheKey = `${provider || ''}::${model}`;
+  const cached = _pricingCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
   // 1. Provider-specific override
   if (provider && PROVIDER_PRICING[provider]?.[model]) {
-    return PROVIDER_PRICING[provider][model];
+    const result = PROVIDER_PRICING[provider][model];
+    _pricingCache.set(cacheKey, result);
+    return result;
   }
 
   // 2. Canonical model pricing (strip vendor prefix if needed: "deepseek/deepseek-chat" → "deepseek-chat")
   const baseModel = model.includes("/") ? model.split("/").pop() : model;
-  if (MODEL_PRICING[baseModel]) return MODEL_PRICING[baseModel];
-  if (MODEL_PRICING[model]) return MODEL_PRICING[model];
+  if (MODEL_PRICING[baseModel]) {
+    _pricingCache.set(cacheKey, MODEL_PRICING[baseModel]);
+    return MODEL_PRICING[baseModel];
+  }
+  if (MODEL_PRICING[model]) {
+    _pricingCache.set(cacheKey, MODEL_PRICING[model]);
+    return MODEL_PRICING[model];
+  }
 
   // 3. Pattern match
   for (const { pattern, pricing } of PATTERN_PRICING) {
-    if (matchPattern(pattern, baseModel) || matchPattern(pattern, model)) {
+    if (matchPattern(pattern, baseModel) || (baseModel !== model && matchPattern(pattern, model))) {
+      _pricingCache.set(cacheKey, pricing);
       return pricing;
     }
   }
 
+  _pricingCache.set(cacheKey, null);
   return null;
 }
 

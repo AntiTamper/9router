@@ -218,26 +218,46 @@ export const PATTERN_CAPABILITIES = [
  * @param {string} model
  * @returns {object} full capabilities object
  */
+const _capabilitiesCache = new Map();
+
 export function getCapabilitiesForModel(provider, model) {
   if (!model) return { ...DEFAULT_CAPABILITIES };
 
+  const cacheKey = `${provider || ''}::${model}`;
+  const cached = _capabilitiesCache.get(cacheKey);
+  if (cached) return cached;
+
   // 1. Provider-specific override
   if (provider && PROVIDER_CAPABILITIES[provider]?.[model]) {
-    return { ...DEFAULT_CAPABILITIES, ...PROVIDER_CAPABILITIES[provider][model] };
+    const result = { ...DEFAULT_CAPABILITIES, ...PROVIDER_CAPABILITIES[provider][model] };
+    _capabilitiesCache.set(cacheKey, result);
+    return result;
   }
 
   // 2. Canonical exact (strip vendor prefix: "anthropic/claude-opus-4.7" -> "claude-opus-4.7")
   const baseModel = model.includes("/") ? model.split("/").pop() : model;
-  if (MODEL_CAPABILITIES[baseModel]) return { ...DEFAULT_CAPABILITIES, ...MODEL_CAPABILITIES[baseModel] };
-  if (MODEL_CAPABILITIES[model]) return { ...DEFAULT_CAPABILITIES, ...MODEL_CAPABILITIES[model] };
+  if (MODEL_CAPABILITIES[baseModel]) {
+    const result = { ...DEFAULT_CAPABILITIES, ...MODEL_CAPABILITIES[baseModel] };
+    _capabilitiesCache.set(cacheKey, result);
+    return result;
+  }
+  if (MODEL_CAPABILITIES[model]) {
+    const result = { ...DEFAULT_CAPABILITIES, ...MODEL_CAPABILITIES[model] };
+    _capabilitiesCache.set(cacheKey, result);
+    return result;
+  }
 
   // 3. Pattern match (first match wins)
   for (const { pattern, caps } of PATTERN_CAPABILITIES) {
-    if (matchPattern(pattern, baseModel) || matchPattern(pattern, model)) {
-      return { ...DEFAULT_CAPABILITIES, ...caps };
+    if (matchPattern(pattern, baseModel) || (baseModel !== model && matchPattern(pattern, model))) {
+      const result = { ...DEFAULT_CAPABILITIES, ...caps };
+      _capabilitiesCache.set(cacheKey, result);
+      return result;
     }
   }
 
   // 4. Floor
-  return { ...DEFAULT_CAPABILITIES };
+  const result = { ...DEFAULT_CAPABILITIES };
+  _capabilitiesCache.set(cacheKey, result);
+  return result;
 }

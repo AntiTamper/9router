@@ -26,13 +26,30 @@ export async function getComboById(id) {
   return rowToCombo(row);
 }
 
+let _comboCache = null;
+let _comboCacheTs = 0;
+const COMBO_CACHE_TTL_MS = 1000;
+
 export async function getComboByName(name) {
+  const now = Date.now();
+  if (_comboCache && _comboCache.name === name && now - _comboCacheTs < COMBO_CACHE_TTL_MS) {
+    return _comboCache.combo;
+  }
   const db = await getAdapter();
   const row = db.get(`SELECT * FROM combos WHERE name = ?`, [name]);
-  return rowToCombo(row);
+  const combo = rowToCombo(row);
+  _comboCache = { name, combo };
+  _comboCacheTs = now;
+  return combo;
+}
+
+export function invalidateComboCache() {
+  _comboCache = null;
+  _comboCacheTs = 0;
 }
 
 export async function createCombo(data) {
+  invalidateComboCache();
   const db = await getAdapter();
   const now = new Date().toISOString();
   const combo = {
@@ -51,6 +68,7 @@ export async function createCombo(data) {
 }
 
 export async function updateCombo(id, data) {
+  invalidateComboCache();
   const db = await getAdapter();
   let result = null;
   db.transaction(() => {
@@ -67,6 +85,7 @@ export async function updateCombo(id, data) {
 }
 
 export async function deleteCombo(id) {
+  invalidateComboCache();
   const db = await getAdapter();
   const res = db.run(`DELETE FROM combos WHERE id = ?`, [id]);
   return (res?.changes ?? 0) > 0;

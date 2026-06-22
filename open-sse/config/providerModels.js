@@ -7,6 +7,23 @@ import { CODEX_REVIEW_SUFFIX } from "../providers/models/helpers.js";
 
 export { PROVIDER_MODELS };
 
+// Simple memoization cache for model lookups (static data, safe to cache indefinitely)
+const _modelLookupCache = new Map();
+function cachedModelLookup(key, compute) {
+  const cached = _modelLookupCache.get(key);
+  if (cached !== undefined) return cached;
+  const result = compute();
+  _modelLookupCache.set(key, result);
+  return result;
+}
+function findModelCached(aliasOrId, modelId) {
+  const cacheKey = `${aliasOrId}::${modelId}`;
+  return cachedModelLookup(cacheKey, () => {
+    const models = PROVIDER_MODELS[aliasOrId];
+    return models?.find(m => m.id === modelId) || null;
+  });
+}
+
 
 // Helper functions
 export function getProviderModels(aliasOrId) {
@@ -33,21 +50,16 @@ export function findModelName(aliasOrId, modelId) {
 }
 
 export function getModelTargetFormat(aliasOrId, modelId) {
-  const models = PROVIDER_MODELS[aliasOrId];
-  if (!models) return null;
-  return modelTargetFormat(models.find(m => m.id === modelId));
+  return modelTargetFormat(findModelCached(aliasOrId, modelId));
 }
 
 export function getModelType(aliasOrId, modelId) {
-  const models = PROVIDER_MODELS[aliasOrId];
-  if (!models) return null;
-  const found = models.find(m => m.id === modelId);
+  const found = findModelCached(aliasOrId, modelId);
   return found?.kind || found?.type || null;
 }
 
 export function getModelUpstreamId(aliasOrId, modelId) {
-  const models = PROVIDER_MODELS[aliasOrId];
-  const found = models?.find(m => m.id === modelId);
+  const found = findModelCached(aliasOrId, modelId);
   if (found?.upstreamModelId) return found.upstreamModelId;
   if (aliasOrId === "cx" && typeof modelId === "string" && modelId.endsWith(CODEX_REVIEW_SUFFIX)) {
     return modelId.slice(0, -CODEX_REVIEW_SUFFIX.length);
@@ -56,8 +68,7 @@ export function getModelUpstreamId(aliasOrId, modelId) {
 }
 
 export function getModelQuotaFamily(aliasOrId, modelId) {
-  const models = PROVIDER_MODELS[aliasOrId];
-  return modelQuotaFamily(models?.find(m => m.id === modelId));
+  return modelQuotaFamily(findModelCached(aliasOrId, modelId));
 }
 
 function stripSyntheticModelSuffixes(modelId) {
@@ -130,5 +141,5 @@ export function getModelsByProviderId(providerId) {
 // Get strip list for a model entry (explicit opt-in only)
 // Returns array of content types to strip, e.g. ["image", "audio"]
 export function getModelStrip(alias, modelId) {
-  return modelStrip(PROVIDER_MODELS[alias]?.find(m => m.id === modelId));
+  return modelStrip(findModelCached(alias, modelId));
 }

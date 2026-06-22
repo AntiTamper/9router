@@ -145,9 +145,24 @@ function mergeWithDefaults(raw) {
   return merged;
 }
 
+let _settingsCache = null;
+let _settingsCacheTime = 0;
+const SETTINGS_CACHE_TTL_MS = 1000;
+
 export async function getSettings() {
+  const now = Date.now();
+  if (_settingsCache && now - _settingsCacheTime < SETTINGS_CACHE_TTL_MS) {
+    return _settingsCache;
+  }
   const raw = await readRaw();
-  return mergeWithDefaults(raw);
+  _settingsCache = mergeWithDefaults(raw);
+  _settingsCacheTime = now;
+  return _settingsCache;
+}
+
+export function invalidateSettingsCache() {
+  _settingsCache = null;
+  _settingsCacheTime = 0;
 }
 
 // Atomic read-merge-write inside transaction (prevents losing concurrent updates)
@@ -163,6 +178,7 @@ export async function updateSettings(updates) {
       [stringifyJson(next)]
     );
   });
+  invalidateSettingsCache();
   return mergeWithDefaults(next);
 }
 
