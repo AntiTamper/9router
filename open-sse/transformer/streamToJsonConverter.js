@@ -25,8 +25,49 @@ function processSSEMessage(msg, state) {
   if (eventType === "response.created") {
     state.responseId = parsed.response?.id || state.responseId;
     state.created = parsed.response?.created_at || state.created;
+  } else if (eventType === "response.output_item.added") {
+    const idx = parsed.output_index ?? 0;
+    state.items.set(idx, parsed.item || { type: "message", content: [], role: "assistant" });
+  } else if (eventType === "response.output_text.delta") {
+    const idx = parsed.output_index ?? 0;
+    const text = parsed.delta?.text || "";
+    if (text) {
+      const item = state.items.get(idx) || { type: "message", content: [], role: "assistant" };
+      const contentPart = item.content?.find(c => c.type === "output_text");
+      if (contentPart) {
+        contentPart.text = (contentPart.text || "") + text;
+      } else {
+        item.content = item.content || [];
+        item.content.push({ type: "output_text", text: text });
+      }
+      state.items.set(idx, item);
+    }
+  } else if (eventType === "response.reasoning_summary_text.delta") {
+    const idx = parsed.output_index ?? 0;
+    const text = parsed.delta?.text || "";
+    if (text) {
+      const item = state.items.get(idx) || { type: "reasoning", summary: [] };
+      const summaryPart = item.summary?.find(s => s.type === "summary_text");
+      if (summaryPart) {
+        summaryPart.text = (summaryPart.text || "") + text;
+      } else {
+        item.summary = item.summary || [];
+        item.summary.push({ type: "summary_text", text: text });
+      }
+      state.items.set(idx, item);
+    }
   } else if (eventType === "response.output_item.done") {
-    state.items.set(parsed.output_index ?? 0, parsed.item);
+    const idx = parsed.output_index ?? 0;
+    const existing = state.items.get(idx);
+    const item = parsed.item || existing || { type: "message", content: [], role: "assistant" };
+    // If done item has no content but we accumulated text, use accumulated
+    if (parsed.item && existing?.content?.length > 0) {
+      const hasParsedText = parsed.item.content?.some(c => c.type === "output_text" && c.text);
+      if (!hasParsedText) {
+        item.content = existing.content;
+      }
+    }
+    state.items.set(idx, item);
   } else if (eventType === "response.completed") {
     state.status = "completed";
     if (parsed.response?.usage) {

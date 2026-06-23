@@ -65,8 +65,8 @@ export function openaiToOpenAIResponsesResponse(chunk, state) {
   }
 
   // Handle text content
-  if (delta.content) {
-    let content = delta.content;
+  if (delta.content || delta.message?.content) {
+    let content = delta.content ?? delta.message?.content;
 
     if (content.includes("<think>")) {
       state.inThinking = true;

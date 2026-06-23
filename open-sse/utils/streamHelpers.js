@@ -41,6 +41,7 @@ export function hasValuableContent(chunk, format) {
   if (format === FORMATS.OPENAI && chunk.choices?.[0]?.delta) {
     const delta = chunk.choices[0].delta;
     return delta.content && delta.content !== "" ||
+           delta.message?.content && delta.message.content !== "" ||
            delta.reasoning_content && delta.reasoning_content !== "" ||
            delta.reasoning && delta.reasoning !== "" ||
            delta.thinking && delta.thinking !== "" ||

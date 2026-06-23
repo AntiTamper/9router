@@ -306,9 +306,9 @@ export function createResponsesApiTransformStream(logger = null) {
           emitReasoningDelta(controller, reasoningContent);
         }
 
-        // Handle text content (may contain <think> tags)
-        if (delta.content) {
-          let content = delta.content;
+                // Handle text content (may contain  <think> tags)
+        if (delta.content || delta.message?.content) {
+          let content = delta.content ?? delta.message?.content;
 
           if (content.includes("<think>")) {
             state.inThinking = true;
