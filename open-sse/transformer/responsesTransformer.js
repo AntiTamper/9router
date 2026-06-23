@@ -300,9 +300,10 @@ export function createResponsesApiTransformStream(logger = null) {
         }
 
         // Handle reasoning_content (OpenAI native format)
-        if (delta.reasoning_content) {
+        const reasoningContent = delta.reasoning_content || delta.reasoning || delta.thinking;
+        if (reasoningContent) {
           startReasoning(controller, idx);
-          emitReasoningDelta(controller, delta.reasoning_content);
+          emitReasoningDelta(controller, reasoningContent);
         }
 
         // Handle text content (may contain <think> tags)

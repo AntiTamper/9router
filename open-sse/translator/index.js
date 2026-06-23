@@ -235,3 +235,4 @@ export function initState(sourceFormat) {
 export function initTranslators() {
   ensureInitialized();
 }
+import "./response/kimi-to-openai.js";

@@ -58,7 +58,8 @@ export function parseSSEToOpenAIResponse(rawSSE, fallbackModel) {
     const choice = chunk?.choices?.[0];
     const delta = choice?.delta || {};
     if (typeof delta.content === "string" && delta.content.length > 0) contentParts.push(delta.content);
-    if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) reasoningParts.push(delta.reasoning_content);
+    const reasoningText = delta.reasoning_content || delta.reasoning || delta.thinking;
+    if (typeof reasoningText === "string" && reasoningText.length > 0) reasoningParts.push(reasoningText);
     if (choice?.finish_reason) finishReason = choice.finish_reason;
     if (chunk?.usage && typeof chunk.usage === "object") usage = chunk.usage;
 
@@ -214,7 +215,8 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, pr
     // When content is empty (e.g. thinking models that used all tokens for reasoning),
     // reasoning_content is the only useful output and must be preserved.
     // Previously this was unconditional, which broke Qwen3.5, Claude extended thinking, etc.
-    if (parsed?.choices) {
+    const clientCannotHandleReasoning = clientRawRequest?.headers?.["x-strip-reasoning"] === "true" || sourceFormat === "firecrawl";
+    if (parsed?.choices && clientCannotHandleReasoning) {
       for (const choice of parsed.choices) {
         if (choice?.message?.reasoning_content && choice.message.content) {
           delete choice.message.reasoning_content;

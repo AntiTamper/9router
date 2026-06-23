@@ -189,9 +189,10 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
     translatedResponse.usage = filterUsageForFormat(addBufferToUsage(translatedResponse.usage), sourceFormat);
   }
 
-  // Strip reasoning_content — some clients (e.g. Firecrawl AI SDK) have JSON parsers that
-  // break on this non-standard field, even though OpenAI allows it in extensions.
-  if (translatedResponse?.choices) {
+  // Strip reasoning_content only for clients that cannot handle it (e.g. Firecrawl AI SDK).
+  // Preserve it for standard OpenAI-compatible clients so thinking models work correctly.
+  const clientCannotHandleReasoning = clientRawRequest?.headers?.["x-strip-reasoning"] === "true" || sourceFormat === "firecrawl";
+  if (translatedResponse?.choices && clientCannotHandleReasoning) {
     for (const choice of translatedResponse.choices) {
       if (choice?.message) delete choice.message.reasoning_content;
     }

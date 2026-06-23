@@ -58,9 +58,10 @@ export function openaiToOpenAIResponsesResponse(chunk, state) {
   }
 
   // Handle reasoning_content
-  if (delta.reasoning_content) {
+  const reasoningContent = delta.reasoning_content || delta.reasoning || delta.thinking;
+  if (reasoningContent) {
     startReasoning(state, emit, idx);
-    emitReasoningDelta(state, emit, delta.reasoning_content);
+    emitReasoningDelta(state, emit, reasoningContent);
   }
 
   // Handle text content
