@@ -121,7 +121,7 @@ export function createResponsesApiTransformStream(logger = null) {
       item_id: state.reasoningId,
       output_index: state.reasoningIndex,
       summary_index: 0,
-      delta: text
+      delta: { text }
     });
   };
 
@@ -362,7 +362,7 @@ export function createResponsesApiTransformStream(logger = null) {
               item_id: `msg_${state.responseId}_${idx}`,
               output_index: idx,
               content_index: 0,
-              delta: content,
+              delta: { text: content },
               logprobs: []
             });
 
@@ -437,4 +437,5 @@ export function createResponsesApiTransformStream(logger = null) {
     }
   });
 }
+
 

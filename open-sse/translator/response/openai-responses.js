@@ -144,7 +144,7 @@ function emitReasoningDelta(state, emit, text) {
     item_id: state.reasoningId,
     output_index: state.reasoningIndex,
     summary_index: 0,
-    delta: text
+    delta: { text }
   });
 }
 
@@ -209,7 +209,7 @@ function emitTextContent(state, emit, idx, content) {
     item_id: `msg_${state.responseId}_${idx}`,
     output_index: idx,
     content_index: 0,
-    delta: content,
+    delta: { text: content },
     logprobs: []
   });
 
@@ -412,7 +412,7 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
 
   // Text content delta
   if (eventType === "response.output_text.delta") {
-    const delta = data.delta || "";
+    const delta = (typeof data.delta === "string" ? data.delta : data.delta?.text) || "";
     if (!delta) return null;
 
     return {

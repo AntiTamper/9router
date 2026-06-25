@@ -5,6 +5,17 @@
  */
 
 /**
+ * Extract text from a delta field that may be a string OR { text: "..." } object.
+ * Real Codex API emits string; our transformer emits string too; future-proof for object.
+ */
+function extractDeltaText(delta) {
+  if (!delta) return "";
+  if (typeof delta === "string") return delta;
+  if (typeof delta === "object" && typeof delta.text === "string") return delta.text;
+  return "";
+}
+
+/**
  * Process a single SSE message and update state accordingly.
  */
 function processSSEMessage(msg, state) {
@@ -32,8 +43,9 @@ function processSSEMessage(msg, state) {
       state.itemIndex.set(item.id, idx);
     }
   } else if (eventType === "response.output_text.delta") {
+    // item_id may be at top level OR inside item
     const itemId = parsed.item_id;
-    const text = parsed.delta?.text || "";
+    const text = extractDeltaText(parsed.delta);
     if (text && itemId) {
       const idx = state.itemIndex.get(itemId);
       if (idx !== undefined) {
@@ -51,7 +63,7 @@ function processSSEMessage(msg, state) {
     }
   } else if (eventType === "response.reasoning_summary_text.delta") {
     const itemId = parsed.item_id;
-    const text = parsed.delta?.text || "";
+    const text = extractDeltaText(parsed.delta);
     if (text && itemId) {
       const idx = state.itemIndex.get(itemId);
       if (idx !== undefined) {
@@ -68,7 +80,8 @@ function processSSEMessage(msg, state) {
       }
     }
   } else if (eventType === "response.output_item.done") {
-    const itemId = parsed.item_id;
+    // item_id may be top-level OR inside item.id (our transformer only sets item.id)
+    const itemId = parsed.item_id || parsed.item?.id;
     if (itemId) {
       const idx = state.itemIndex.get(itemId);
       if (idx !== undefined) {
