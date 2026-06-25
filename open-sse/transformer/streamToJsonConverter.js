@@ -26,48 +26,72 @@ function processSSEMessage(msg, state) {
     state.responseId = parsed.response?.id || state.responseId;
     state.created = parsed.response?.created_at || state.created;
   } else if (eventType === "response.output_item.added") {
-    const idx = parsed.output_index ?? 0;
-    state.items.set(idx, parsed.item || { type: "message", content: [], role: "assistant" });
+    const item = parsed.item || { type: "message", content: [], role: "assistant" };
+    const idx = state.items.push(item) - 1;
+    if (item.id) {
+      state.itemIndex.set(item.id, idx);
+    }
   } else if (eventType === "response.output_text.delta") {
-    const idx = parsed.output_index ?? 0;
+    const itemId = parsed.item_id;
     const text = parsed.delta?.text || "";
-    if (text) {
-      const item = state.items.get(idx) || { type: "message", content: [], role: "assistant" };
-      const contentPart = item.content?.find(c => c.type === "output_text");
-      if (contentPart) {
-        contentPart.text = (contentPart.text || "") + text;
-      } else {
-        item.content = item.content || [];
-        item.content.push({ type: "output_text", text: text });
+    if (text && itemId) {
+      const idx = state.itemIndex.get(itemId);
+      if (idx !== undefined) {
+        const item = state.items[idx];
+        if (item && item.type === "message") {
+          const contentPart = item.content?.find(c => c.type === "output_text");
+          if (contentPart) {
+            contentPart.text = (contentPart.text || "") + text;
+          } else {
+            item.content = item.content || [];
+            item.content.push({ type: "output_text", text: text });
+          }
+        }
       }
-      state.items.set(idx, item);
     }
   } else if (eventType === "response.reasoning_summary_text.delta") {
-    const idx = parsed.output_index ?? 0;
+    const itemId = parsed.item_id;
     const text = parsed.delta?.text || "";
-    if (text) {
-      const item = state.items.get(idx) || { type: "reasoning", summary: [] };
-      const summaryPart = item.summary?.find(s => s.type === "summary_text");
-      if (summaryPart) {
-        summaryPart.text = (summaryPart.text || "") + text;
-      } else {
-        item.summary = item.summary || [];
-        item.summary.push({ type: "summary_text", text: text });
+    if (text && itemId) {
+      const idx = state.itemIndex.get(itemId);
+      if (idx !== undefined) {
+        const item = state.items[idx];
+        if (item && item.type === "reasoning") {
+          const summaryPart = item.summary?.find(s => s.type === "summary_text");
+          if (summaryPart) {
+            summaryPart.text = (summaryPart.text || "") + text;
+          } else {
+            item.summary = item.summary || [];
+            item.summary.push({ type: "summary_text", text: text });
+          }
+        }
       }
-      state.items.set(idx, item);
     }
   } else if (eventType === "response.output_item.done") {
-    const idx = parsed.output_index ?? 0;
-    const existing = state.items.get(idx);
-    const item = parsed.item || existing || { type: "message", content: [], role: "assistant" };
-    // If done item has no content but we accumulated text, use accumulated
-    if (parsed.item && existing?.content?.length > 0) {
-      const hasParsedText = parsed.item.content?.some(c => c.type === "output_text" && c.text);
-      if (!hasParsedText) {
-        item.content = existing.content;
+    const itemId = parsed.item_id;
+    if (itemId) {
+      const idx = state.itemIndex.get(itemId);
+      if (idx !== undefined) {
+        const existing = state.items[idx];
+        const doneItem = parsed.item || existing;
+        if (doneItem && existing) {
+          // Only merge accumulated content into the matching type
+          if (existing.type === "reasoning" && existing.summary?.length > 0) {
+            if (!doneItem.summary || doneItem.summary.length === 0) {
+              doneItem.summary = existing.summary;
+            }
+          } else if (existing.type === "message" && existing.content?.length > 0) {
+            const hasParsedText = doneItem.content?.some(c => c.type === "output_text" && c.text);
+            if (!hasParsedText) {
+              doneItem.content = existing.content;
+            }
+          }
+          state.items[idx] = doneItem;
+        } else if (doneItem) {
+          state.items[idx] = doneItem;
+        }
       }
     }
-    state.items.set(idx, item);
   } else if (eventType === "response.completed") {
     state.status = "completed";
     if (parsed.response?.usage) {
@@ -101,7 +125,8 @@ export async function convertResponsesStreamToJson(stream) {
     created: Math.floor(Date.now() / 1000),
     status: "in_progress",
     usage: { ...EMPTY_RESPONSE },
-    items: new Map()
+    items: [],
+    itemIndex: new Map()
   };
 
   try {
@@ -126,12 +151,8 @@ export async function convertResponsesStreamToJson(stream) {
     reader.releaseLock();
   }
 
-  // Build output array from accumulated items (ordered by index)
-  const output = [];
-  const maxIndex = state.items.size > 0 ? Math.max(...state.items.keys()) : -1;
-  for (let i = 0; i <= maxIndex; i++) {
-    output.push(state.items.get(i) || { type: "message", content: [], role: "assistant" });
-  }
+  // Build output array directly from accumulated items (preserves emission order)
+  const output = state.items;
 
   return {
     id: state.responseId || `resp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,

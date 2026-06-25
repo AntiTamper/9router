@@ -31,8 +31,13 @@ export function injectCaveman(body, format, level) {
 
 // OpenAI-shaped: messages[] (chat) or input[] (responses) or instructions (responses string)
 function injectMessagesSystem(body, prompt) {
-  // OpenAI Responses API: top-level string field
-  if (typeof body.instructions === "string") {
+  // OpenAI Responses API: top-level string field, or body.input array with no body.messages
+  const isResponses = Array.isArray(body.input) && !Array.isArray(body.messages);
+  if (isResponses || typeof body.instructions === "string") {
+    // Ensure instructions is a string
+    if (typeof body.instructions !== "string") {
+      body.instructions = "";
+    }
     body.instructions = stripExistingPromptText(body.instructions);
     body.instructions = body.instructions
       ? `${body.instructions}${SEP}${prompt}`
@@ -41,17 +46,14 @@ function injectMessagesSystem(body, prompt) {
   }
 
   const isChat = Array.isArray(body.messages);
-  const isResponses = !isChat && Array.isArray(body.input);
-  const arr = isChat ? body.messages
-    : isResponses ? body.input
-      : null;
+  const arr = isChat ? body.messages : null;
   if (!arr) return;
 
   const idx = arr.findIndex(m => m && (m.role === "system" || m.role === "developer"));
   if (idx >= 0) {
-    appendToOpenAIMessage(arr[idx], prompt, isResponses ? "input_text" : "text");
+    appendToOpenAIMessage(arr[idx], prompt, "text");
   } else {
-    arr.unshift({ role: "system", content: isResponses ? [{ type: "input_text", text: prompt }] : prompt });
+    arr.unshift({ role: "system", content: prompt });
   }
 }
 

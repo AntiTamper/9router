@@ -26,15 +26,14 @@ describe("Caveman token saver", () => {
     expect(body.messages[0].content.at(-1)).toEqual({ type: "text", text: CAVEMAN_PROMPTS.ultra });
   });
 
-  it("uses input_text parts for OpenAI Responses input arrays", () => {
+  it("routes OpenAI Responses caveman to body.instructions", () => {
     const body = { input: [{ role: "user", content: [{ type: "input_text", text: "hi" }] }] };
 
     injectCaveman(body, FORMATS.OPENAI_RESPONSES, "lite");
 
-    expect(body.input[0]).toEqual({
-      role: "system",
-      content: [{ type: "input_text", text: CAVEMAN_PROMPTS.lite }],
-    });
+    expect(body.instructions).toBe(CAVEMAN_PROMPTS.lite);
+    // input array should remain untouched
+    expect(body.input[0]).toEqual({ role: "user", content: [{ type: "input_text", text: "hi" }] });
   });
 
   it("switches levels without accumulating old prompts", () => {
